@@ -1,0 +1,16 @@
+# 构建产物
+/dist/
+/ldmapi
+/ldmapi.exe
+
+# 运行期数据（单文件数据库）
+/data/
+*.db
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
+
+# 本地调试用的临时可执行文件
+/.dev-ldmapi.exe

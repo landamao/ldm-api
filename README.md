@@ -1,0 +1,414 @@
+# 🐱 懒大猫 API
+
+一个 **单文件、开箱即用** 的模型聚合网关。把所有上游服务商的模型收拢到一个地址、一个密钥之下，
+对外提供完全兼容 OpenAI 协议的接口。
+
+- **一个可执行文件**：前端资源编译进二进制，不需要 Node、不需要数据库、不需要配置文件。
+- **一个数据文件**：所有配置、密钥、日志都写进同目录下的 `data/ldmapi.db`。
+- **跨平台**：Windows / Linux / macOS 均有预编译产物。
+
+```
+                    ┌──────────────┐
+   OpenAI SDK ──┐   │              │   ┌── 渠道 A（OpenAI 兼容）
+   curl ────────┼──▶│  懒大猫 API  │──▶├── 渠道 B（Anthropic）
+   任意客户端 ──┘   │              │   └── 渠道 C（Google Gemini）
+   一个密钥         └──────────────┘      自动协议转换 / 失败切换
+```
+
+---
+
+## 快速开始
+
+### Windows
+
+```powershell
+.\ldmapi-windows-amd64.exe
+```
+
+### Linux
+
+```bash
+chmod +x ldmapi-linux-amd64
+./ldmapi-linux-amd64
+```
+
+启动后终端会打印控制台地址和一个可直接使用的 API 密钥：
+
+```
+  ╭──────────────────────────────────────────────────────────────╮
+  │  🐱 懒大猫 API   v1.0.0                                      │
+  │                                                              │
+  │  控制台     http://127.0.0.1:6700                            │
+  │  API 地址   http://127.0.0.1:6700/v1                         │
+  │  数据文件   /opt/ldmapi/data/ldmapi.db                       │
+  ╰──────────────────────────────────────────────────────────────╯
+  ⚠ 管理端默认密码：landamao   请登录后立即在「系统设置」中修改
+```
+
+打开控制台 → 用 `landamao` 登录 → **先去「系统设置」改密码**。
+
+### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `-port` | `6700` | 监听端口 |
+| `-host` | `0.0.0.0` | 监听地址 |
+| `-data` | 可执行文件同级的 `data/` | 数据目录 |
+| `-password` | — | 启动时重置管理端密码 |
+| `-open` | `false` | 启动后自动打开浏览器 |
+| `-version` | — | 打印版本号 |
+
+> 可执行文件所在目录不可写时（例如放在 `/usr/local/bin`），数据会自动落到 `~/.ldmapi/`。
+
+---
+
+## 核心概念
+
+### 渠道（Channel）
+
+一个上游服务商。渠道 ID 唯一，**不能包含 `/`**，它会成为模型名的前缀。
+
+在「渠道管理」里填的是**上游真实的模型名**（`a`、`b`、`c`），这里不做任何改写。
+只有接入到「模型管理」之后，每个模型才会获得一个带渠道前缀的 ID。
+
+```
+渠道管理里填写：
+  A:  a, b, c
+  B:  a, b, d
+
+模型管理里出现：
+  A/a、A/b、A/c、B/a、B/b、B/d
+```
+
+添加渠道时**接口地址是必填的**，并且必须带上 `https://` 或 `http://`。网关不会在地址留空时替你
+回退到官方 API——填错或漏填会导致请求静默打到错误的地方，这类问题很难排查，所以这里直接拒绝保存。
+
+填好地址和 API Key 后，点「从上游获取模型列表」就能直接拉取该服务商支持的模型，**不需要先保存渠道**；
+模型列表本身也可以留空，先把渠道建好、之后再回来补。
+
+支持的渠道类型：
+
+| 类型 | 适用服务 |
+| --- | --- |
+| **OpenAI 兼容** | OpenAI、DeepSeek、通义千问、月之暗面、智谱、Ollama、vLLM、OneAPI 等一切兼容 `/v1/chat/completions` 的服务 |
+| **Anthropic** | Claude 官方 API（网关自动完成 OpenAI ⇄ Anthropic 双向协议转换） |
+| **Google Gemini** | Google AI Studio / Gemini API（自动完成 OpenAI ⇄ Gemini 转换） |
+
+### 模型（Model）
+
+**模型设置默认是空的**——即使已经配好了渠道，也必须在这里手动添加，模型才会对外开放。
+这样做的好处是：渠道里可以放心地填几十个上游模型名，但只有你真正想开放的那几个会被调用到。
+
+模型分两类：
+
+| 类型 | 说明 |
+| --- | --- |
+| **渠道模型** | 直接暴露某个渠道下的某个上游模型，ID 形如 `A/a`。 |
+| **自定义模型** | 自己起一个 ID（例如 `LDM`），按顺序路由到多个渠道模型。第一个失败（超时 / 限流 / 5xx）时自动切到下一个。 |
+
+```
+模型设置列表：
+  渠道模型：  A/a、A/c、B/a、B/d
+  自定义模型：LDM  →  A/c、B/d
+```
+
+调用 `LDM` 时，网关会先打 `A/c`；如果 `A/c` 挂了，请求会自动落到 `B/d`，调用方无感知。
+
+自定义模型还支持：
+
+- **路由策略**：顺序优先 / 轮询均衡 / 随机
+- **参数来源**：可以复刻某个已有模型的全部能力参数，也可以单独配置
+
+### 提供商（Provider）
+
+提供商用于给模型归类、显示图标，并在模型广场按厂商筛选。首次启动会自动写入这些内置提供商：
+
+| 提供商 | 自动匹配关键词 |
+| --- | --- |
+| 智谱 | `glm`、`zhipu`、`智谱`、`chatglm` |
+| DeepSeek | `deepseek`、`深度求索` |
+| xAI | `grok`、`xai` |
+| OpenAI | `gpt`、`openai`、`chatgpt` |
+| 阶跃星辰 | `step`、`stepfun`、`阶跃` |
+| 字节跳动 | `doubao`、`豆包`、`bytedance`、`字节` |
+| 小米 | `mimo`、`xiaomi`、`小米` |
+| MiniMax | `minimax`、`abab` |
+| Gemini | `gemin`、`google` |
+| Claude | `claude`、`anthropic` |
+| 月之暗面 | `kimi`、`moonshot`、`月之暗面` |
+| 阿里巴巴 | `qwen`、`qwq`、`tongyi`、`通义`、`千问`、`alibaba` |
+
+添加模型时会按上游模型名自动归属提供商，并自动使用该提供商的图标；也可以在「模型管理 → 编辑」里手动修改，或用多选工具栏「批量设置提供商」统一调整。自定义提供商支持选择内置图标、填写 emoji 或图片直链，以及自定义匹配关键词。删除内置提供商后，可在「提供商管理 → 恢复内置提供商」里勾选需要找回的项，恢复后失去归属的模型会自动重新匹配。
+
+模型广场只展示有可用模型的提供商筛选项；没有模型的提供商会自动隐藏。
+
+### 能力参数
+
+每个模型都可以单独声明能力，所有项都支持三态：
+
+| 参数 | 可选值 |
+| --- | --- |
+| 上下文长度 | 数字 / 留空（透传上游） |
+| 最大输出 | 数字 / 留空（透传上游） |
+| 工具调用 | 从上游透传 / 支持 / 不支持 |
+| 思考（Reasoning） | 从上游透传 / 支持 / 不支持 |
+| 图片输入（Vision） | 从上游透传 / 支持 / 不支持 |
+
+选择「不支持」时，网关会在转发前主动清理请求：剥离 `tools`、移除 `reasoning_effort`、过滤消息里的图片内容。
+这样调用方不需要关心模型差异，随便传，网关负责适配。
+
+---
+
+## 使用方式
+
+网关完全兼容 OpenAI 协议，任何 OpenAI SDK 只要换掉 `base_url` 和 `api_key` 即可。
+
+### curl
+
+```bash
+curl http://127.0.0.1:6700/v1/chat/completions \
+  -H "Authorization: Bearer sk-ldm-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "LDM",
+    "messages": [{"role": "user", "content": "你好"}],
+    "stream": true
+  }'
+```
+
+### Python（openai SDK）
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:6700/v1",
+    api_key="sk-ldm-xxxxxxxx",
+)
+
+resp = client.chat.completions.create(
+    model="LDM",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(resp.choices[0].message.content)
+```
+
+### Node.js
+
+```js
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "http://127.0.0.1:6700/v1",
+  apiKey: "sk-ldm-xxxxxxxx",
+});
+
+const stream = await client.chat.completions.create({
+  model: "LDM",
+  messages: [{ role: "user", content: "你好" }],
+  stream: true,
+});
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta?.content || "");
+}
+```
+
+### 可用端点
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /v1/models` | 列出当前密钥可调用的模型 |
+| `POST /v1/chat/completions` | 对话补全，支持流式 |
+| `POST /v1/completions`、`/v1/embeddings`、`/v1/images/...` 等 | 原样转发到上游（OpenAI 兼容渠道） |
+| `POST /v1/messages` | Anthropic 原生协议入口 |
+
+---
+
+## 控制台
+
+| 页面 | 作用 |
+| --- | --- |
+| **数据看板** | 请求量、Token 消耗、成功率、平均延迟趋势，模型/渠道/密钥调用分布 |
+| **模型广场** | 以卡片形式浏览所有可用模型，支持按提供商筛选，含能力标签、近 24 小时调用量与成功率 |
+| **在线对话** | 选一个模型直接对话，用来快速验证接入是否正确；支持流式输出开关与中途停止，调用同样计入日志 |
+| **渠道管理** | 增删改上游渠道，测试连通性，一键从上游拉取模型列表 |
+| **模型管理** | 批量添加渠道模型、编排自定义模型的路由、设置/批量设置提供商、调整能力参数，并可对任意模型一键测试 |
+| **令牌管理** | 创建 API 密钥，设置额度、有效期、模型白名单 |
+| **调用日志** | 每一次请求的完整记录：模型、渠道、耗时、首字时间、Token 用量、输出速度、思考长度、状态码、来源 IP |
+| **系统设置** | 站点名称、主题、日志保留策略、修改管理密码 |
+
+界面默认使用 **浅色 + 粉色** 主题，也可以在左下角切换到深色主题。
+
+### 模型测试
+
+「模型管理」里每个模型都有测试按钮，会发起一次真实的最小调用，并在提示里给出：
+耗时、实际落到的渠道与上游模型、Token 用量，以及上游返回的正文。失败时同样会展示
+上游返回的错误内容。测试调用与正常调用一样计入日志和统计。
+
+### 修改自定义模型的 ID
+
+自定义模型的 ID 可以随时改。改名后，所有通过「参数来源」引用它的模型会自动更新到新 ID，
+历史日志保留改名时使用的旧 ID，统计则从改名时刻起累计到新 ID 上。
+
+渠道模型的 ID 由「渠道 ID / 上游模型名」推导而来，不能修改——需要改名时请修改渠道里的模型名。
+
+### 深度思考的展示
+
+模型如果输出了思考内容（DeepSeek-R1 这类推理模型会通过 `reasoning_content` 字段返回），
+「在线对话」会把它放在正文上方的**可折叠块**里：思考过程中默认展开、实时滚动，一旦开始输出正式回答
+就自动收起，只保留「深度思考 N 字」的标题，需要时点开还能看。
+
+思考内容不会写进对话历史，因此不会在下一轮被当作上下文重新发回给模型。
+
+对话记录按模型分别保存在**浏览器本地**（`localStorage`），刷新页面或下次打开都还在；换模型会自动切到
+该模型自己的那份记录，点「清空对话」只清当前模型的。
+
+每条回复的气泡下方会带三组统计，组之间用竖线分隔：
+
+```
+输入 11 · 缓存读 8  |  输出 36 · 思考 30 · 27.6 tok/s  |  首字 320ms · 总耗时 2.1s · 总 47
+```
+
+- **输入组**：输入 token 总量，以及其中命中提示词缓存的部分（上游没开缓存或没上报时这一项不显示）
+- **输出组**：输出 token、思考 token、生成速度——都是和输出相关的指标
+- **耗时组**：首字耗时、总耗时，以及这次请求的总 token
+
+缓存命中会从各家的不同字段里归一化：OpenAI 的 `prompt_tokens_details.cached_tokens`、
+DeepSeek 的 `prompt_cache_hit_tokens`、Anthropic 的 `cache_read_input_tokens`、
+Gemini 的 `cachedContentTokenCount`，最终都以 OpenAI 的字段形式透出。
+
+这些数据在刷新后也会一起恢复。
+
+### 添加模型时的搜索与折叠
+
+「模型管理 → 添加模型」的弹窗支持按模型名模糊搜索（渠道 ID 和上游模型名都能匹配），搜索时只显示命中的
+模型，没有命中的渠道会自动隐藏；点渠道标题可以折叠/展开该组，也可以一键「展开全部 / 折叠全部」。
+搜索状态下「全选可添加」只会选中当前可见的条目，不会误选被过滤掉的内容。
+
+### 输出速度与思考长度
+
+「调用日志」的列按「输入 / 输出 / 耗时」三段组织：
+
+| 列 | 主值 | 下方明细 |
+| --- | --- | --- |
+| 模型 | 模型 ID + 流式/重试标签 | 本次实际命中的渠道模型（形如 `A/think`） |
+| **输入** | 输入 token 总量 | 命中提示词缓存的部分（`缓存读 N`，没命中则不显示） |
+| **输出** | 输出 token 总量 | 思考 token（`思考 N`，上游未上报时退回显示字符数）、输出速度 |
+| **耗时** | 总耗时 | 首字耗时（仅流式有）、本次请求的总 token |
+
+速度的分母用的是**生成耗时**而不是总耗时——首字之前的排队和建连时间不应该算进生成速度，所以流式请求
+按「总耗时 − 首字耗时」计算。**非流式请求是一次性返回的，没有有意义的生成窗口，因此首字和速度都不显示，
+只保留总耗时。**
+
+思考用量优先用上游单独上报的数值（OpenAI 的 `completion_tokens_details.reasoning_tokens`、
+Gemini 的 `thoughtsTokenCount`）；上游没上报时退回显示思考内容的字符数（`思考 N 字`）。
+Anthropic 把思考算在 `output_tokens` 里，所以那一栏会显示字符数。
+
+缓存命中同样从各家不同字段归一化：OpenAI 的 `prompt_tokens_details.cached_tokens`、
+DeepSeek 的 `prompt_cache_hit_tokens`、Anthropic 的 `cache_read_input_tokens`、
+Gemini 的 `cachedContentTokenCount`。
+
+---
+
+## 常见问题
+
+**Q：为什么配好了渠道，调用还是提示模型不存在？**
+模型需要在「模型管理」里手动添加一次。这是刻意设计的，避免渠道里填的上游模型名被意外暴露出去。
+
+**Q：一个渠道下能填多少个模型？**
+不限制。只有被添加进「模型管理」的那些才会对外开放，其余只是候选。
+
+**Q：上游不是 OpenAI 协议怎么办？**
+渠道类型选 Anthropic 或 Gemini，网关会做协议转换。其它协议可以先看看是否兼容 OpenAI（绝大多数国内服务商都兼容）。
+
+**Q：自定义模型的路由是负载均衡还是故障转移？**
+默认是**顺序故障转移**——永远优先用第一个，只有它挂了才往下走。想分摊流量就把策略改成「轮询均衡」。
+
+**Q：数据存在哪里？怎么备份？**
+`data/ldmapi.db`（bbolt 单文件数据库）。停止服务后直接复制这个文件即可。
+
+**Q：忘记管理密码了？**
+用 `-password 新密码` 启动一次即可重置。
+
+---
+
+## 从源码构建
+
+需要 Go 1.24 或更高版本。
+
+```bash
+git clone <repo> && cd ldmapi
+go build -o ldmapi .
+```
+
+交叉编译：
+
+```bash
+# Windows
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/ldmapi-windows-amd64.exe .
+
+# Linux
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/ldmapi-linux-amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/ldmapi-linux-arm64 .
+```
+
+Windows 产物的图标和版本信息来自 `assets/ldmapi.ico`，由 `go-winres` 生成 `rsrc_windows_*.syso`，`go build` 会自动链接。仓库里已包含生成好的 syso；更新图标后重新生成：
+
+```bash
+go install github.com/tc-hib/go-winres@latest
+go-winres simply --arch amd64,arm64 --icon assets/ldmapi.ico \
+  --product-name "懒大猫 API" --file-description "懒大猫 API - 模型聚合网关" \
+  --product-version 1.0.0 --file-version 1.0.0 --original-filename ldmapi.exe
+```
+
+修改前端时不必重新编译，让程序直接从磁盘读取前端资源即可：
+
+```bash
+LDMAPI_DEV=web go run . -port 3000
+```
+
+### 运行测试
+
+```bash
+go test ./...
+```
+
+### 目录结构
+
+```
+.
+├── main.go                     启动流程、命令行参数
+├── internal/
+│   ├── store/                  数据模型 + bbolt 持久化
+│   ├── upstream/               三种上游协议的请求/响应/流式转换
+│   ├── relay/                  路由解析、失败切换、能力裁剪、用量统计
+│   ├── server/                 HTTP 路由、管理接口、鉴权
+│   └── termtitle/              设置终端窗口标题
+├── assets/                     Windows 图标源文件
+├── web/                        前端（编译进二进制）
+│   ├── index.html
+│   └── assets/
+│       ├── app.css             设计系统（浅色粉色主题 + 深色主题）
+│       ├── app.js              核心框架：API、模态框、Toast、路由
+│       ├── provider-icons.js   提供商内置图标（取自 @lobehub/icons）
+│       ├── charts.js           零依赖 SVG 图表
+│       ├── pages-config.js     渠道管理 / 模型管理 / 提供商管理
+│       └── pages-more.js       看板 / 广场 / 令牌 / 日志 / 设置
+└── _test/mock-upstream.mjs     端到端测试用的模拟上游
+```
+
+---
+
+## 安全提示
+
+- 默认密码是 `landamao`，**首次登录后请立刻修改**。
+- 网关默认监听 `0.0.0.0`。如果部署在公网，建议只监听 `127.0.0.1` 并放在 Nginx / Caddy 之后，或加防火墙规则。
+- 上游渠道的 API Key 以明文保存在本地数据文件中，请确保该文件权限正确（默认 `0600`）。
+
+---
+
+## 许可证
+
+本项目采用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）发布。
+
+你可以自由使用、修改和分发本软件。如果分发修改后的版本，或把它作为网络服务提供给他人使用，需要以同一许可证公开完整源代码。

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>懒大猫 API · 模型聚合网关</title>
+<link rel="icon" href="assets/logo.jpg">
+<link rel="stylesheet" href="assets/app.css">
+<script>
+  // 尽早应用主题，避免闪烁
+  (function () {
+    try {
+      var t = localStorage.getItem('ldmapi.theme') || 'light';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  })();
+</script>
+</head>
+<body>
+<div id="app"></div>
+<script src="assets/app.js"></script>
+<script src="assets/provider-icons.js"></script>
+<script src="assets/charts.js"></script>
+<script src="assets/pages-config.js"></script>
+<script src="assets/pages-more.js"></script>
+</body>
+</html>
