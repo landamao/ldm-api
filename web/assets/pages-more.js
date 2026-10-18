@@ -37,7 +37,13 @@
   // ======================================================================
   // 数据看板
   // ======================================================================
-  const dashRange = { hours: 24 };
+  const DASH_RANGES = {
+    today: { label: '今日', compare: '较昨日同期' },
+    week: { label: '本周', compare: '较上周同期' },
+    month: { label: '本月', compare: '较上月同期' },
+  };
+  const dashRange = { key: 'today' };
+  const dashRangeInfo = () => DASH_RANGES[dashRange.key] || DASH_RANGES.today;
   const dashMetric = { m: 'requests' };
   const DASH_UNIT_KEY = 'ldmapi.dashboard.unit';
   const dashUnit = { mode: 'cn' };
@@ -78,9 +84,9 @@
     async render(root, actions) {
       actions.innerHTML = `
         <div class="pill-toggle" id="range-toggle">
-          <button data-h="24" class="${dashRange.hours === 24 ? 'is-on' : ''}">24 小时</button>
-          <button data-h="168" class="${dashRange.hours === 168 ? 'is-on' : ''}">7 天</button>
-          <button data-h="720" class="${dashRange.hours === 720 ? 'is-on' : ''}">30 天</button>
+          <button data-r="today" class="${dashRange.key === 'today' ? 'is-on' : ''}">今日</button>
+          <button data-r="week" class="${dashRange.key === 'week' ? 'is-on' : ''}">本周</button>
+          <button data-r="month" class="${dashRange.key === 'month' ? 'is-on' : ''}">本月</button>
         </div>
         <select class="select" id="dash-unit" aria-label="数字单位" style="width:auto;min-width:128px">
           <option value="en"${dashUnit.mode === 'en' ? ' selected' : ''}>英文单位 K/M</option>
@@ -97,7 +103,7 @@
       };
       actions.querySelectorAll('#range-toggle button').forEach((b) => {
         b.onclick = () => {
-          dashRange.hours = Number(b.dataset.h);
+          dashRange.key = b.dataset.r;
           actions.querySelectorAll('#range-toggle button').forEach((x) => x.classList.toggle('is-on', x === b));
           load();
         };
@@ -107,18 +113,22 @@
       const body = root.querySelector('#dash-body');
 
       let dashData = null;
+      let loadSeq = 0;
       async function load() {
+        const seq = ++loadSeq;
         dashData = null;
         body.innerHTML = loadingBlock();
         try {
           const [overview, series, breakdown, logs] = await Promise.all([
-            API.get('/api/stats/overview'),
-            API.get('/api/stats/series?hours=' + dashRange.hours),
-            API.get('/api/stats/breakdown?hours=' + dashRange.hours),
+            API.get('/api/stats/overview?range=' + dashRange.key),
+            API.get('/api/stats/series?range=' + dashRange.key),
+            API.get('/api/stats/breakdown?range=' + dashRange.key),
             API.get('/api/logs?limit=8'),
           ]);
+          if (seq !== loadSeq) return;
           dashData = { overview, series, breakdown, logs };
         } catch (e) {
+          if (seq !== loadSeq) return;
           body.innerHTML = `<div class="card card--pad"><div class="alert alert--warn">${icon('alert', 16)}<div>${esc(e.message)}</div></div></div>`;
           return;
         }
@@ -128,14 +138,14 @@
       function renderBody() {
         hideTip();
         const { overview, series, breakdown, logs } = dashData;
-        const t = overview.today;
-        const y = overview.yesterday;
+        const t = overview.current;
+        const y = overview.previous;
         const delta = (cur, prev) => {
           if (!prev) return cur > 0 ? '<span class="stat__delta up">新增</span>' : '<span class="muted">—</span>';
           const d = ((cur - prev) / prev) * 100;
           const cls = d >= 0 ? 'up' : 'down';
           const arrow = d >= 0 ? '↑' : '↓';
-          return `<span class="stat__delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)}%</span> 较昨日`;
+          return `<span class="stat__delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)}%</span> ${dashRangeInfo().compare}`;
         };
 
         const points = series.points || [];
@@ -145,19 +155,18 @@
         body.innerHTML = `
           <div class="stat-grid">
             <div class="stat">
-              <div class="stat__label">${icon('zap', 13)}今日请求</div>
+              <div class="stat__label">${icon('zap', 13)}${dashRangeInfo().label}请求</div>
               <div class="stat__value">${fmtDash(t.requests)}<small>次</small></div>
               <div class="stat__foot">${delta(t.requests, y.requests)}</div>
             </div>
             <div class="stat">
-              <div class="stat__label">${icon('bolt', 13)}今日 Token</div>
+              <div class="stat__label">${icon('bolt', 13)}${dashRangeInfo().label} Token</div>
               <div class="stat__value">${fmtDash(t.total_tokens)}</div>
               <div class="stat__foot">${delta(t.total_tokens, y.total_tokens)}</div>
             </div>
             <div class="stat">
               <div class="stat__label">${icon('check', 13)}成功率</div>
-              <div class="stat__value">${t.requests ? t.success_rate.toFixed(1) : '100.0'}<small>%</small></div>
-              <div class="stat__foot">${t.errors ? `<span class="stat__delta down">${fmtDash(t.errors)} 次失败</span>` : '全部成功'}</div>
+              <div class="stat__value" style="color:${rateColor(t.requests ? t.success_rate : 100)}">${t.requests ? t.success_rate.toFixed(1) : '100.0'}<small style="color:inherit">%</small></div>
             </div>
             <div class="stat">
               <div class="stat__label">${icon('clock', 13)}平均速度</div>
@@ -199,7 +208,7 @@
               <div class="card__head">
                 <div>
                   <div class="card__title">模型调用分布</div>
-                  <div class="card__sub">近 ${dashRange.hours === 24 ? '24 小时' : dashRange.hours / 24 + ' 天'}</div>
+                  <div class="card__sub">${dashRangeInfo().label}</div>
                 </div>
               </div>
               <div class="card__body"><div id="model-donut"></div></div>
@@ -578,6 +587,10 @@
           </div>
           <button class="drawer__close" data-close aria-label="关闭">${icon('x', 17)}</button>
         </div>
+        <div class="drawer__actions">
+          <button class="btn btn--sm" data-act="copy">${icon('copy', 13)}复制模型 ID</button>
+          <button class="btn btn--sm btn--primary" data-act="chat" ${m.available ? '' : 'disabled'}>${icon('chat', 13)}去对话</button>
+        </div>
         <div class="drawer__body">
           ${m.description ? `<div class="drawer__section"><div class="alert alert--pink">${icon('info', 15)}<div>${esc(m.description)}</div></div></div>` : ''}
 
@@ -627,13 +640,6 @@
                 ? `<b style="color:${rateColor(m.success_rate)}">${m.success_rate.toFixed(1)}%</b>`
                 : '<span class="muted">暂无调用记录</span>')}
             </dl>
-          </div>
-
-          <div class="drawer__section">
-            <div class="btn-row">
-              <button class="btn btn--sm" data-act="copy">${icon('copy', 13)}复制模型 ID</button>
-              <button class="btn btn--sm btn--primary" data-act="chat" ${m.available ? '' : 'disabled'}>${icon('chat', 13)}去对话</button>
-            </div>
           </div>
         </div>
       </aside>`;
@@ -846,7 +852,10 @@
                     </select>
                     <div class="chat-model-meta">
                       <span class="badge badge--pink" id="chat-kind"></span>
-                      <span class="muted fs-12" id="chat-route"></span>
+                      <span class="chat-route-row">
+                        <span class="muted fs-12 chat-route-text" id="chat-route"></span>
+                        <button class="btn btn--ghost btn--icon btn--sm chat-route-toggle" id="chat-route-toggle" title="展开" aria-label="展开" aria-expanded="false" hidden>${icon('chevron', 12)}</button>
+                      </span>
                     </div>
                   </div>
                   <div class="chat-field">
@@ -857,7 +866,10 @@
                     </div>
                   </div>
                   <div class="chat-field">
-                    <div class="chat-field__label">参数</div>
+                    <div class="chat-field__head">
+                      <div class="chat-field__label">参数</div>
+                      <button class="btn btn--ghost btn--sm chat-field__reset" id="chat-params-reset" title="恢复默认参数">${icon('refresh', 12)}重置</button>
+                    </div>
                     <div class="chat-params">
                       ${paramDefs.map(paramRowHtml).join('')}
                     </div>
@@ -911,7 +923,9 @@
       const mobileModelSel = root.querySelector('#chat-mobile-model');
       const modelSel = root.querySelector('#chat-model');
       const kindEl = root.querySelector('#chat-kind');
+      const modelMeta = root.querySelector('.chat-model-meta');
       const routeEl = root.querySelector('#chat-route');
+      const routeToggle = root.querySelector('#chat-route-toggle');
       const log = root.querySelector('#chat-log');
       const text = root.querySelector('#chat-text');
       const sendBtn = root.querySelector('#chat-send');
@@ -925,6 +939,7 @@
       const normalFields = root.querySelector('#chat-normal-fields');
       const customEditor = root.querySelector('#chat-custom-body');
       const customHint = root.querySelector('#chat-custom-hint');
+      const paramsReset = root.querySelector('#chat-params-reset');
       const attWrap = root.querySelector('#chat-attachments');
       const imageInput = root.querySelector('#chat-image-input');
       const fileInput = root.querySelector('#chat-file-input');
@@ -1028,16 +1043,52 @@
 
       const currentModel = () => usable.find((m) => m.id === modelSel.value) || usable[0];
 
+      let routeExpanded = false;
+      const setRouteExpanded = (on) => {
+        routeExpanded = on;
+        routeEl.classList.toggle('is-expanded', on);
+        routeToggle.classList.toggle('is-expanded', on);
+        modelMeta.classList.toggle('is-route-open', on);
+        routeToggle.title = on ? '收起' : '展开';
+        routeToggle.setAttribute('aria-label', on ? '收起' : '展开');
+        routeToggle.setAttribute('aria-expanded', on ? 'true' : 'false');
+        if (!on) requestAnimationFrame(syncRouteToggle);
+      };
+
+      // 路由一行显示不下时才出现展开按钮；展开状态下不重新测量
+      const syncRouteToggle = () => {
+        if (!routeEl.isConnected || routeExpanded) return;
+        routeToggle.hidden = routeEl.scrollWidth <= routeEl.clientWidth + 1;
+      };
+
+      // 侧栏宽度变化或首次布局完成时都会触发，避免在页面还没排版时测错
+      const routeObserver = typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(syncRouteToggle)
+        : null;
+      if (routeObserver) routeObserver.observe(routeEl);
+
+      const setRouteText = (text) => {
+        setRouteExpanded(false);
+        routeEl.textContent = text;
+        routeToggle.hidden = true;
+        syncRouteToggle();
+        requestAnimationFrame(syncRouteToggle);
+      };
+
       const refreshMeta = () => {
         const m = currentModel();
-        kindEl.textContent = m.type === 'custom' ? '自定义模型' : '渠道模型';
-        if (m.type === 'custom') {
-          routeEl.textContent = '路由：' + (m.routes || []).map((r) => r.model_id).join(' → ');
+        const isCustom = m.type === 'custom';
+        kindEl.textContent = isCustom ? '自定义模型' : '渠道模型';
+        if (isCustom) {
+          const routes = (m.routes || []).map((r) => r.model_id);
+          setRouteText('路由：' + (routes.length ? routes.join(' → ') : '未配置'));
         } else {
-          routeEl.textContent = '来源：' + (m.channel_id || '') + (m.channel_name ? '（' + m.channel_name + '）' : '');
+          setRouteText('来源：' + (m.channel_id || '') + (m.channel_name ? '（' + m.channel_name + '）' : ''));
         }
         mobileModelSel.value = m.id;
       };
+
+      routeToggle.onclick = () => setRouteExpanded(!routeExpanded);
 
       // ---------- 内容渲染 ----------
 
@@ -1560,6 +1611,7 @@
         streamTop.classList.toggle('is-disabled', busy || customMode);
         modelSel.disabled = busy || customMode;
         mobileModelSel.disabled = busy || customMode;
+        paramsReset.disabled = busy || customMode;
         syncAllParams();
         customSwitchInput.disabled = busy;
         customSwitch.classList.toggle('is-disabled', busy);
@@ -1871,6 +1923,7 @@
         }
         modelSel.disabled = on || sending;
         mobileModelSel.disabled = on || sending;
+        paramsReset.disabled = on || sending;
         syncAllParams();
         streamInput.disabled = on || sending;
         streamToggle.classList.toggle('is-disabled', on || sending);
@@ -2326,6 +2379,20 @@
         };
       });
 
+      // 恢复默认值与默认开关状态，并同步到本地存储
+      paramsReset.onclick = () => {
+        paramDefs.forEach((p) => {
+          paramValues[p.key] = p.def;
+          paramEnabled[p.key] = p.on;
+          const row = paramEls.find((r) => r.def.key === p.key);
+          if (row) row.input.value = String(p.def);
+        });
+        syncAllParams();
+        persistParams();
+        Toast.success('参数已恢复默认');
+        text.focus();
+      };
+
       // 换模型只更新左侧的路由信息，已有的对话原样保留
       modelSel.onchange = () => {
         mobileModelSel.value = modelSel.value;
@@ -2447,6 +2514,7 @@
       chatStore.view = view;
 
       const onLeave = () => {
+        if (routeObserver) routeObserver.disconnect();
         if (chatStore.view === view) chatStore.view = null;
         const run = chatStore.run;
         if (run && run.view === view) {

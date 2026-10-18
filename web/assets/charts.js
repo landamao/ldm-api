@@ -29,11 +29,14 @@
     return String(Math.round(v));
   }
 
+  // 看板时间统一按北京时间展示，与后端统计区间一致。
+  const BJ_OFFSET = 8 * 3600 * 1000;
+
   function timeLabel(ms, spanMs) {
-    const d = new Date(ms);
+    const d = new Date(ms + BJ_OFFSET);
     const p = (x) => String(x).padStart(2, '0');
-    if (spanMs > 36 * 3600 * 1000) return `${d.getMonth() + 1}/${d.getDate()}`;
-    return `${p(d.getHours())}:${p(d.getMinutes())}`;
+    if (spanMs > 36 * 3600 * 1000) return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+    return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
   }
 
   // 全局 tooltip 单例
@@ -173,9 +176,9 @@
 
       function fullLabel(i) {
         if (opts.times && opts.times[i]) {
-          const d = new Date(opts.times[i]);
+          const d = new Date(opts.times[i] + BJ_OFFSET);
           const p = (x) => String(x).padStart(2, '0');
-          return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:00`;
+          return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:00`;
         }
         return labels[i] || '';
       }

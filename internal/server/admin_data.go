@@ -154,15 +154,62 @@ func (s *Server) clearLogs(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 统计 ----------
 
-func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).UnixMilli()
-	yStart := todayStart - 24*3600*1000
+// dashboardLocation 让看板的自然日 / 周 / 月固定按北京时间划分，不受服务器时区影响。
+var dashboardLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
-	today, _ := s.store.RangeStats(todayStart, now.UnixMilli())
-	yesterday, _ := s.store.RangeStats(yStart, todayStart-1)
-	last7, _ := s.store.RangeStats(todayStart-6*24*3600*1000, now.UnixMilli())
-	all, _ := s.store.RangeStats(0, now.UnixMilli())
+// statRange 是看板选中的自然时间区间及其上一周期的同期区间。
+type statRange struct {
+	Key       string
+	Start     time.Time
+	PrevStart time.Time
+	PrevEnd   time.Time
+	Step      time.Duration // 时间序列的聚合粒度
+}
+
+func parseStatRange(key string, now time.Time) statRange {
+	now = now.In(dashboardLocation)
+	switch key {
+	case "week":
+		start := startOfWeek(now)
+		prevStart := start.AddDate(0, 0, -7)
+		return statRange{Key: "week", Start: start, PrevStart: prevStart, PrevEnd: prevStart.Add(now.Sub(start)), Step: 24 * time.Hour}
+	case "month":
+		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		prevStart := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, now.Location())
+		prevEnd := prevStart.Add(now.Sub(start))
+		// 上月天数比本月少时，同期区间最多到本月 1 号。
+		if prevEnd.After(start) {
+			prevEnd = start
+		}
+		return statRange{Key: "month", Start: start, PrevStart: prevStart, PrevEnd: prevEnd, Step: 24 * time.Hour}
+	default:
+		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		prevStart := start.AddDate(0, 0, -1)
+		return statRange{Key: "today", Start: start, PrevStart: prevStart, PrevEnd: prevStart.Add(now.Sub(start)), Step: time.Hour}
+	}
+}
+
+// startOfWeek 返回本周一 0 点。
+func startOfWeek(t time.Time) time.Time {
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	wd := int(day.Weekday())
+	if wd == 0 {
+		wd = 7
+	}
+	return day.AddDate(0, 0, -(wd - 1))
+}
+
+// localDayStart 把毫秒时间戳对齐到本地自然日 0 点。
+func localDayStart(ms int64, loc *time.Location) int64 {
+	t := time.UnixMilli(ms).In(loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).UnixMilli()
+}
+
+func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().In(dashboardLocation)
+	rng := parseStatRange(r.URL.Query().Get("range"), now)
+	current, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
+	previous, _ := s.store.RangeStats(rng.PrevStart.UnixMilli(), rng.PrevEnd.UnixMilli()-1)
 
 	chans, _ := s.store.ListChannels()
 	models, _ := s.store.ListModels()
@@ -181,10 +228,9 @@ func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeOK(w, map[string]any{
-		"today":       sumBuckets(today),
-		"yesterday":   sumBuckets(yesterday),
-		"last7days":   sumBuckets(last7),
-		"all_time":    sumBuckets(all),
+		"range":       rng.Key,
+		"current":     sumBuckets(current),
+		"previous":    sumBuckets(previous),
 		"channels":    map[string]int{"total": len(chans), "enabled": enabledChans},
 		"models":      map[string]int{"total": len(models), "enabled": enabledModels},
 		"tokens":      map[string]int{"total": len(tokens)},
@@ -238,60 +284,27 @@ func sumBuckets(bs []store.Bucket) bucketSummary {
 	return out
 }
 
-// statsSeries 返回按小时（或按天）聚合的时间序列。
+// statsSeries 返回按小时（今天）或按自然日（本周 / 本月）聚合的时间序列。
 func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
-	now := time.Now()
-	hours := atoiDefault(r.URL.Query().Get("hours"), 24)
-	if hours <= 0 || hours > 24*90 {
-		hours = 24
-	}
-	from := now.Add(-time.Duration(hours) * time.Hour)
-	// 起点对齐到整点，保证序列完整
-	from = from.Truncate(time.Hour)
-	buckets, _ := s.store.RangeStats(from.UnixMilli(), now.UnixMilli())
-	byHour := map[int64]store.Bucket{}
+	now := time.Now().In(dashboardLocation)
+	rng := parseStatRange(r.URL.Query().Get("range"), now)
+	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
+
+	byKey := map[int64]store.Bucket{}
 	for _, b := range buckets {
-		byHour[b.Hour] = b
-	}
-	step := int64(3600 * 1000)
-	if hours > 24*3 {
-		// 长区间按天聚合，避免点数过多
-		step = 24 * 3600 * 1000
-		byHour = map[int64]store.Bucket{}
-		for _, b := range buckets {
-			day := b.Hour / step * step
-			acc := byHour[day]
-			acc.Hour = day
-			acc.Requests += b.Requests
-			acc.Errors += b.Errors
-			acc.PromptTokens += b.PromptTokens
-			acc.CompletionTokens += b.CompletionTokens
-			acc.TotalTokens += b.TotalTokens
-			acc.LatencySum += b.LatencySum
-			acc.SpeedCount += b.SpeedCount
-			acc.SpeedSum += b.SpeedSum
-			acc.SpeedLatencySum += b.SpeedLatencySum
-			acc.SpeedFirstByteSum += b.SpeedFirstByteSum
-			if acc.ModelCounts == nil {
-				acc.ModelCounts = map[string]int64{}
-			}
-			for k, v := range b.ModelCounts {
-				acc.ModelCounts[k] += v
-			}
-			if acc.ModelErrors == nil {
-				acc.ModelErrors = map[string]int64{}
-			}
-			for k, v := range b.ModelErrors {
-				acc.ModelErrors[k] += v
-			}
-			if acc.ChannelCounts == nil {
-				acc.ChannelCounts = map[string]int64{}
-			}
-			for k, v := range b.ChannelCounts {
-				acc.ChannelCounts[k] += v
-			}
-			byHour[day] = acc
+		key := b.Hour
+		if rng.Step >= 24*time.Hour {
+			key = localDayStart(b.Hour, now.Location())
 		}
+		acc := byKey[key]
+		acc.Hour = key
+		acc.Requests += b.Requests
+		acc.Errors += b.Errors
+		acc.PromptTokens += b.PromptTokens
+		acc.CompletionTokens += b.CompletionTokens
+		acc.TotalTokens += b.TotalTokens
+		acc.LatencySum += b.LatencySum
+		byKey[key] = acc
 	}
 
 	type point struct {
@@ -303,28 +316,33 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 		CompTokens   int64   `json:"completion_tokens"`
 		AvgLatency   float64 `json:"avg_latency"`
 	}
-	start := from.UnixMilli() / step * step
 	points := []point{}
-	for t := start; t <= now.UnixMilli(); t += step {
-		b := byHour[t]
-		p := point{Time: t, Requests: b.Requests, Errors: b.Errors,
+	for t := rng.Start; !t.After(now); {
+		key := t.UnixMilli()
+		if rng.Step < 24*time.Hour {
+			key = t.Truncate(time.Hour).UnixMilli()
+		}
+		b := byKey[key]
+		p := point{Time: key, Requests: b.Requests, Errors: b.Errors,
 			TotalTokens: b.TotalTokens, PromptTokens: b.PromptTokens, CompTokens: b.CompletionTokens}
 		if b.Requests > 0 {
 			p.AvgLatency = float64(b.LatencySum) / float64(b.Requests)
 		}
 		points = append(points, p)
+		if rng.Step >= 24*time.Hour {
+			t = t.AddDate(0, 0, 1)
+		} else {
+			t = t.Add(rng.Step)
+		}
 	}
-	writeOK(w, map[string]any{"step_ms": step, "points": points})
+	writeOK(w, map[string]any{"step_ms": int64(rng.Step / time.Millisecond), "points": points})
 }
 
 // statsBreakdown 返回按模型 / 渠道 / 令牌的调用分布。
 func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
-	hours := atoiDefault(r.URL.Query().Get("hours"), 24)
-	if hours <= 0 || hours > 24*90 {
-		hours = 24
-	}
-	from := time.Now().Add(-time.Duration(hours) * time.Hour).UnixMilli()
-	buckets, _ := s.store.RangeStats(from, time.Now().UnixMilli())
+	now := time.Now().In(dashboardLocation)
+	rng := parseStatRange(r.URL.Query().Get("range"), now)
+	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
 
 	models := map[string]int64{}
 	channels := map[string]int64{}

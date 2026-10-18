@@ -1199,7 +1199,7 @@ func TestRelayRefusesChannelWithoutBaseURL(t *testing.T) {
 		t.Fatal("没有接口地址的渠道不应转发成功")
 	}
 	// 内部配置错误只进日志，对外只给笼统的不可用提示。
-	if !strings.Contains(rec.Body.String(), "暂时不可用") {
+	if !strings.Contains(rec.Body.String(), "暂不可用") {
 		t.Errorf("应给出笼统错误，实际响应：%s", rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), "没有配置接口地址") {
@@ -1406,21 +1406,129 @@ func TestStatsOverviewAverageSpeed(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	var today map[string]any
-	if err := json.Unmarshal(out["today"], &today); err != nil {
+	var current map[string]any
+	if err := json.Unmarshal(out["current"], &current); err != nil {
 		t.Fatal(err)
 	}
-	if got := today["speed_samples"].(float64); got != 1 {
+	if got := current["speed_samples"].(float64); got != 1 {
 		t.Errorf("速度样本数应为 1，得到 %v", got)
 	}
-	if got := today["avg_speed"].(float64); math.Abs(got-1000.0/15) > 0.001 {
+	if got := current["avg_speed"].(float64); math.Abs(got-1000.0/15) > 0.001 {
 		t.Errorf("平均速度应为 %.4f，得到 %v", 1000.0/15, got)
 	}
-	if got := today["avg_first_byte"].(float64); got != 500 {
+	if got := current["avg_first_byte"].(float64); got != 500 {
 		t.Errorf("平均首字应为 500，得到 %v", got)
 	}
-	if got := today["avg_speed_latency"].(float64); got != 2000 {
+	if got := current["avg_speed_latency"].(float64); got != 2000 {
 		t.Errorf("平均总耗时应为 2000，得到 %v", got)
+	}
+}
+
+// 顶部统计按自然日 / 周 / 月划分，并对比上一周期的同期区间。
+func TestStatsOverviewRangeComparison(t *testing.T) {
+	now := time.Now().In(dashboardLocation)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	weekStart := startOfWeek(now)
+
+	cases := []struct {
+		key        string
+		previousAt time.Time
+	}{
+		{"today", todayStart.AddDate(0, 0, -1)},
+		{"week", weekStart.AddDate(0, 0, -7)},
+		{"month", time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, now.Location())},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			s, _ := newTestServer(t, "stats-range-"+tc.key)
+			_ = s.store.RecordStat(store.Log{Time: now.UnixMilli(), StatusCode: 200, TotalTokens: 10})
+			_ = s.store.RecordStat(store.Log{Time: tc.previousAt.UnixMilli(), StatusCode: 200, TotalTokens: 5})
+
+			rec := httptest.NewRecorder()
+			s.statsOverview(rec, httptest.NewRequest(http.MethodGet, "/api/stats/overview?range="+tc.key, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+			}
+			var out struct {
+				Range    string         `json:"range"`
+				Current  map[string]any `json:"current"`
+				Previous map[string]any `json:"previous"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatal(err)
+			}
+			if out.Range != tc.key {
+				t.Errorf("区间应为 %s，得到 %s", tc.key, out.Range)
+			}
+			if got := out.Current["requests"].(float64); got != 1 {
+				t.Errorf("当前区间应有 1 次请求，得到 %v", got)
+			}
+			if got := out.Previous["requests"].(float64); got != 1 {
+				t.Errorf("上一周期同期应有 1 次请求，得到 %v", got)
+			}
+		})
+	}
+}
+
+// 看板区间固定按北京时间，即使调用方传入其他时区。
+func TestParseStatRangeUsesBeijingTime(t *testing.T) {
+	now := time.Date(2026, 10, 19, 17, 0, 0, 0, time.UTC) // 北京时间 10-20 01:00
+	rng := parseStatRange("today", now)
+	wantStart := time.Date(2026, 10, 20, 0, 0, 0, 0, dashboardLocation).UnixMilli()
+	if rng.Start.UnixMilli() != wantStart {
+		t.Errorf("今天应从北京时间 0 点开始，得到 %s", rng.Start)
+	}
+	if want := time.Date(2026, 10, 19, 0, 0, 0, 0, dashboardLocation).UnixMilli(); rng.PrevStart.UnixMilli() != want {
+		t.Errorf("昨天应从北京时间 0 点开始，得到 %s", rng.PrevStart)
+	}
+}
+
+// 时间序列按今天的小时、本周/本月的自然日聚合。
+func TestStatsSeriesRangeBuckets(t *testing.T) {
+	s, _ := newTestServer(t, "stats-series-range")
+	now := time.Now().In(dashboardLocation)
+	_ = s.store.RecordStat(store.Log{Time: now.UnixMilli(), StatusCode: 200, TotalTokens: 10})
+
+	call := func(key string) (int64, []struct {
+		Time     int64 `json:"time"`
+		Requests int64 `json:"requests"`
+	}) {
+		rec := httptest.NewRecorder()
+		s.statsSeries(rec, httptest.NewRequest(http.MethodGet, "/api/stats/series?range="+key, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+		}
+		var out struct {
+			StepMs int64 `json:"step_ms"`
+			Points []struct {
+				Time     int64 `json:"time"`
+				Requests int64 `json:"requests"`
+			} `json:"points"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.StepMs, out.Points
+	}
+
+	if step, points := call("today"); step != 3600000 {
+		t.Errorf("今天应按小时聚合，得到 step_ms=%d", step)
+	} else if len(points) != now.Hour()+1 {
+		t.Errorf("今天应有 %d 个小时点，得到 %d", now.Hour()+1, len(points))
+	} else if points[len(points)-1].Requests != 1 {
+		t.Errorf("最后一个小时点应包含当前请求，得到 %d", points[len(points)-1].Requests)
+	}
+
+	if step, points := call("week"); step != 86400000 {
+		t.Errorf("本周应按天聚合，得到 step_ms=%d", step)
+	} else if want := (int(now.Weekday())+6)%7 + 1; len(points) != want {
+		t.Errorf("本周应有 %d 个天点，得到 %d", want, len(points))
+	}
+
+	if step, points := call("month"); step != 86400000 {
+		t.Errorf("本月应按天聚合，得到 step_ms=%d", step)
+	} else if len(points) != now.Day() {
+		t.Errorf("本月应有 %d 个天点，得到 %d", now.Day(), len(points))
 	}
 }
 

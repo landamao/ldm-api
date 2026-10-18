@@ -661,7 +661,7 @@ func writeAPIError(w http.ResponseWriter, code int, typ, msg string) {
 
 // clientErrorMessage 把网关自身的失败原因收敛成不含渠道、上游地址等细节的对外文案。
 func clientErrorMessage(modelID string) string {
-	return "模型「" + modelID + "」暂时不可用，请稍后重试"
+	return "模型「" + modelID + "」暂不可用，请稍后重试"
 }
 
 func cleanNetErr(err error) string {
