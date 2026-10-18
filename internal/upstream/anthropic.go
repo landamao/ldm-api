@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -250,6 +251,17 @@ func convertUserContent(content any, vision bool) []any {
 				if img := convertImageAnthropic(p); img != nil {
 					out = append(out, img)
 				}
+			case "file", "input_file":
+				if f := convertFileAnthropic(p); f != nil {
+					out = append(out, f)
+				}
+			case "document":
+				// 已经是 Anthropic 原生 document 块时原样透传
+				if asMap(p["source"]) != nil {
+					out = append(out, p)
+				} else if f := convertFileAnthropic(p); f != nil {
+					out = append(out, f)
+				}
 			}
 		}
 	}
@@ -263,6 +275,9 @@ func convertImageAnthropic(p map[string]any) map[string]any {
 	url := ""
 	if u := asMap(p["image_url"]); u != nil {
 		url = str(u["url"])
+	} else {
+		// OpenAI Responses 风格的 input_image 直接把地址放在 image_url 上
+		url = str(p["image_url"])
 	}
 	if url == "" {
 		url = str(p["url"])
@@ -284,6 +299,106 @@ func convertImageAnthropic(p map[string]any) map[string]any {
 		}
 	}
 	return map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": url}}
+}
+
+// convertFileAnthropic 把 OpenAI 风格的 file / input_file 内容块翻译成
+// Anthropic 的 document 块。图片类附件仍走 image 块，文本附件解码后走 text source。
+func convertFileAnthropic(p map[string]any) map[string]any {
+	file := asMap(p["file"])
+	if file == nil {
+		file = p
+	}
+	filename := str(file["filename"])
+	if filename == "" {
+		filename = str(p["filename"])
+	}
+	data := str(file["file_data"])
+	if data == "" {
+		data = str(file["data"])
+	}
+	if data == "" {
+		data = str(file["file_url"])
+	}
+	if data == "" {
+		data = str(file["url"])
+	}
+	if data == "" {
+		if id := str(file["file_id"]); id != "" {
+			return map[string]any{
+				"type":   "document",
+				"source": map[string]any{"type": "file", "file_id": id},
+			}
+		}
+		return nil
+	}
+
+	if strings.HasPrefix(data, "data:") {
+		rest := strings.TrimPrefix(data, "data:")
+		semi := strings.Index(rest, ";base64,")
+		if semi < 0 {
+			return nil
+		}
+		media := rest[:semi]
+		raw := rest[semi+len(";base64,"):]
+		if strings.HasPrefix(media, "image/") {
+			return map[string]any{
+				"type":   "image",
+				"source": map[string]any{"type": "base64", "media_type": media, "data": raw},
+			}
+		}
+		if strings.HasPrefix(media, "text/") {
+			if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
+				return map[string]any{
+					"type":   "document",
+					"source": map[string]any{"type": "text", "media_type": "text/plain", "data": string(decoded)},
+				}
+			}
+		}
+		doc := map[string]any{
+			"type":   "document",
+			"source": map[string]any{"type": "base64", "media_type": media, "data": raw},
+		}
+		if filename != "" {
+			doc["title"] = filename
+		}
+		return doc
+	}
+
+	if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+		if looksLikeImage(filename, data) {
+			return map[string]any{
+				"type":   "image",
+				"source": map[string]any{"type": "url", "url": data},
+			}
+		}
+		doc := map[string]any{
+			"type":   "document",
+			"source": map[string]any{"type": "url", "url": data},
+		}
+		if filename != "" {
+			doc["title"] = filename
+		}
+		return doc
+	}
+
+	// 不是 data URL 也不是远程地址，按纯文本附件处理
+	return map[string]any{
+		"type":   "document",
+		"source": map[string]any{"type": "text", "media_type": "text/plain", "data": data},
+	}
+}
+
+func looksLikeImage(name, url string) bool {
+	s := strings.ToLower(name)
+	if s == "" {
+		s = strings.ToLower(url)
+	}
+	for _, ext := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"} {
+		if strings.Contains(s, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func convertToolChoiceAnthropic(v any) map[string]any {

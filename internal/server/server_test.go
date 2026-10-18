@@ -270,6 +270,12 @@ func TestParseModelIDs(t *testing.T) {
 	if len(got) != 2 || got[0] != "gemini-2.0-flash" {
 		t.Errorf("Gemini 格式解析失败: %v", got)
 	}
+	// 火山方舟会返回已下线模型，status=Shutdown 的不应出现在列表里
+	ark := []byte(`{"data":[{"id":"doubao-live"},{"id":"doubao-old","status":"Shutdown"}]}`)
+	got = parseModelIDs(ark)
+	if len(got) != 1 || got[0] != "doubao-live" {
+		t.Errorf("方舟模型列表应过滤已下线模型: %v", got)
+	}
 	if got := parseModelIDs([]byte(`{}`)); got != nil {
 		t.Errorf("空响应应返回 nil，得到 %v", got)
 	}
@@ -673,6 +679,126 @@ func TestRelayRefusesChannelWithoutBaseURL(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "没有配置接口地址") {
 		t.Errorf("应给出明确错误，实际响应：%s", rec.Body.String())
+	}
+}
+
+// 自定义请求体必须原样透传到上游：网关只改写模型名，不能丢掉用户额外加的字段。
+func TestChatRawBodyPassesThrough(t *testing.T) {
+	s, st := newTestServer(t, "chat-raw")
+	var got map[string]any
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer up.Close()
+
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: "A", Type: store.ChannelOpenAI, BaseURL: up.URL,
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, _ := json.Marshal(map[string]any{"raw": map[string]any{
+		"model":           "A/a",
+		"messages":        []any{map[string]any{"role": "user", "content": "hi"}},
+		"stream":          false,
+		"response_format": map[string]any{"type": "json_object"},
+		"custom_flag":     "x",
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(string(raw)))
+	rec := httptest.NewRecorder()
+	s.chat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	if got["model"] != "a" {
+		t.Errorf("模型名应被改写成上游模型，得到 %v", got["model"])
+	}
+	if got["custom_flag"] != "x" {
+		t.Errorf("自定义字段应透传，得到 %v", got["custom_flag"])
+	}
+	if rf, ok := got["response_format"].(map[string]any); !ok || rf["type"] != "json_object" {
+		t.Errorf("response_format 应透传，得到 %v", got["response_format"])
+	}
+}
+
+// 在线对话的采样参数要按开关原样转发：包括 0 值，也不能给没传的参数补默认值。
+func TestChatPassesSamplingParameters(t *testing.T) {
+	s, st := newTestServer(t, "chat-params")
+	var got map[string]any
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = nil
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer up.Close()
+
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: "A", Type: store.ChannelOpenAI, BaseURL: up.URL,
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"model":"A/a","messages":[{"role":"user","content":"hi"}],"stream":false,` +
+		`"temperature":0,"top_p":0.5,"frequency_penalty":-1.5,"presence_penalty":0.3,"max_tokens":128,"seed":42}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.chat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	want := map[string]float64{
+		"temperature": 0, "top_p": 0.5, "frequency_penalty": -1.5,
+		"presence_penalty": 0.3, "max_tokens": 128, "seed": 42,
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("%s 应为 %v，得到 %v", key, value, got[key])
+		}
+	}
+
+	// 只传部分参数时，其余参数不能凭空出现
+	body = `{"model":"A/a","messages":[{"role":"user","content":"hi"}],"stream":false,"top_p":0.5}`
+	req = httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	s.chat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, key := range []string{"temperature", "frequency_penalty", "presence_penalty", "max_tokens", "seed"} {
+		if _, ok := got[key]; ok {
+			t.Errorf("未传的 %s 不应出现在请求体里，得到 %v", key, got[key])
+		}
+	}
+}
+
+func TestChatRawBodyRequiresModel(t *testing.T) {
+	s, _ := newTestServer(t, "chat-raw-model")
+	raw := `{"raw":{"messages":[{"role":"user","content":"hi"}]}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(raw))
+	rec := httptest.NewRecorder()
+	s.chat(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("缺少 model 的自定义请求体应返回 400，得到 %d", rec.Code)
 	}
 }
 

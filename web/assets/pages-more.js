@@ -10,7 +10,7 @@
     fmtUptime, relTime, copyText, debounce, fmtContext, Theme, switchEl, colorBadge,
   } = window.LDM;
 
-  const { areaChart, barChart, donutChart, rankList, timeLabel } = window.Charts;
+  const { areaChart, barChart, donutChart, rankList, timeLabel, hideTip } = window.Charts;
 
   // 密钥默认只露头尾，点眼睛才展开——列表一屏能显示很多条，明文摆着太容易泄露
   const maskKey = (k) => {
@@ -38,6 +38,39 @@
   // 数据看板
   // ======================================================================
   const dashRange = { hours: 24 };
+  const dashMetric = { m: 'requests' };
+  const DASH_UNIT_KEY = 'ldmapi.dashboard.unit';
+  const dashUnit = { mode: 'cn' };
+  try {
+    const saved = localStorage.getItem(DASH_UNIT_KEY);
+    if (saved === 'en' || saved === 'cn' || saved === 'none') dashUnit.mode = saved;
+  } catch (e) { /* 存储不可用时用默认值 */ }
+
+  // 看板数字单位：en = K/M/B，cn = 万/亿，none = 完整数字
+  function fmtDash(n) {
+    n = Number(n) || 0;
+    const abs = Math.abs(n);
+    if (dashUnit.mode === 'none') return n.toLocaleString('zh-CN');
+    const fixed = (v) => v.toFixed(2).replace(/\.?0+$/, '');
+    if (dashUnit.mode === 'en') {
+      if (abs >= 1e9) return fixed(n / 1e9) + 'B';
+      if (abs >= 1e6) {
+        const v = n / 1e6;
+        return Math.abs(v) >= 999.995 ? fixed(n / 1e9) + 'B' : fixed(v) + 'M';
+      }
+      if (abs >= 1e3) {
+        const v = n / 1e3;
+        return Math.abs(v) >= 999.995 ? fixed(n / 1e6) + 'M' : fixed(v) + 'K';
+      }
+      return n.toLocaleString('zh-CN');
+    }
+    if (abs >= 1e8) return fixed(n / 1e8) + '亿';
+    if (abs >= 1e4) {
+      const v = n / 1e4;
+      return Math.abs(v) >= 9999.995 ? fixed(n / 1e8) + '亿' : fixed(v) + '万';
+    }
+    return n.toLocaleString('zh-CN');
+  }
 
   window.LDM.registerPage('dashboard', {
     title: '数据看板',
@@ -49,9 +82,19 @@
           <button data-h="168" class="${dashRange.hours === 168 ? 'is-on' : ''}">7 天</button>
           <button data-h="720" class="${dashRange.hours === 720 ? 'is-on' : ''}">30 天</button>
         </div>
+        <select class="select" id="dash-unit" aria-label="数字单位" style="width:auto;min-width:128px">
+          <option value="en"${dashUnit.mode === 'en' ? ' selected' : ''}>英文单位 K/M</option>
+          <option value="cn"${dashUnit.mode === 'cn' ? ' selected' : ''}>中文单位 万/亿</option>
+          <option value="none"${dashUnit.mode === 'none' ? ' selected' : ''}>无单位</option>
+        </select>
         <button class="btn" id="btn-refresh">${icon('refresh', 14)}刷新</button>`;
 
       actions.querySelector('#btn-refresh').onclick = () => window.LDM.navigate();
+      actions.querySelector('#dash-unit').onchange = (e) => {
+        dashUnit.mode = e.target.value;
+        try { localStorage.setItem(DASH_UNIT_KEY, dashUnit.mode); } catch (err) { /* 忽略配额错误 */ }
+        if (dashData) renderBody();
+      };
       actions.querySelectorAll('#range-toggle button').forEach((b) => {
         b.onclick = () => {
           dashRange.hours = Number(b.dataset.h);
@@ -63,21 +106,28 @@
       root.innerHTML = `<div id="dash-body">${loadingBlock()}</div>`;
       const body = root.querySelector('#dash-body');
 
+      let dashData = null;
       async function load() {
+        dashData = null;
         body.innerHTML = loadingBlock();
-        let overview, series, breakdown, logs;
         try {
-          [overview, series, breakdown, logs] = await Promise.all([
+          const [overview, series, breakdown, logs] = await Promise.all([
             API.get('/api/stats/overview'),
             API.get('/api/stats/series?hours=' + dashRange.hours),
             API.get('/api/stats/breakdown?hours=' + dashRange.hours),
             API.get('/api/logs?limit=8'),
           ]);
+          dashData = { overview, series, breakdown, logs };
         } catch (e) {
           body.innerHTML = `<div class="card card--pad"><div class="alert alert--warn">${icon('alert', 16)}<div>${esc(e.message)}</div></div></div>`;
           return;
         }
+        renderBody();
+      }
 
+      function renderBody() {
+        hideTip();
+        const { overview, series, breakdown, logs } = dashData;
         const t = overview.today;
         const y = overview.yesterday;
         const delta = (cur, prev) => {
@@ -96,18 +146,18 @@
           <div class="stat-grid">
             <div class="stat">
               <div class="stat__label">${icon('zap', 13)}今日请求</div>
-              <div class="stat__value">${fmtInt(t.requests)}<small>次</small></div>
+              <div class="stat__value">${fmtDash(t.requests)}<small>次</small></div>
               <div class="stat__foot">${delta(t.requests, y.requests)}</div>
             </div>
             <div class="stat">
               <div class="stat__label">${icon('bolt', 13)}今日 Token</div>
-              <div class="stat__value">${fmtNum(t.total_tokens)}</div>
+              <div class="stat__value">${fmtDash(t.total_tokens)}</div>
               <div class="stat__foot">${delta(t.total_tokens, y.total_tokens)}</div>
             </div>
             <div class="stat">
               <div class="stat__label">${icon('check', 13)}成功率</div>
               <div class="stat__value">${t.requests ? t.success_rate.toFixed(1) : '100.0'}<small>%</small></div>
-              <div class="stat__foot">${t.errors ? `<span class="stat__delta down">${fmtInt(t.errors)} 次失败</span>` : '全部成功'}</div>
+              <div class="stat__foot">${t.errors ? `<span class="stat__delta down">${fmtDash(t.errors)} 次失败</span>` : '全部成功'}</div>
             </div>
             <div class="stat">
               <div class="stat__label">${icon('clock', 13)}平均速度</div>
@@ -118,12 +168,12 @@
             </div>
             <div class="stat">
               <div class="stat__label">${icon('channels', 13)}渠道</div>
-              <div class="stat__value">${overview.channels.enabled}<small>/ ${overview.channels.total}</small></div>
+              <div class="stat__value">${fmtDash(overview.channels.enabled)}<small>/ ${fmtDash(overview.channels.total)}</small></div>
               <div class="stat__foot">已启用 / 总数</div>
             </div>
             <div class="stat">
               <div class="stat__label">${icon('models', 13)}模型</div>
-              <div class="stat__value">${overview.models.enabled}<small>/ ${overview.models.total}</small></div>
+              <div class="stat__value">${fmtDash(overview.models.enabled)}<small>/ ${fmtDash(overview.models.total)}</small></div>
               <div class="stat__foot">运行 ${fmtUptime(overview.uptime)}</div>
             </div>
           </div>
@@ -137,8 +187,8 @@
                 </div>
                 <div class="card__actions">
                   <div class="pill-toggle" id="metric-toggle">
-                    <button data-m="requests" class="is-on">请求数</button>
-                    <button data-m="tokens">Token</button>
+                    <button data-m="requests" class="${dashMetric.m === 'requests' ? 'is-on' : ''}">请求数</button>
+                    <button data-m="tokens" class="${dashMetric.m === 'tokens' ? 'is-on' : ''}">Token</button>
                   </div>
                 </div>
               </div>
@@ -201,11 +251,16 @@
                 { name: '请求数', color: '#f33b7c', values: points.map((p) => p.requests) },
                 { name: '失败数', color: '#f59e0b', values: points.map((p) => p.errors) },
               ];
-          areaChart(trendHost, { labels, times, series: s, height: 216, spanMs: series.step_ms });
+          areaChart(trendHost, {
+            labels, times, series: s, height: 216, spanMs: series.step_ms,
+            valueFmt: fmtDash,
+            axisFmt: fmtDash,
+          });
         };
-        drawTrend('requests');
+        drawTrend(dashMetric.m);
         body.querySelectorAll('#metric-toggle button').forEach((b) => {
           b.onclick = () => {
+            dashMetric.m = b.dataset.m;
             body.querySelectorAll('#metric-toggle button').forEach((x) => x.classList.toggle('is-on', x === b));
             drawTrend(b.dataset.m);
           };
@@ -213,10 +268,11 @@
 
         donutChart(body.querySelector('#model-donut'), {
           items: (breakdown.models || []).map((x) => ({ name: x.name, value: x.value })),
+          valueFmt: fmtDash,
         });
 
-        rankList(body.querySelector('#channel-rank'), breakdown.channels || [], { nameWidth: 200 });
-        rankList(body.querySelector('#token-rank'), breakdown.tokens || [], { nameWidth: 200 });
+        rankList(body.querySelector('#channel-rank'), breakdown.channels || [], { nameWidth: 200, fmt: fmtDash });
+        rankList(body.querySelector('#token-rank'), breakdown.tokens || [], { nameWidth: 200, fmt: fmtDash });
 
         const items = logs.items || [];
         body.querySelector('#recent-logs').innerHTML = items.length
@@ -231,7 +287,7 @@
                   <td>${colorBadge(l.model_id)}</td>
                   <td>${l.channel_id ? `<span class="code">${esc(l.channel_id)}</span>` : '<span class="muted">—</span>'}</td>
                   <td class="right num">${esc(fmtDuration(l.latency_ms))}</td>
-                  <td class="right num">${fmtInt(l.total_tokens)}</td>
+                  <td class="right num" title="${fmtInt(l.total_tokens)}">${fmtDash(l.total_tokens)}</td>
                   <td>${l.canceled
                     ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" title="${esc(l.error)}">${esc(l.status_code || 200)}</button>`
                     : (l.status_code > 0 && l.status_code < 400 && !l.error
@@ -598,6 +654,79 @@
     return 'var(--red-500)';
   }
 
+  // 对话状态放在页面外面：切到其它页面时请求继续在后台跑，
+  // 回到对话页再把还在进行的流重新挂到新的气泡上。
+  const CHAT_KEY = 'ldmapi.chat';
+  const CHAT_MODEL_KEY = 'ldmapi.chat.model';
+  const chatStore = {
+    history: [],
+    loaded: false,
+    run: null,
+    view: null,
+    model: '',
+  };
+  let chatQuotaWarned = false;
+
+  function loadChatHistory() {
+    try {
+      const raw = localStorage.getItem(CHAT_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function loadChatModel() {
+    try {
+      return localStorage.getItem(CHAT_MODEL_KEY) || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function persistChatModel(id) {
+    try {
+      if (id) localStorage.setItem(CHAT_MODEL_KEY, id);
+      else localStorage.removeItem(CHAT_MODEL_KEY);
+    } catch (e) { /* 存储不可用时忽略 */ }
+  }
+
+  function persistChatHistory() {
+    try {
+      if (!chatStore.history.length) localStorage.removeItem(CHAT_KEY);
+      else localStorage.setItem(CHAT_KEY, JSON.stringify(chatStore.history));
+    } catch (e) {
+      // 带图片/附件的对话可能超出 localStorage 配额：内存里继续可用，
+      // 只提醒一次，避免每发一条都弹错误
+      if (!chatQuotaWarned) {
+        chatQuotaWarned = true;
+        Toast.error('对话内容过大，无法保存到浏览器本地；刷新后附件可能丢失');
+      }
+    }
+  }
+
+  // 错误条目只用于回看和重试，永远不进入下一次请求的上下文
+  function chatContext(list) {
+    return (list || [])
+      .filter((m) => m && !m.error && m.content != null && m.content !== '')
+      .map((m) => ({ role: m.role, content: m.content }));
+  }
+
+  // 关标签页/刷新时浏览器会直接掐断请求，把已经生成的部分存下来，回来还能看到
+  window.addEventListener('beforeunload', () => {
+    const run = chatStore.run;
+    if (!run || run.discarded || run.unloadSaved || (!run.answer && !run.think)) return;
+    run.unloadSaved = true;
+    const entry = { role: 'assistant', content: run.answer, model: run.sentModel.id, stopped: true };
+    if (run.think) entry.think = run.think;
+    entry.meta = [[`模型 ${run.sentModel.id}`], ['页面关闭，已停止生成']];
+    if (run.sentModel.provider_icon) entry.provider_icon = run.sentModel.provider_icon;
+    chatStore.history.push(entry);
+    persistChatHistory();
+  });
+
   window.LDM.registerPage('chat', {
     title: '在线对话',
     desc: '在线和可用模型对话',
@@ -619,39 +748,169 @@
         return;
       }
 
-      const preset = window.LDM.routeParam('model');
+      const preset = window.LDM.routeParam('model') || chatStore.model || loadChatModel();
       const initial = usable.some((m) => m.id === preset) ? preset : usable[0].id;
+      chatStore.model = initial;
+      persistChatModel(initial);
 
-      root.innerHTML = `
-        <div class="card" style="display:flex;flex-direction:column;height:calc(100vh - 190px);min-height:440px;overflow:hidden">
-          <div class="toolbar">
-            <select class="select" id="chat-model" style="width:auto;min-width:240px;max-width:380px">
-              ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
-            </select>
-            <span class="badge badge--pink" id="chat-kind"></span>
-            <span class="muted fs-12 truncate" id="chat-route" style="max-width:320px"></span>
+      // 采样参数：每一项都能单独开关，关闭后不会出现在请求体里。
+      // 默认值与 NewAPI 保持一致，减少迁移时的落差。
+      const PARAM_KEY = 'ldmapi.chat.params';
+      const paramDefs = [
+        { key: 'temperature', label: '温度', min: 0, max: 2, step: 0.1, def: 0.7, on: true },
+        { key: 'top_p', label: 'Top P', min: 0, max: 1, step: 0.05, def: 1, on: true },
+        { key: 'max_tokens', label: '最大 Token', type: 'number', def: 4096, on: false },
+        { key: 'frequency_penalty', label: '频率惩罚', min: -2, max: 2, step: 0.1, def: 0, on: true },
+        { key: 'presence_penalty', label: '存在惩罚', min: -2, max: 2, step: 0.1, def: 0, on: true },
+        { key: 'seed', label: '种子', type: 'number', def: '', on: false },
+      ];
+      const paramValues = {};
+      const paramEnabled = {};
+      paramDefs.forEach((p) => {
+        paramValues[p.key] = p.def;
+        paramEnabled[p.key] = p.on;
+      });
+      try {
+        const saved = JSON.parse(localStorage.getItem(PARAM_KEY) || 'null');
+        if (saved && typeof saved === 'object') {
+          paramDefs.forEach((p) => {
+            if (saved.values && saved.values[p.key] !== undefined && saved.values[p.key] !== null) {
+              paramValues[p.key] = saved.values[p.key];
+            }
+            if (saved.enabled && typeof saved.enabled[p.key] === 'boolean') {
+              paramEnabled[p.key] = saved.enabled[p.key];
+            }
+          });
+        }
+      } catch (e) { /* 存储不可用时使用默认值 */ }
+
+      const paramRowHtml = (p) => {
+        const value = paramValues[p.key];
+        const shown = String(value === '' ? '—' : value);
+        const control = p.type === 'number'
+          ? `<input class="input input--sm chat-param__num" id="chat-param-${p.key}" type="number" min="0" step="1" value="${esc(String(value))}" placeholder="${p.key === 'seed' ? '留空则随机' : '不限制'}">`
+          : `<input class="chat-range" id="chat-param-${p.key}" type="range" min="${p.min}" max="${p.max}" step="${p.step}" value="${esc(String(value))}">`;
+        return `<div class="chat-param" data-param="${p.key}">
+          <div class="chat-param__head">
+            <span class="chat-param__label">${p.label}</span>
+            <span class="chat-param__value" id="chat-param-${p.key}-value">${esc(shown)}</span>
             <div class="toolbar__spacer"></div>
-            ${switchEl(true, '流式输出', 'id="chat-stream" title="关闭后等完整回复再一次性显示"')}
-            <label class="muted fs-12" for="chat-temp">温度</label>
-            <input class="input input--sm" id="chat-temp" type="number" min="0" max="2" step="0.1" value="0.7" style="width:76px">
-            <button class="btn btn--sm" id="chat-clear">${icon('trash', 13)}清空对话</button>
+            ${switchEl(paramEnabled[p.key], '', `id="chat-param-${p.key}-enable" title="开启后发送 ${p.key} 参数"`)}
           </div>
-          <div class="chat-log" id="chat-log" style="flex:1"></div>
-          <div class="chat-input">
-            <textarea class="textarea" id="chat-text" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
-            <button class="btn btn--primary" id="chat-send">${icon('send', 14)}发送</button>
+          ${control}
+        </div>`;
+      };
+
+      root.classList.add('content__inner--fill');
+      root.innerHTML = `
+        <div class="card chat-card" id="chat-card">
+          <div class="chat-layout" id="chat-layout">
+            <div class="chat-side-scrim" id="chat-side-scrim"></div>
+            <aside class="chat-side" id="chat-side">
+              <div class="chat-side__head">
+                ${icon('settings', 15)}
+                <span class="chat-side__title">模型配置</span>
+                <button class="btn btn--ghost btn--icon btn--sm chat-side__close" id="chat-side-close" title="收起设置" aria-label="收起设置">${icon('x', 15)}</button>
+              </div>
+              <div class="chat-side__body">
+                <div class="chat-field chat-custom-toggle">
+                  <div class="chat-switch-row">
+                    <span class="chat-switch-row__label">自定义请求体</span>
+                    ${switchEl(false, '', 'id="chat-custom-switch" title="开启后直接发送下方编辑的 JSON"')}
+                  </div>
+                </div>
+                <div class="chat-fields" id="chat-normal-fields">
+                  <div class="chat-field">
+                    <label class="chat-field__label" for="chat-model">模型</label>
+                    <select class="select" id="chat-model">
+                      ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
+                    </select>
+                    <div class="chat-model-meta">
+                      <span class="badge badge--pink" id="chat-kind"></span>
+                      <span class="muted fs-12" id="chat-route"></span>
+                    </div>
+                  </div>
+                  <div class="chat-field">
+                    <div class="chat-field__label">生成</div>
+                    <div class="chat-switch-row">
+                      <span class="chat-switch-row__label">流式输出</span>
+                      ${switchEl(true, '', 'id="chat-stream" title="关闭后等完整回复再一次性显示"')}
+                    </div>
+                  </div>
+                  <div class="chat-field">
+                    <div class="chat-field__label">参数</div>
+                    <div class="chat-params">
+                      ${paramDefs.map(paramRowHtml).join('')}
+                    </div>
+                  </div>
+                </div>
+                <div class="chat-custom" id="chat-custom" hidden>
+                  <div class="chat-custom__head">
+                    <span class="chat-custom__title">请求体 JSON</span>
+                    <div class="toolbar__spacer"></div>
+                    <button class="btn btn--sm" id="chat-custom-format">格式化</button>
+                    <button class="btn btn--sm" id="chat-custom-reset">重置</button>
+                  </div>
+                  <div class="muted fs-12">发送时使用下方 JSON 原文；模型与流式以 JSON 为准，输入框的图片/附件不会自动加入</div>
+                  <textarea class="textarea chat-custom__body" id="chat-custom-body" spellcheck="false" placeholder='{"model":"...","messages":[...],"stream":true}'></textarea>
+                  <div class="chat-custom__hint muted fs-12" id="chat-custom-hint"></div>
+                </div>
+              </div>
+              <div class="chat-side__foot">
+                <button class="btn btn--sm btn--block" id="chat-clear">${icon('trash', 13)}清空对话</button>
+              </div>
+            </aside>
+            <div class="chat-main">
+              <div class="chat-mobile-bar">
+                <button class="btn btn--ghost btn--icon" id="chat-side-toggle" title="展开设置" aria-label="展开设置">${icon('settings', 16)}</button>
+                <select class="select chat-mobile-bar__model" id="chat-mobile-model" aria-label="模型">
+                  ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
+                </select>
+                ${switchEl(true, '流式', 'id="chat-stream-top" title="流式输出"')}
+              </div>
+              <div class="chat-log" id="chat-log"></div>
+              <div class="chat-compose">
+                <div class="chat-attachments" id="chat-attachments"></div>
+                <div class="chat-input">
+                  <button class="btn btn--ghost btn--icon" id="chat-pick-image" title="添加图片">${icon('image', 16)}</button>
+                  <button class="btn btn--ghost btn--icon" id="chat-pick-file" title="添加附件">${icon('paperclip', 16)}</button>
+                  <textarea class="textarea" id="chat-text" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行；可粘贴或拖入图片/附件"></textarea>
+                  <button class="btn btn--primary" id="chat-send">${icon('send', 14)}发送</button>
+                </div>
+              </div>
+            </div>
           </div>
+          <input type="file" id="chat-image-input" accept="image/*" multiple hidden>
+          <input type="file" id="chat-file-input" multiple hidden>
         </div>`;
 
+      const card = root.querySelector('#chat-card');
+      const layout = root.querySelector('#chat-layout');
+      const sideToggle = root.querySelector('#chat-side-toggle');
+      const sideClose = root.querySelector('#chat-side-close');
+      const sideScrim = root.querySelector('#chat-side-scrim');
+      const mobileModelSel = root.querySelector('#chat-mobile-model');
       const modelSel = root.querySelector('#chat-model');
       const kindEl = root.querySelector('#chat-kind');
       const routeEl = root.querySelector('#chat-route');
       const log = root.querySelector('#chat-log');
       const text = root.querySelector('#chat-text');
       const sendBtn = root.querySelector('#chat-send');
-      const tempEl = root.querySelector('#chat-temp');
       const streamToggle = root.querySelector('#chat-stream');
       const streamInput = streamToggle.querySelector('input');
+      const streamTop = root.querySelector('#chat-stream-top');
+      const streamTopInput = streamTop.querySelector('input');
+      const customSwitch = root.querySelector('#chat-custom-switch');
+      const customSwitchInput = customSwitch.querySelector('input');
+      const customPanel = root.querySelector('#chat-custom');
+      const normalFields = root.querySelector('#chat-normal-fields');
+      const customEditor = root.querySelector('#chat-custom-body');
+      const customHint = root.querySelector('#chat-custom-hint');
+      const attWrap = root.querySelector('#chat-attachments');
+      const imageInput = root.querySelector('#chat-image-input');
+      const fileInput = root.querySelector('#chat-file-input');
+      const pickImage = root.querySelector('#chat-pick-image');
+      const pickFile = root.querySelector('#chat-pick-file');
 
       // 用户消息头像用站点图标；模型回复头像用该模型所属提供商的图标。
       const siteLogo = ((State.settings && State.settings.logo) || 'assets/logo.jpg').trim() || 'assets/logo.jpg';
@@ -665,45 +924,90 @@
         return '<div class="msg__avatar">🐱</div>';
       };
 
-      let history = [];
+      // 对话只有一份，存在页面外的 chatStore 里，切页面和后台请求共用
+      const history = chatStore.history;
+      if (!chatStore.loaded) {
+        chatStore.loaded = true;
+        history.push(...loadChatHistory());
+      }
       let sending = false;
-      // 正在进行的流式请求；点「停止」时用它中断 fetch，服务端会随连接断开取消上游
-      let abortCtl = null;
+      // 暂存的图片/附件，发送后清空
+      let staged = [];
 
-      // 流式输出开关：关闭后等上游一次性返回完整回复再显示；选择记在本地
+      // 流式输出与自定义请求体开关记在本地
       const STREAM_KEY = 'ldmapi.chat.stream';
+      const CUSTOM_KEY = 'ldmapi.chat.custom';
       let streaming = true;
       try { streaming = localStorage.getItem(STREAM_KEY) !== '0'; } catch (e) { /* 存储不可用时默认开启 */ }
-      streamInput.checked = streaming;
+      let customMode = false;
+      try { customMode = localStorage.getItem(CUSTOM_KEY) === '1'; } catch (e) { /* 存储不可用 */ }
+      // 流式开关在设置栏和收起后的顶栏各有一个，始终同步
+      const setStreaming = (on) => {
+        streaming = on;
+        streamInput.checked = on;
+        streamTopInput.checked = on;
+        try { localStorage.setItem(STREAM_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
+      };
+      setStreaming(streaming);
       streamInput.onchange = () => {
-        streaming = streamInput.checked;
-        try { localStorage.setItem(STREAM_KEY, streaming ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
+        setStreaming(streamInput.checked);
+        text.focus();
+      };
+      streamTopInput.onchange = () => {
+        setStreaming(streamTopInput.checked);
         text.focus();
       };
 
-      const currentModel = () => usable.find((m) => m.id === modelSel.value) || usable[0];
+      const paramEls = paramDefs.map((p) => ({
+        def: p,
+        input: root.querySelector('#chat-param-' + p.key),
+        enable: root.querySelector('#chat-param-' + p.key + '-enable'),
+        value: root.querySelector('#chat-param-' + p.key + '-value'),
+      }));
 
-      // 对话记录按模型分别存在浏览器本地，刷新或下次打开还在
-      // 对话只有一份，切换模型不会另起一段：换模型只影响之后发出的消息
-      const CHAT_KEY = 'ldmapi.chat';
-      const loadHistory = () => {
+      const persistParams = () => {
         try {
-          const raw = localStorage.getItem(CHAT_KEY);
-          if (!raw) return [];
-          const arr = JSON.parse(raw);
-          return Array.isArray(arr) ? arr : [];
-        } catch (e) {
-          return [];
-        }
+          localStorage.setItem(PARAM_KEY, JSON.stringify({ values: paramValues, enabled: paramEnabled }));
+        } catch (e) { /* 忽略配额错误 */ }
       };
-      const persistHistory = () => {
-        try {
-          if (!history.length) localStorage.removeItem(CHAT_KEY);
-          else localStorage.setItem(CHAT_KEY, JSON.stringify(history));
-        } catch (e) {
-          // 超出 localStorage 配额时静默跳过，不影响对话
-        }
+
+      // 只收集开启且填了值的参数，关闭的参数不进入请求体
+      const collectParams = () => {
+        const out = {};
+        paramEls.forEach((row) => {
+          const key = row.def.key;
+          if (!paramEnabled[key]) return;
+          const raw = String(row.input.value).trim();
+          if (raw === '') return;
+          const num = Number(raw);
+          if (!Number.isFinite(num)) return;
+          out[key] = num;
+        });
+        return out;
       };
+
+      // 关闭的参数置灰；发送中或自定义请求体模式下整组禁用
+      const syncParamRow = (row) => {
+        const on = paramEnabled[row.def.key];
+        const locked = sending || customMode;
+        const checkbox = row.enable.querySelector('input');
+        checkbox.checked = on;
+        checkbox.disabled = locked;
+        row.enable.classList.toggle('is-disabled', locked);
+        row.input.disabled = !on || locked;
+        row.input.closest('.chat-param').classList.toggle('is-off', !on || customMode);
+        const raw = String(row.input.value).trim();
+        row.value.textContent = raw === '' ? '—' : raw;
+      };
+      const syncAllParams = () => paramEls.forEach(syncParamRow);
+
+      // 桌面端可以收起设置栏；窄屏下这个状态不生效（窄屏用抽屉）
+      const SIDE_KEY = 'ldmapi.chat.sidebar';
+      try {
+        if (localStorage.getItem(SIDE_KEY) === '0') layout.classList.add('is-settings-collapsed');
+      } catch (e) { /* 存储不可用时保持展开 */ }
+
+      const currentModel = () => usable.find((m) => m.id === modelSel.value) || usable[0];
 
       const refreshMeta = () => {
         const m = currentModel();
@@ -713,6 +1017,384 @@
         } else {
           routeEl.textContent = '来源：' + (m.channel_id || '') + (m.channel_name ? '（' + m.channel_name + '）' : '');
         }
+        mobileModelSel.value = m.id;
+      };
+
+      // ---------- 内容渲染 ----------
+
+      const fmtBytes = (n) => {
+        n = Number(n) || 0;
+        if (n < 1024) return n + ' B';
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+        return (n / (1024 * 1024)).toFixed(1) + ' MB';
+      };
+
+      const appendImage = (box, url) => {
+        const link = document.createElement('a');
+        link.className = 'msg__image-link';
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        const img = document.createElement('img');
+        img.className = 'msg__image';
+        img.src = url;
+        img.alt = '图片';
+        img.loading = 'lazy';
+        link.appendChild(img);
+        box.appendChild(link);
+      };
+
+      // 精确判断文本 MIME。不能用 contains('xml')：docx 的
+      // application/vnd.openxmlformats-... 里就带 xml，会被误判成文本。
+      const isTextMime = (mime) => {
+        const m = (mime || '').toLowerCase();
+        return m.startsWith('text/')
+          || m === 'application/json'
+          || m === 'application/xml'
+          || m === 'application/x-yaml'
+          || m === 'application/yaml'
+          || m === 'application/javascript'
+          || m === 'application/x-javascript'
+          || m === 'application/x-sh'
+          || m === 'application/x-python'
+          || m === 'application/x-httpd-php'
+          || m.endsWith('+json')
+          || m.endsWith('+xml');
+      };
+
+      // 附件统一显示成一张卡片；点击打开右侧抽屉预览。
+      const attachmentKind = (att) => {
+        if (att.kind === 'image') return 'image';
+        if (att.kind === 'text' || att.text != null) return 'text';
+        const mime = (att.mime || '').toLowerCase();
+        if (mime === 'application/pdf' || /\.pdf$/i.test(att.name || '')) return 'pdf';
+        if (mime.startsWith('image/')) return 'image';
+        if (BINARY_EXT.test(att.name || '')) return 'other';
+        if (att.kind === 'file') return isTextMime(mime) ? 'text' : 'other';
+        if (isTextMime(mime) || TEXT_EXT.test(att.name || '')) return 'text';
+        return 'other';
+      };
+
+      const attachmentLabel = (kind) => (
+        kind === 'text' ? '文本' : kind === 'image' ? '图片' : kind === 'pdf' ? 'PDF' : '二进制'
+      );
+
+      const dataUrlToBlob = (data) => {
+        if (typeof data !== 'string' || !data.startsWith('data:')) return null;
+        const comma = data.indexOf(',');
+        if (comma < 0) return null;
+        const meta = data.slice(5, comma);
+        const payload = data.slice(comma + 1);
+        const mime = meta.split(';')[0] || 'application/octet-stream';
+        try {
+          if (/;base64/i.test(meta)) {
+            const bin = atob(payload);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return new Blob([bytes], { type: mime });
+          }
+          return new Blob([decodeURIComponent(payload)], { type: mime });
+        } catch (e) {
+          return null;
+        }
+      };
+
+      // 把 data URL 里的文本解码出来，供抽屉预览（自定义请求体里可能直接带文件）
+      const dataUrlText = (data) => {
+        if (typeof data !== 'string' || !data.startsWith('data:')) return '';
+        const comma = data.indexOf(',');
+        if (comma < 0) return '';
+        const meta = data.slice(5, comma);
+        const payload = data.slice(comma + 1);
+        try {
+          if (/;base64/i.test(meta)) {
+            const bin = atob(payload);
+            const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+            return new TextDecoder().decode(bytes);
+          }
+          return decodeURIComponent(payload);
+        } catch (e) {
+          return '';
+        }
+      };
+
+      const openAttachmentDrawer = (att) => {
+        const name = att.name || '附件';
+        const mime = att.mime || '';
+        const kind = attachmentKind(att);
+        const sizeText = att.size ? fmtBytes(att.size) : '—';
+        const prev = document.activeElement;
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'drawer-backdrop';
+        backdrop.innerHTML = `
+          <aside class="drawer" role="dialog" aria-modal="true">
+            <div class="drawer__head">
+              <div style="min-width:0">
+                <div class="model-card__title-row">
+                  <span style="font-size:16px;font-weight:700;word-break:break-all">${esc(name)}</span>
+                  ${badge(attachmentLabel(kind), kind === 'text' ? 'blue' : kind === 'image' ? 'pink' : kind === 'pdf' ? 'amber' : 'gray')}
+                </div>
+              </div>
+              <button class="drawer__close" data-close aria-label="关闭">${icon('x', 17)}</button>
+            </div>
+            <div class="drawer__actions" id="att-actions"></div>
+            <div class="drawer__body">
+              <div class="drawer__section">
+                <div class="section-title">附件信息</div>
+                <dl class="kv">
+                  <dt>文件名</dt><dd>${esc(name)}</dd>
+                  <dt>大小</dt><dd>${sizeText}</dd>
+                  <dt>类型</dt><dd>${esc(mime || attachmentLabel(kind))}</dd>
+                </dl>
+              </div>
+              <div class="drawer__section">
+                <div class="section-title">预览</div>
+                <div id="att-preview"></div>
+              </div>
+            </div>
+          </aside>`;
+
+        const preview = backdrop.querySelector('#att-preview');
+        const tempUrls = [];
+        let pdfHref = '';
+        if (kind === 'text') {
+          let text = att.text;
+          if (text == null) text = dataUrlText(att.data || '');
+          if (text) {
+            const pre = document.createElement('pre');
+            pre.className = 'attachment-preview';
+            const limit = 200000;
+            pre.textContent = text.length > limit
+              ? text.slice(0, limit) + '\n\n…（内容过长，仅显示前 200000 个字符，下载后可查看完整内容）'
+              : text;
+            preview.appendChild(pre);
+          } else {
+            preview.innerHTML = '<div class="attachment-unsupported">'
+              + `${icon('file', 30)}`
+              + '<div class="attachment-unsupported__title">该附件没有可预览的文本</div>'
+              + '</div>';
+          }
+        } else if (kind === 'image' && att.data) {
+          const img = document.createElement('img');
+          img.className = 'attachment-preview__image';
+          img.src = att.data;
+          img.alt = name;
+          preview.appendChild(img);
+        } else if (kind === 'pdf' && att.data) {
+          // 浏览器内置 PDF 阅读器可以直接显示 Blob URL；
+          // 比 data URL 可靠，也不会受远程地址的 X-Frame-Options 影响。
+          pdfHref = att.data;
+          if (String(pdfHref).startsWith('data:')) {
+            const blob = dataUrlToBlob(pdfHref);
+            if (blob) {
+              pdfHref = URL.createObjectURL(blob);
+              tempUrls.push(pdfHref);
+            }
+          }
+          if (pdfHref) {
+            const frame = document.createElement('iframe');
+            frame.className = 'attachment-pdf';
+            frame.src = pdfHref;
+            frame.title = name;
+            preview.appendChild(frame);
+            const note = document.createElement('div');
+            note.className = 'muted fs-12 mt-8';
+            note.textContent = '如果预览空白，说明当前浏览器不支持内嵌 PDF，请下载后查看。';
+            preview.appendChild(note);
+          } else {
+            preview.innerHTML = '<div class="attachment-unsupported">'
+              + `${icon('file', 30)}`
+              + '<div class="attachment-unsupported__title">PDF 解析失败</div>'
+              + '<div class="muted fs-12">请下载后查看。</div>'
+              + '</div>';
+          }
+        } else {
+          preview.innerHTML = '<div class="attachment-unsupported">'
+            + `${icon('file', 30)}`
+            + '<div class="attachment-unsupported__title">该格式暂不支持在线预览</div>'
+            + '<div class="muted fs-12">Word、压缩包等二进制文件请下载后查看。</div>'
+            + '</div>';
+        }
+
+        const actions = backdrop.querySelector('#att-actions');
+        let href = att.data || '';
+        if (!href && att.text != null) {
+          const url = URL.createObjectURL(new Blob([att.text], { type: att.mime || 'text/plain' }));
+          tempUrls.push(url);
+          href = url;
+        }
+        if (href && (String(href).startsWith('data:') || String(href).startsWith('blob:') || /^https?:\/\//.test(String(href)))) {
+          const download = document.createElement('a');
+          download.className = 'btn btn--sm btn--primary';
+          download.href = href;
+          download.download = name;
+          download.target = '_blank';
+          download.rel = 'noopener';
+          download.innerHTML = icon('download', 13) + '下载附件';
+          actions.appendChild(download);
+        }
+        if (kind === 'image' && att.data) {
+          const open = document.createElement('a');
+          open.className = 'btn btn--sm';
+          open.href = att.data;
+          open.target = '_blank';
+          open.rel = 'noopener';
+          open.innerHTML = icon('eye', 13) + '新标签页打开';
+          actions.appendChild(open);
+        }
+        if (kind === 'pdf' && pdfHref) {
+          const open = document.createElement('a');
+          open.className = 'btn btn--sm';
+          open.href = pdfHref;
+          open.target = '_blank';
+          open.rel = 'noopener';
+          open.innerHTML = icon('eye', 13) + '新标签页打开';
+          actions.appendChild(open);
+        }
+
+        const close = () => {
+          backdrop.remove();
+          document.removeEventListener('keydown', onKey);
+          document.body.style.overflow = '';
+          if (tempUrls.length) {
+            setTimeout(() => tempUrls.forEach((u) => URL.revokeObjectURL(u)), 1000);
+          }
+          if (prev && prev.focus) prev.focus();
+        };
+        const onKey = (e) => { if (e.key === 'Escape') close(); };
+        backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+        backdrop.querySelector('[data-close]').onclick = close;
+        document.addEventListener('keydown', onKey);
+        document.body.appendChild(backdrop);
+        document.body.style.overflow = 'hidden';
+      };
+
+      const appendAttachment = (box, att) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'msg__file';
+        chip.title = '查看附件';
+        const ic = document.createElement('span');
+        ic.className = 'msg__file-icon';
+        ic.innerHTML = icon('file', 15);
+        chip.appendChild(ic);
+        const nm = document.createElement('span');
+        nm.className = 'msg__file-name';
+        nm.textContent = att.name || '附件';
+        chip.appendChild(nm);
+        const meta = document.createElement('span');
+        meta.className = 'msg__file-meta';
+        meta.textContent = att.size ? fmtBytes(att.size) : (att.mime || '附件');
+        chip.appendChild(meta);
+        chip.onclick = () => openAttachmentDrawer(att);
+        box.appendChild(chip);
+      };
+
+      const appendTextPart = (box, t) => {
+        if (!t) return;
+        const el = document.createElement('div');
+        el.className = 'msg__answer';
+        el.textContent = t;
+        box.appendChild(el);
+      };
+
+      // 把字符串或 OpenAI 多模态 content 数组渲染到气泡里
+      const renderContent = (box, content, clear) => {
+        if (clear !== false) box.innerHTML = '';
+        if (content == null || content === '') return;
+        if (typeof content === 'string') {
+          appendTextPart(box, content);
+          return;
+        }
+        if (!Array.isArray(content)) {
+          appendTextPart(box, String(content));
+          return;
+        }
+        for (const pv of content) {
+          if (typeof pv === 'string') {
+            appendTextPart(box, pv);
+            continue;
+          }
+          if (!pv || typeof pv !== 'object') continue;
+          const type = pv.type;
+          if (type === 'text' || type === 'input_text') {
+            appendTextPart(box, pv.text != null ? pv.text : pv.content);
+          } else if (type === 'image_url' || type === 'input_image' || type === 'image') {
+            let url = '';
+            if (typeof pv.image_url === 'string') url = pv.image_url;
+            else if (pv.image_url && pv.image_url.url) url = pv.image_url.url;
+            else if (pv.url) url = pv.url;
+            else if (pv.source && pv.source.type === 'base64' && pv.source.data) {
+              url = `data:${pv.source.media_type || 'image/png'};base64,${pv.source.data}`;
+            } else if (pv.source && pv.source.url) url = pv.source.url;
+            if (url) appendImage(box, url);
+          } else if (type === 'attachment') {
+            const a = pv.attachment || pv;
+            appendAttachment(box, {
+              kind: a.kind || (a.text != null ? 'text' : 'file'),
+              name: a.name || a.filename || '附件',
+              mime: a.mime || a.mime_type || '',
+              size: a.size,
+              text: a.text,
+              data: a.data || a.file_data || a.url || '',
+            });
+          } else if (type === 'file' || type === 'input_file' || type === 'document') {
+            const f = pv.file && typeof pv.file === 'object' ? pv.file : pv;
+            const name = f.filename || f.name || pv.filename || pv.title || '附件';
+            let data = f.file_data || f.data || f.file_url || f.url || '';
+            let mime = f.mime_type || pv.media_type || '';
+            let text = null;
+            if (!data && pv.source && typeof pv.source === 'object') {
+              const src = pv.source;
+              if (src.type === 'base64' && src.data) {
+                data = `data:${src.media_type || 'application/octet-stream'};base64,${src.data}`;
+                mime = mime || src.media_type || '';
+              } else if (src.type === 'url' && src.url) {
+                data = src.url;
+              } else if (src.type === 'text' && src.data) {
+                text = src.data;
+                mime = mime || 'text/plain';
+              }
+            }
+            if (text == null && isTextMime(mime) && !BINARY_EXT.test(name) && data) {
+              text = dataUrlText(data);
+            }
+            appendAttachment(box, {
+              kind: text != null ? 'text' : (mime.startsWith('image/') ? 'image' : 'file'),
+              name,
+              mime,
+              data,
+              text,
+              size: data ? Math.round(String(data).length * 0.75) : (text ? new Blob([text]).size : 0),
+            });
+          }
+        }
+      };
+
+      const flattenText = (content) => {
+        if (typeof content === 'string') return content;
+        if (!Array.isArray(content)) return content == null ? '' : String(content);
+        return content
+          .map((p) => {
+            if (p && typeof p === 'object') {
+              if (p.text != null) return p.text;
+              if (p.content != null) return p.content;
+              return '';
+            }
+            return String(p == null ? '' : p);
+          })
+          .filter(Boolean)
+          .join('\n');
+      };
+
+      const lastUserContent = (messages) => {
+        if (!Array.isArray(messages)) return '';
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i];
+          if (m && m.role === 'user' && m.content != null) return m.content;
+        }
+        return '';
       };
 
       const addMsg = (role, content, isError, providerIconKey) => {
@@ -720,7 +1402,7 @@
         el.className = 'msg msg--' + (role === 'user' ? 'user' : 'assistant') + (isError ? ' msg--error' : '');
         el.innerHTML = avatarHtml(role, providerIconKey)
           + '<div class="msg__body"><div class="msg__bubble"></div></div>';
-        el.querySelector('.msg__bubble').textContent = content;
+        renderContent(el.querySelector('.msg__bubble'), content);
         log.appendChild(el);
         log.scrollTop = log.scrollHeight;
         return el.querySelector('.msg__bubble');
@@ -763,7 +1445,7 @@
       // 按存下来的数据结构重建一条消息（含思考折叠块）
       const renderStored = (m) => {
         const el = document.createElement('div');
-        el.className = 'msg msg--' + (m.role === 'user' ? 'user' : 'assistant');
+        el.className = 'msg msg--' + (m.role === 'user' ? 'user' : 'assistant') + (m.error ? ' msg--error' : '');
         el.innerHTML = avatarHtml(m.role, m.role === 'user' ? '' : storedProviderIcon(m))
           + '<div class="msg__body"><div class="msg__bubble"></div></div>';
         const bubble = el.querySelector('.msg__bubble');
@@ -777,10 +1459,16 @@
           det.querySelector('.think-block__body').textContent = m.think;
           bubble.appendChild(det);
         }
-        const ans = document.createElement('div');
-        ans.className = 'msg__answer';
-        ans.textContent = m.content || '';
-        bubble.appendChild(ans);
+        const contentEl = document.createElement('div');
+        contentEl.className = 'msg__content';
+        bubble.appendChild(contentEl);
+        renderContent(contentEl, m.display || m.content || '');
+        if (m.error) {
+          const errEl = document.createElement('div');
+          errEl.className = 'msg__error-text';
+          errEl.textContent = m.error;
+          contentEl.appendChild(errEl);
+        }
         const groups = normalizeMeta(m.meta);
         if (groups.length) {
           const metaEl = document.createElement('div');
@@ -796,30 +1484,46 @@
       };
 
       const reset = () => {
-        history = [];
-        persistHistory();
+        // 清空时如果还有后台请求，先停掉并丢弃它的结果，避免往空历史里追加
+        const run = chatStore.run;
+        if (run) {
+          run.discarded = true;
+          run.view = null;
+          run.bubble = null;
+          run.msgEl = null;
+          run.thinkBlock = run.thinkBody = run.thinkMeta = run.answerEl = null;
+          run.ctl.abort();
+          chatStore.run = null;
+        }
+        history.splice(0, history.length);
+        staged = [];
+        renderStaged();
+        persistChatHistory();
         log.innerHTML = '';
+        setBusy(false);
+        if (customMode) syncCustomBody();
         refreshMeta();
-      };
-
-      // 清掉早期按模型分开存的旧记录，避免残留在本地占空间
-      const dropLegacyHistories = () => {
-        try {
-          for (let i = localStorage.length - 1; i >= 0; i--) {
-            const k = localStorage.key(i);
-            if (k && k.startsWith(CHAT_KEY + '.')) localStorage.removeItem(k);
-          }
-        } catch (e) { /* 存储不可用时忽略 */ }
       };
 
       // 进入页面时恢复上一次的对话（不生成任何占位消息）
       const restore = () => {
-        dropLegacyHistories();
-        history = loadHistory();
         log.innerHTML = '';
         refreshMeta();
-        if (!history.length) return;
         history.forEach(renderStored);
+        // 后台请求还在跑：重建一个气泡，把流重新接上来
+        const run = chatStore.run;
+        if (run) {
+          if (usable.some((m) => m.id === run.sentModel.id)) {
+            chatStore.model = run.sentModel.id;
+            persistChatModel(run.sentModel.id);
+            modelSel.value = run.sentModel.id;
+            mobileModelSel.value = run.sentModel.id;
+            refreshMeta();
+          }
+          const bubble = addMsg('assistant', '', false, run.sentModel.provider_icon);
+          run.attach(bubble, view);
+          setBusy(true);
+        }
         log.scrollTop = log.scrollHeight;
       };
 
@@ -831,15 +1535,28 @@
         sendBtn.classList.toggle('btn--danger', busy);
         sendBtn.innerHTML = busy ? icon('stop', 14) + '停止' : icon('send', 14) + '发送';
         sendBtn.title = busy ? '停止生成' : '';
-        streamInput.disabled = busy;
-        streamToggle.classList.toggle('is-disabled', busy);
+        streamInput.disabled = busy || customMode;
+        streamToggle.classList.toggle('is-disabled', busy || customMode);
+        streamTopInput.disabled = busy || customMode;
+        streamTop.classList.toggle('is-disabled', busy || customMode);
+        modelSel.disabled = busy || customMode;
+        mobileModelSel.disabled = busy || customMode;
+        syncAllParams();
+        customSwitchInput.disabled = busy;
+        customSwitch.classList.toggle('is-disabled', busy);
+        customEditor.disabled = busy;
+        pickImage.disabled = busy || customMode;
+        pickFile.disabled = busy || customMode;
         log.querySelectorAll('[data-retry], [data-delete]').forEach((b) => { b.disabled = busy; });
       };
 
       const stopStream = () => {
-        if (!sending || !abortCtl) return;
-        abortCtl.abort();
+        const run = chatStore.run;
+        if (!run) return;
+        run.ctl.abort();
       };
+
+      const typingHtml = '<span class="typing"><span></span><span></span><span></span></span>';
 
       // 在 AI 消息下面加操作按钮：重试 / 复制 / 删除（纯图标）
       const addMessageActions = (msgEl, entry) => {
@@ -858,8 +1575,13 @@
           row.appendChild(btn);
           return btn;
         };
-        makeBtn('retry', 'refresh', '用当前选中的模型重新生成（会移除这条之后的消息）', () => retryAssistant(entry, msgEl));
-        makeBtn('copy', 'copy', '复制这条回复', () => copyText(entry.content || '', '回复内容'));
+        makeBtn('retry', 'refresh', entry.error
+          ? '重新生成这条回复（会移除这条之后的消息）'
+          : '用当前选中的模型重新生成（会移除这条之后的消息）', () => retryAssistant(entry, msgEl));
+        const copySource = entry.error
+          ? ((entry.content ? entry.content + '\n\n' : '') + entry.error)
+          : (entry.content || '');
+        makeBtn('copy', 'copy', entry.error ? '复制错误信息' : '复制这条回复', () => copyText(copySource, entry.error ? '错误信息' : '回复内容'));
         makeBtn('delete', 'trash', '删除这一轮对话（含用户消息）', () => {
           const aiIdx = history.indexOf(entry);
           // 找到这条回复对应的用户消息，连同它一起删除
@@ -874,7 +1596,7 @@
             const userIdx = history.indexOf(userEntry);
             if (userIdx >= 0) history.splice(userIdx, 1);
           }
-          persistHistory();
+          persistChatHistory();
           // DOM 里同样移除这条回复和它前面的用户消息
           let prev = msgEl.previousElementSibling;
           while (prev && !prev.classList.contains('msg--user')) prev = prev.previousElementSibling;
@@ -885,67 +1607,378 @@
         body.appendChild(row);
       };
 
-      // 只负责一次流式调用与气泡渲染，历史由调用方维护
-      const streamAssistant = async ({ messages, sentModel, bubble }) => {
-        // 统计：首字耗时 + 上游返回的用量
-        const t0 = Date.now();
-        let firstTokenMs = 0;
-        let usage = null;
+      // ---------- 附件 ----------
 
-        // 思考内容和正文分开渲染：思考放进可折叠块，正文放下面
-        let think = '';
-        let answer = '';
-        let thinkBlock = null;
-        let thinkBody = null;
-        let thinkMeta = null;
-        let answerEl = null;
-        let thinkFolded = false;
+      const MAX_FILE_BYTES = 20 * 1024 * 1024;
+      const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
+      const TEXT_MAX_BYTES = 2 * 1024 * 1024;
+      const TEXT_EXT = /\.(txt|md|markdown|csv|tsv|json|jsonl|log|xml|ya?ml|html?|css|js|jsx|ts|tsx|py|go|java|c|h|cpp|hpp|cs|php|rb|rs|swift|kt|sql|sh|bash|zsh|ps1|ini|toml|conf|env|tex|srt|vtt)$/i;
+      const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)$/i;
+      // 即使 MIME 被识别成 text/plain，这些扩展名也按二进制处理，避免把正文读成乱码
+      const BINARY_EXT = /\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|gz|tgz|bz2|xz|tar|png|jpe?g|gif|webp|bmp|svg|avif|heic|heif|mp3|wav|flac|ogg|m4a|mp4|mov|avi|mkv|webm|exe|dll|so|dylib|bin|iso|apk|ipa|woff2?|ttf|otf|eot)$/i;
 
-        // 用户点「停止」时中断 fetch；已生成的内容保留，按正常回复收尾
-        const ctl = new AbortController();
-        abortCtl = ctl;
-        let stopped = false;
-        let failed = null;
-        const isAbort = (e) => (e && e.name === 'AbortError') || ctl.signal.aborted;
+      const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const stagedBytes = () => staged.reduce((n, a) => n + (a.size || 0), 0);
+      const isImageFile = (f) => (f.type || '').startsWith('image/') || IMAGE_EXT.test(f.name || '');
+      const isTextFile = (f) => {
+        if (BINARY_EXT.test(f.name || '')) return false;
+        return isTextMime(f.type) || TEXT_EXT.test(f.name || '');
+      };
+      const readDataURL = (f) => new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result || ''));
+        r.onerror = () => reject(r.error || new Error('读取失败'));
+        r.readAsDataURL(f);
+      });
+      const readText = (f) => new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result || ''));
+        r.onerror = () => reject(r.error || new Error('读取失败'));
+        r.readAsText(f);
+      });
+      const loadImage = (src) => new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('图片解码失败'));
+        img.src = src;
+      });
+
+      // 图片先在浏览器里压到最长边 1600px，避免一次对话就把 localStorage 撑爆
+      const compressImage = async (f) => {
+        const original = await readDataURL(f);
+        if (f.type === 'image/gif' || f.type === 'image/svg+xml') {
+          return { data: original, size: f.size };
+        }
+        try {
+          const img = await loadImage(original);
+          const max = 1600;
+          const scale = Math.min(1, max / Math.max(img.width, img.height));
+          if (scale === 1 && f.size <= 700 * 1024) return { data: original, size: f.size };
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return { data: original, size: f.size };
+          const keepPng = f.type === 'image/png' && f.size <= 900 * 1024;
+          if (!keepPng) {
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, 0, w, h);
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          const out = canvas.toDataURL(keepPng ? 'image/png' : 'image/jpeg', 0.86);
+          return { data: out, size: Math.round(out.length * 0.75) };
+        } catch (e) {
+          return { data: original, size: f.size };
+        }
+      };
+
+      const addFiles = async (files) => {
+        const list = Array.from(files || []);
+        if (!list.length) return;
+        for (const f of list) {
+          if (!f || !f.size) continue;
+          if (f.size > MAX_FILE_BYTES) {
+            Toast.error(`${f.name || '文件'} 超过 20MB，已跳过`);
+            continue;
+          }
+          if (stagedBytes() + f.size > MAX_TOTAL_BYTES) {
+            Toast.error('附件总大小超过 30MB，已停止添加');
+            break;
+          }
+          try {
+            if (isImageFile(f)) {
+              const img = await compressImage(f);
+              staged.push({
+                id: uid(), kind: 'image', name: f.name || '图片', size: img.size,
+                mime: f.type || 'image/png', data: img.data,
+              });
+            } else if (isTextFile(f)) {
+              if (f.size > TEXT_MAX_BYTES) {
+                Toast.error(`${f.name || '文本文件'} 超过 2MB，已跳过`);
+                continue;
+              }
+              const content = await readText(f);
+              staged.push({
+                id: uid(), kind: 'text', name: f.name || '文本', size: f.size,
+                mime: f.type || 'text/plain', text: content,
+              });
+            } else {
+              const data = await readDataURL(f);
+              staged.push({
+                id: uid(), kind: 'file', name: f.name || '附件', size: f.size,
+                mime: f.type || 'application/octet-stream', data,
+              });
+            }
+          } catch (e) {
+            Toast.error(`读取 ${f.name || '文件'} 失败`);
+          }
+        }
+        renderStaged();
+        text.focus();
+      };
+
+      const renderStaged = () => {
+        attWrap.innerHTML = '';
+        staged.forEach((a) => {
+          const el = document.createElement('div');
+          el.className = 'chat-attachment';
+          if (a.kind === 'image') {
+            const img = document.createElement('img');
+            img.className = 'chat-attachment__thumb';
+            img.src = a.data;
+            img.alt = '';
+            el.appendChild(img);
+          } else {
+            const ic = document.createElement('span');
+            ic.className = 'chat-attachment__icon';
+            ic.innerHTML = icon('file', 15);
+            el.appendChild(ic);
+          }
+          const name = document.createElement('span');
+          name.className = 'chat-attachment__name';
+          name.title = a.name;
+          name.textContent = a.name;
+          el.appendChild(name);
+          const size = document.createElement('span');
+          size.className = 'chat-attachment__size';
+          size.textContent = fmtBytes(a.size);
+          el.appendChild(size);
+          const rm = document.createElement('button');
+          rm.type = 'button';
+          rm.className = 'chat-attachment__remove';
+          rm.title = '移除';
+          rm.innerHTML = icon('x', 12);
+          rm.onclick = () => {
+            staged = staged.filter((x) => x.id !== a.id);
+            renderStaged();
+          };
+          el.appendChild(rm);
+          attWrap.appendChild(el);
+        });
+        attWrap.classList.toggle('is-disabled', customMode);
+      };
+
+      // 把输入文字与暂存附件组装成 OpenAI 多模态 content
+      const buildContent = (t) => {
+        const parts = [];
+        if (t) parts.push({ type: 'text', text: t });
+        for (const a of staged) {
+          if (a.kind === 'image') {
+            parts.push({ type: 'image_url', image_url: { url: a.data } });
+          } else if (a.kind === 'text') {
+            parts.push({ type: 'text', text: `【附件：${a.name}】\n${a.text}` });
+          } else {
+            parts.push({ type: 'file', file: { filename: a.name, file_data: a.data } });
+          }
+        }
+        if (!parts.length) return '';
+        if (parts.length === 1 && parts[0].type === 'text' && !staged.length) return t;
+        return parts;
+      };
+
+      // 界面展示用：附件只显示卡片，不把正文铺在气泡里。
+      // history 里的 content 用于请求，display 用于回看。
+      const buildDisplay = (t) => {
+        const parts = [];
+        if (t) parts.push({ type: 'text', text: t });
+        for (const a of staged) {
+          if (a.kind === 'image') {
+            parts.push({ type: 'image_url', image_url: { url: a.data } });
+          } else {
+            parts.push({
+              type: 'attachment',
+              attachment: {
+                kind: a.kind, name: a.name, mime: a.mime, size: a.size,
+                text: a.kind === 'text' ? a.text : undefined,
+                data: a.kind === 'file' ? a.data : undefined,
+              },
+            });
+          }
+        }
+        if (!parts.length) return '';
+        if (parts.length === 1 && parts[0].type === 'text' && !staged.length) return t;
+        return parts;
+      };
+
+      // ---------- 自定义请求体 ----------
+
+      const buildPayload = () => {
+        const m = currentModel();
+        return {
+          model: m.id,
+          messages: chatContext(history),
+          stream: streaming,
+          ...collectParams(),
+        };
+      };
+
+      const syncCustomBody = () => {
+        customEditor.value = JSON.stringify(buildPayload(), null, 2);
+        updateCustomHint();
+      };
+
+      const updateCustomHint = () => {
+        const raw = customEditor.value.trim();
+        if (!raw) {
+          customHint.textContent = '开启后会自动填入当前对话的请求体';
+          customHint.classList.remove('is-error');
+          return;
+        }
+        try {
+          const p = JSON.parse(raw);
+          const n = Array.isArray(p.messages) ? p.messages.length : 0;
+          const model = typeof p.model === 'string' && p.model ? p.model : '未指定模型';
+          customHint.textContent = `模型 ${model} · ${p.stream === false ? '非流式' : '流式'} · ${n} 条消息`;
+          customHint.classList.remove('is-error');
+        } catch (e) {
+          customHint.textContent = 'JSON 格式错误：' + e.message;
+          customHint.classList.add('is-error');
+        }
+      };
+      const updateCustomHintDebounced = debounce(updateCustomHint, 150);
+
+      const setCustomMode = (on) => {
+        customMode = on;
+        customSwitchInput.checked = on;
+        customPanel.hidden = !on;
+        // 自定义请求体模式下模型、流式与采样参数都由 JSON 决定，整组隐藏
+        normalFields.hidden = on;
+        try { localStorage.setItem(CUSTOM_KEY, on ? '1' : '0'); } catch (e) { /* 忽略 */ }
+        if (on) {
+          if (!customEditor.value.trim()) syncCustomBody();
+          updateCustomHint();
+        }
+        modelSel.disabled = on || sending;
+        mobileModelSel.disabled = on || sending;
+        syncAllParams();
+        streamInput.disabled = on || sending;
+        streamToggle.classList.toggle('is-disabled', on || sending);
+        streamTopInput.disabled = on || sending;
+        streamTop.classList.toggle('is-disabled', on || sending);
+        customEditor.disabled = sending;
+        pickImage.disabled = on || sending;
+        pickFile.disabled = on || sending;
+        attWrap.classList.toggle('is-disabled', on);
+        if (!on) text.focus();
+      };
+
+      // ---------- 请求 ----------
+
+      // 只负责一次流式调用与气泡渲染，历史由调用方维护。
+      // run 放在 chatStore 里，页面切走再回来时可以重新 attach 到新气泡。
+      const streamAssistant = async (run, bubble, view) => {
+        const sentModel = run.sentModel;
+        const customBody = run.customBody;
+        const useStream = customBody ? customBody.stream !== false : streaming;
+        const t0 = run.t0;
+        const isAbort = (e) => (e && e.name === 'AbortError') || run.ctl.signal.aborted;
+        const scrollLog = () => {
+          const v = run.view;
+          if (v && v.alive()) v.scroll();
+        };
 
         const clearPlaceholder = () => {
-          if (bubble.querySelector('.typing')) bubble.innerHTML = '';
+          const b = run.bubble;
+          if (!b) return;
+          const typing = b.querySelector('.typing');
+          if (typing) typing.remove();
         };
         const ensureThink = () => {
-          if (thinkBlock) return;
+          const b = run.bubble;
+          if (!b) return;
+          if (run.thinkBlock && b.contains(run.thinkBlock)) return;
           clearPlaceholder();
           const det = document.createElement('details');
           det.className = 'think-block';
-          det.open = true;
+          det.open = !run.thinkFolded;
           det.innerHTML = '<summary>深度思考<span class="think-block__meta"></span></summary>'
             + '<div class="think-block__body"></div>';
-          bubble.insertBefore(det, bubble.firstChild);
-          thinkBlock = det;
-          thinkBody = det.querySelector('.think-block__body');
-          thinkMeta = det.querySelector('.think-block__meta');
-          thinkMeta.textContent = ' 思考中…';
+          b.insertBefore(det, b.firstChild);
+          run.thinkBlock = det;
+          run.thinkBody = det.querySelector('.think-block__body');
+          run.thinkMeta = det.querySelector('.think-block__meta');
+          run.thinkMeta.textContent = run.answer ? ` ${run.think.length} 字` : ' 思考中…';
         };
         const ensureAnswer = () => {
-          if (answerEl) return;
+          const b = run.bubble;
+          if (!b) return;
+          if (run.answerEl && b.contains(run.answerEl)) return;
           clearPlaceholder();
-          answerEl = document.createElement('div');
-          answerEl.className = 'msg__answer';
-          bubble.appendChild(answerEl);
+          run.answerEl = document.createElement('div');
+          run.answerEl.className = 'msg__answer';
+          b.appendChild(run.answerEl);
+        };
+        const paintThink = (thinking) => {
+          if (!run.bubble) return;
+          ensureThink();
+          if (!run.thinkBody || !run.thinkMeta) return;
+          run.thinkBody.textContent = run.think;
+          if (thinking) run.thinkMeta.textContent = ` 思考中…（${run.think.length} 字）`;
+          else run.thinkMeta.textContent = ` ${run.think.length} 字`;
+        };
+        const paintAnswer = () => {
+          // 正文开始了就把思考块收起来，想看还能再点开
+          if (run.think && !run.thinkFolded) {
+            run.thinkFolded = true;
+            if (run.thinkBlock) run.thinkBlock.open = false;
+            if (run.bubble) paintThink(false);
+          }
+          if (!run.bubble) return;
+          ensureAnswer();
+          if (run.answerEl) run.answerEl.textContent = run.answer;
+        };
+        const paintFailure = (message) => {
+          const b = run.bubble;
+          if (!b) return;
+          if (run.think) paintThink(false);
+          if (run.answer) paintAnswer();
+          if (!run.think && !run.answer) b.innerHTML = '';
+          const errEl = document.createElement('div');
+          errEl.className = 'msg__error-text';
+          errEl.textContent = message;
+          b.appendChild(errEl);
+          const msg = b.closest('.msg');
+          if (msg) msg.classList.add('msg--error');
         };
 
+        // 页面切走再回来时，把累计内容重新画到新的气泡上
+        run.attach = (b, v) => {
+          run.bubble = b;
+          run.msgEl = b.closest('.msg');
+          run.view = v || null;
+          run.thinkBlock = run.thinkBody = run.thinkMeta = run.answerEl = null;
+          b.innerHTML = '';
+          if (run.think) {
+            ensureThink();
+            if (run.thinkBlock) run.thinkBlock.open = !run.thinkFolded;
+            paintThink(false);
+          }
+          if (run.answer) {
+            ensureAnswer();
+            if (run.answerEl) run.answerEl.textContent = run.answer;
+          }
+          if (!run.think && !run.answer) b.innerHTML = typingHtml;
+        };
+        run.attach(bubble, view);
+
         try {
+          const payload = customBody
+            ? { raw: customBody }
+            : {
+                model: sentModel.id,
+                // 只发正文，思考内容和错误提示都不参与上下文
+                messages: run.messages,
+                stream: streaming,
+                ...collectParams(),
+              };
           const res = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            signal: ctl.signal,
-            body: JSON.stringify({
-              model: sentModel.id,
-              // 只发正文，思考内容不参与上下文
-              messages: messages.map((m) => ({ role: m.role, content: m.content })),
-              stream: streaming,
-              temperature: Number(tempEl.value) || 0,
-            }),
+            signal: run.ctl.signal,
+            body: JSON.stringify(payload),
           });
           if (!res.ok) {
             let msg = `HTTP ${res.status}`;
@@ -955,26 +1988,30 @@
             } catch (e) { /* 响应不是 JSON，保留状态码 */ }
             throw new Error(msg);
           }
-          if (!streaming) {
+          if (!useStream) {
             // 非流式：等完整响应，思考与正文一次性渲染
             const j = await res.json();
-            usage = j.usage || null;
+            run.usage = j.usage || null;
             const msg = (j.choices && j.choices[0] && j.choices[0].message) || {};
             const reasoning = msg.reasoning_content || msg.reasoning || '';
             if (reasoning) {
-              ensureThink();
-              think = reasoning;
-              thinkBody.textContent = think;
-              thinkFolded = true;
-              thinkBlock.open = false;
-              thinkMeta.textContent = ` ${think.length} 字`;
+              run.think = reasoning;
+              run.thinkFolded = true;
+              if (run.bubble) {
+                ensureThink();
+                if (run.thinkBlock) run.thinkBlock.open = false;
+                paintThink(false);
+              }
             }
-            if (msg.content) {
-              ensureAnswer();
-              answer = msg.content;
-              answerEl.textContent = answer;
+            const content = flattenText(msg.content);
+            if (content) {
+              run.answer = content;
+              if (run.bubble) {
+                ensureAnswer();
+                if (run.answerEl) run.answerEl.textContent = run.answer;
+              }
             }
-            log.scrollTop = log.scrollHeight;
+            scrollLog();
           } else {
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
@@ -985,7 +2022,7 @@
                 chunk = await reader.read();
               } catch (e) {
                 // 主动停止：跳出循环，交给后面的收尾逻辑
-                if (isAbort(e)) { stopped = true; break; }
+                if (isAbort(e)) { run.stopped = true; break; }
                 throw e;
               }
               if (chunk.done) break;
@@ -995,61 +2032,62 @@
               for (const line of lines) {
                 const t = line.trim();
                 if (!t.startsWith('data:')) continue;
-                const payload = t.slice(5).trim();
-                if (payload === '[DONE]') continue;
+                const data = t.slice(5).trim();
+                if (data === '[DONE]') continue;
                 let j;
-                try { j = JSON.parse(payload); } catch (e) { continue; }
-                if (j.usage) usage = j.usage;
+                try { j = JSON.parse(data); } catch (e) { continue; }
+                if (j.usage) run.usage = j.usage;
                 const d = j.choices && j.choices[0] && j.choices[0].delta;
                 if (!d) continue;
-                if (!firstTokenMs && (d.reasoning_content || d.content)) {
-                  firstTokenMs = Date.now() - t0;
+                if (!run.firstTokenMs && (d.reasoning_content || d.content)) {
+                  run.firstTokenMs = Date.now() - t0;
                 }
                 if (d.reasoning_content) {
-                  ensureThink();
-                  think += d.reasoning_content;
-                  thinkBody.textContent = think;
-                  thinkMeta.textContent = ` 思考中…（${think.length} 字）`;
+                  run.think += d.reasoning_content;
+                  paintThink(true);
                 }
                 if (d.content) {
-                  ensureAnswer();
-                  // 正文开始了就把思考块收起来，想看还能再点开
-                  if (thinkBlock && !thinkFolded) {
-                    thinkFolded = true;
-                    thinkBlock.open = false;
-                    thinkMeta.textContent = ` ${think.length} 字`;
-                  }
-                  answer += d.content;
-                  answerEl.textContent = answer;
+                  run.answer += d.content;
+                  paintAnswer();
                 }
               }
-              log.scrollTop = log.scrollHeight;
+              scrollLog();
             }
           }
         } catch (e) {
-          if (isAbort(e)) stopped = true;
-          else failed = e;
-        } finally {
-          abortCtl = null;
+          if (isAbort(e)) run.stopped = true;
+          else run.failed = e;
         }
 
-        if (failed) {
-          bubble.parentElement.classList.add('msg--error');
-          bubble.textContent = '调用失败：' + (failed.message || failed);
-          setBusy(false);
-          log.scrollTop = log.scrollHeight;
-          return { ok: false, error: failed };
+        if (run.failed) {
+          const errorText = '调用失败：' + (run.failed.message || run.failed);
+          paintFailure(errorText);
+          const entry = {
+            role: 'assistant',
+            content: run.answer,
+            display: run.answer,
+            error: errorText,
+            model: sentModel.id,
+          };
+          if (run.think) entry.think = run.think;
+          if (customBody) entry.custom = true;
+          if (sentModel.provider_icon) entry.provider_icon = sentModel.provider_icon;
+          entry.meta = [[`模型 ${sentModel.id}`], ['调用失败'], [`总耗时 ${fmtDuration(Date.now() - t0)}`]];
+          if (run.bubble) setMeta(run.bubble, entry.meta);
+          return { ok: false, entry };
         }
 
-        if (thinkBlock && !thinkFolded) {
-          thinkBlock.open = false;
-          thinkMeta.textContent = ` ${think.length} 字`;
+        if (run.think && !run.thinkFolded) {
+          run.thinkFolded = true;
+          if (run.thinkBlock) run.thinkBlock.open = false;
+          if (run.bubble) paintThink(false);
         }
-        if (!answer && !think) {
-          bubble.textContent = stopped ? '（已停止生成）' : '（模型没有返回内容）';
+        if (!run.answer && !run.think && run.bubble) {
+          run.bubble.textContent = run.stopped ? '（已停止生成）' : '（模型没有返回内容）';
         }
 
         const totalMs = Date.now() - t0;
+        const usage = run.usage;
 
         // 输入组：输入 token + 缓存命中
         const inputParts = [];
@@ -1068,91 +2106,220 @@
           const rt = usage.completion_tokens_details
             && usage.completion_tokens_details.reasoning_tokens;
           if (rt) outputParts.push(`思考 ${fmtInt(rt)}`);
-          const genMs = totalMs - firstTokenMs;
-          if (streaming && usage.completion_tokens && genMs > 0) {
+          const genMs = totalMs - run.firstTokenMs;
+          if (useStream && usage.completion_tokens && genMs > 0) {
             outputParts.push(`${(usage.completion_tokens * 1000 / genMs).toFixed(1)} t/s`);
           }
         }
 
         // 耗时组：首字、总耗时，总 token 跟在耗时后面
         const timingParts = [];
-        if (firstTokenMs) timingParts.push(`首字 ${fmtDuration(firstTokenMs)}`);
+        if (run.firstTokenMs) timingParts.push(`首字 ${fmtDuration(run.firstTokenMs)}`);
         timingParts.push(`总耗时 ${fmtDuration(totalMs)}`);
         if (usage && usage.total_tokens) timingParts.push(`总token ${fmtInt(usage.total_tokens)}`);
 
         // 对话共用一份历史，所以在每条回复上标明用的是哪个模型
         const metaGroups = [[`模型 ${sentModel.id}`], inputParts, outputParts, timingParts]
           .filter((g) => g.length);
-        if (stopped) metaGroups.push(['已停止生成']);
-        setMeta(bubble, metaGroups);
+        if (run.stopped) metaGroups.push(['已停止生成']);
+        if (run.bubble) setMeta(run.bubble, metaGroups);
 
         // 只把正文带回下一轮，思考内容与统计信息单独存起来用于回看
-        if (answer || think) {
-          const entry = { role: 'assistant', content: answer, model: sentModel.id };
-          if (think) entry.think = think;
+        if (run.answer || run.think) {
+          const entry = { role: 'assistant', content: run.answer, model: sentModel.id };
+          if (run.think) entry.think = run.think;
           if (metaGroups.length) entry.meta = metaGroups;
           if (sentModel.provider_icon) entry.provider_icon = sentModel.provider_icon;
-          setBusy(false);
-          log.scrollTop = log.scrollHeight;
+          if (customBody) entry.custom = true;
           return { ok: true, entry };
         }
-        setBusy(false);
-        log.scrollTop = log.scrollHeight;
         return { ok: true, entry: null };
       };
 
+      const finishRun = (run, res) => {
+        if (res && res.entry && !run.discarded && !run.unloadSaved) {
+          history.push(res.entry);
+          persistChatHistory();
+        }
+        if (chatStore.run === run) chatStore.run = null;
+        const v = run.view;
+        if (v && v.alive()) {
+          if (res && res.entry && run.msgEl) v.addActions(run.msgEl, res.entry);
+          v.setBusy(false);
+          v.scroll();
+        }
+      };
+
+      // 新建一次请求：历史快照、气泡和 run 都交给 chatStore，
+      // 页面切走时只解绑 DOM，不取消 fetch。
+      const startRun = async ({ messages, sentModel, customBody }) => {
+        if (chatStore.run) return null;
+        const run = {
+          messages, sentModel, customBody,
+          ctl: new AbortController(),
+          t0: Date.now(), firstTokenMs: 0, usage: null,
+          think: '', answer: '', thinkFolded: false,
+          stopped: false, failed: null,
+          bubble: null, msgEl: null, view: null,
+          entry: null, discarded: false, unloadSaved: false,
+        };
+        chatStore.run = run;
+        if (usable.some((m) => m.id === sentModel.id)) {
+          chatStore.model = sentModel.id;
+          persistChatModel(sentModel.id);
+          modelSel.value = sentModel.id;
+          mobileModelSel.value = sentModel.id;
+          refreshMeta();
+        }
+        setBusy(true);
+        const bubble = addMsg('assistant', '', false, sentModel.provider_icon);
+        bubble.innerHTML = typingHtml;
+        const res = await streamAssistant(run, bubble, view);
+        finishRun(run, res);
+        return res;
+      };
+
       const retryAssistant = async (entry, msgEl) => {
-        if (sending) return;
+        if (sending || chatStore.run) return;
+        if (customMode) {
+          if (!entry.custom) {
+            Toast.info('自定义请求体模式下请直接编辑 JSON 后发送');
+            return;
+          }
+          // 自定义请求体：移除这条错误，再用编辑器里的 JSON 重发
+          const idx = history.indexOf(entry);
+          if (idx >= 0) history.splice(idx);
+          persistChatHistory();
+          const all = [...log.querySelectorAll('.msg')];
+          const pos = all.indexOf(msgEl);
+          if (pos >= 0) all.slice(pos).forEach((el) => el.remove());
+          await doSendCustom(true);
+          return;
+        }
         const idx = history.indexOf(entry);
         if (idx < 0) return;
         // 用当前选中的模型重试，而不是这条消息生成时的模型
         const sentModel = currentModel();
         // 重试点之后的消息全部丢弃，保证上下文连续
-        history = history.slice(0, idx);
-        persistHistory();
+        history.splice(idx);
+        persistChatHistory();
         const all = [...log.querySelectorAll('.msg')];
         const pos = all.indexOf(msgEl);
         if (pos >= 0) all.slice(pos).forEach((el) => el.remove());
-
-        setBusy(true);
-        const bubble = addMsg('assistant', '', false, sentModel.provider_icon);
-        bubble.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
-        const res = await streamAssistant({ messages: history.slice(), sentModel, bubble });
-        if (res.ok && res.entry) {
-          history.push(res.entry);
-          persistHistory();
-          addMessageActions(bubble.closest('.msg'), res.entry);
-        }
+        await startRun({ messages: chatContext(history), sentModel });
       };
 
       const doSend = async () => {
+        if (customMode) {
+          await doSendCustom(false);
+          return;
+        }
         const v = text.value.trim();
-        if (!v || sending) return;
+        if ((!v && !staged.length) || sending || chatStore.run) return;
         // 先固定本轮使用的模型，避免流式过程中切换模型导致头像/统计错位
         const sentModel = currentModel();
+        const content = buildContent(v);
+        const display = buildDisplay(v);
         text.value = '';
         text.style.height = 'auto';
-        addMsg('user', v);
-        history.push({ role: 'user', content: v });
-        persistHistory();
-
-        setBusy(true);
-        const bubble = addMsg('assistant', '', false, sentModel.provider_icon);
-        bubble.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
-        const res = await streamAssistant({ messages: history.slice(), sentModel, bubble });
-        if (res.ok && res.entry) {
-          history.push(res.entry);
-          persistHistory();
-          addMessageActions(bubble.closest('.msg'), res.entry);
-        } else if (!res.ok) {
-          // 失败时保持原行为：不把这条用户消息留在上下文里
-          history.pop();
-          persistHistory();
-        }
+        addMsg('user', display);
+        history.push({ role: 'user', content, display });
+        persistChatHistory();
+        staged = [];
+        renderStaged();
+        await startRun({ messages: chatContext(history), sentModel });
       };
 
-      // 换模型只更新顶部的路由信息，已有的对话原样保留
+      // 自定义模式：编辑器里的 JSON 是唯一事实来源；输入框有文字时追加成一条 user 消息
+      const doSendCustom = async (retry) => {
+        if (sending || chatStore.run) return;
+        let payload;
+        try {
+          payload = JSON.parse(customEditor.value);
+        } catch (e) {
+          Toast.error('自定义请求体 JSON 解析失败：' + e.message);
+          return;
+        }
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+          Toast.error('自定义请求体必须是一个 JSON 对象');
+          return;
+        }
+        if (typeof payload.model !== 'string' || !payload.model) {
+          Toast.error('自定义请求体缺少 model 字段');
+          return;
+        }
+        if (!Array.isArray(payload.messages)) {
+          Toast.error('自定义请求体缺少 messages 数组');
+          return;
+        }
+        const typed = text.value.trim();
+        if (typed) {
+          payload.messages.push({ role: 'user', content: typed });
+          customEditor.value = JSON.stringify(payload, null, 2);
+          updateCustomHint();
+        }
+        const sentModel = usable.find((m) => m.id === payload.model)
+          || { id: payload.model, provider_icon: '', type: 'custom' };
+        const shown = typed || lastUserContent(payload.messages) || '（自定义请求体）';
+        text.value = '';
+        text.style.height = 'auto';
+        // 重试时不重复插入用户气泡，除非用户又输入了新内容
+        if (!retry || typed) addMsg('user', shown);
+        // 让本地历史与请求体保持一致，切回普通模式后可以接着聊
+        history.splice(0, history.length, ...payload.messages
+          .filter((m) => m && typeof m === 'object' && (m.role === 'user' || m.role === 'assistant'))
+          .map((m) => ({ role: m.role, content: m.content })));
+        persistChatHistory();
+        await startRun({
+          messages: chatContext(history), sentModel, customBody: payload,
+        });
+      };
+
+      // ---------- 事件 ----------
+
+      // 桌面端收起 / 展开设置栏；窄屏下改为抽屉开合
+      const isNarrow = () => window.matchMedia('(max-width: 900px)').matches;
+      const setSideOpen = (on) => {
+        if (isNarrow()) {
+          layout.classList.toggle('is-settings-open', on);
+          return;
+        }
+        layout.classList.toggle('is-settings-collapsed', !on);
+        try { localStorage.setItem(SIDE_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
+      };
+      sideToggle.onclick = () => setSideOpen(true);
+      sideClose.onclick = () => setSideOpen(false);
+      sideScrim.onclick = () => setSideOpen(false);
+
+      // 参数值变更与单项开关
+      paramEls.forEach((row) => {
+        row.input.addEventListener('input', () => {
+          const raw = String(row.input.value).trim();
+          paramValues[row.def.key] = raw === '' ? '' : Number(raw);
+          row.value.textContent = raw === '' ? '—' : raw;
+          persistParams();
+        });
+        row.enable.querySelector('input').onchange = () => {
+          paramEnabled[row.def.key] = row.enable.querySelector('input').checked;
+          syncParamRow(row);
+          persistParams();
+          text.focus();
+        };
+      });
+
+      // 换模型只更新左侧的路由信息，已有的对话原样保留
       modelSel.onchange = () => {
+        mobileModelSel.value = modelSel.value;
+        chatStore.model = modelSel.value;
+        persistChatModel(modelSel.value);
+        refreshMeta();
+        text.focus();
+      };
+      // 收起设置栏后，顶部下拉框也能直接换模型
+      mobileModelSel.onchange = () => {
+        modelSel.value = mobileModelSel.value;
+        chatStore.model = modelSel.value;
+        persistChatModel(modelSel.value);
         refreshMeta();
         text.focus();
       };
@@ -1175,14 +2342,105 @@
         text.style.height = Math.min(text.scrollHeight, 150) + 'px';
       });
 
-      // 离开页面时中断还在进行的请求，避免后台继续生成
-      const onLeave = () => {
-        window.removeEventListener('hashchange', onLeave);
-        stopStream();
+      // 图片/附件入口
+      pickImage.onclick = () => imageInput.click();
+      pickFile.onclick = () => fileInput.click();
+      imageInput.onchange = () => {
+        addFiles(imageInput.files);
+        imageInput.value = '';
       };
-      window.addEventListener('hashchange', onLeave);
+      fileInput.onchange = () => {
+        addFiles(fileInput.files);
+        fileInput.value = '';
+      };
+
+      // 粘贴图片或文件
+      text.addEventListener('paste', (e) => {
+        if (customMode) return;
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        const files = [];
+        for (const it of items) {
+          if (it.kind !== 'file') continue;
+          const f = it.getAsFile();
+          if (f) files.push(f);
+        }
+        if (files.length) {
+          e.preventDefault();
+          addFiles(files);
+        }
+      });
+
+      // 拖拽到整个对话卡片
+      let dragDepth = 0;
+      card.addEventListener('dragenter', (e) => {
+        if (!e.dataTransfer) return;
+        const types = Array.from(e.dataTransfer.types || []);
+        if (!types.includes('Files')) return;
+        e.preventDefault();
+        dragDepth += 1;
+        card.classList.add('is-dragover');
+      });
+      card.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      });
+      card.addEventListener('dragleave', () => {
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (!dragDepth) card.classList.remove('is-dragover');
+      });
+      card.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dragDepth = 0;
+        card.classList.remove('is-dragover');
+        if (customMode) {
+          Toast.info('自定义请求体模式下请直接编辑 JSON');
+          return;
+        }
+        addFiles(e.dataTransfer && e.dataTransfer.files);
+      });
+
+      // 自定义请求体开关与编辑
+      customSwitchInput.onchange = () => setCustomMode(customSwitchInput.checked);
+      customEditor.addEventListener('input', updateCustomHintDebounced);
+      root.querySelector('#chat-custom-format').onclick = () => {
+        try {
+          customEditor.value = JSON.stringify(JSON.parse(customEditor.value), null, 2);
+          updateCustomHint();
+          Toast.success('已格式化');
+        } catch (e) {
+          Toast.error('JSON 解析失败：' + e.message);
+        }
+      };
+      root.querySelector('#chat-custom-reset').onclick = () => {
+        syncCustomBody();
+        Toast.success('已重置为当前对话');
+      };
+
+      // 页面切走时只解绑 DOM，不中断请求；后台继续生成并写入历史
+      const view = {
+        alive: () => log.isConnected,
+        setBusy,
+        addActions: (msgEl, entry) => addMessageActions(msgEl, entry),
+        scroll: () => { log.scrollTop = log.scrollHeight; },
+      };
+      chatStore.view = view;
+
+      const onLeave = () => {
+        if (chatStore.view === view) chatStore.view = null;
+        const run = chatStore.run;
+        if (run && run.view === view) {
+          run.view = null;
+          run.bubble = null;
+          run.msgEl = null;
+          run.thinkBlock = run.thinkBody = run.thinkMeta = run.answerEl = null;
+        }
+      };
+      window.addEventListener('hashchange', onLeave, { once: true });
 
       restore();
+      setCustomMode(customMode);
       setTimeout(() => text.focus(), 120);
     },
   });

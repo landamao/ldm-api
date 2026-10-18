@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -156,30 +157,71 @@ func joinArrow(parts []string) string {
 // 流式与非流式调用都会照常写进日志与统计，方便在「调用日志」里回看。
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Model    string  `json:"model"`
-		Messages []any   `json:"messages"`
-		Stream   bool    `json:"stream"`
-		Temp     float64 `json:"temperature"`
-		MaxTok   int     `json:"max_tokens"`
+		Model    string `json:"model"`
+		Messages []any  `json:"messages"`
+		Stream   bool   `json:"stream"`
+		// 采样参数用指针区分「没传」和「传了 0」：在线对话里每个参数
+		// 都有独立开关，关掉的参数不能出现在请求体里。
+		Temp    *float64        `json:"temperature"`
+		TopP    *float64        `json:"top_p"`
+		FreqPen *float64        `json:"frequency_penalty"`
+		PresPen *float64        `json:"presence_penalty"`
+		MaxTok  *int            `json:"max_tokens"`
+		Seed    *int64          `json:"seed"`
+		Raw     json.RawMessage `json:"raw"` // 自定义请求体：原样转发，不再由网关拼装
 	}
-	if err := readJSON(r, &req); err != nil {
+	// 在线对话可能带上 base64 图片或附件，单独放宽到 64MB。
+	if err := readJSONLimit(r, &req, 64<<20); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	if req.Model == "" {
-		writeErr(w, http.StatusBadRequest, "缺少模型 ID")
-		return
-	}
-	payload := map[string]any{
-		"model":    req.Model,
-		"messages": req.Messages,
-		"stream":   req.Stream,
-	}
-	if req.Temp > 0 {
-		payload["temperature"] = req.Temp
-	}
-	if req.MaxTok > 0 {
-		payload["max_tokens"] = req.MaxTok
+
+	var payload map[string]any
+	stream := req.Stream
+	if len(req.Raw) > 0 && string(req.Raw) != "null" {
+		dec := json.NewDecoder(bytes.NewReader(req.Raw))
+		dec.UseNumber()
+		if err := dec.Decode(&payload); err != nil || payload == nil {
+			writeErr(w, http.StatusBadRequest, "自定义请求体不是合法的 JSON 对象")
+			return
+		}
+		model, _ := payload["model"].(string)
+		if model == "" {
+			writeErr(w, http.StatusBadRequest, "自定义请求体缺少 model 字段")
+			return
+		}
+		req.Model = model
+		if sv, ok := payload["stream"].(bool); ok {
+			stream = sv
+		}
+	} else {
+		if req.Model == "" {
+			writeErr(w, http.StatusBadRequest, "缺少模型 ID")
+			return
+		}
+		payload = map[string]any{
+			"model":    req.Model,
+			"messages": req.Messages,
+			"stream":   req.Stream,
+		}
+		if req.Temp != nil {
+			payload["temperature"] = *req.Temp
+		}
+		if req.TopP != nil {
+			payload["top_p"] = *req.TopP
+		}
+		if req.FreqPen != nil {
+			payload["frequency_penalty"] = *req.FreqPen
+		}
+		if req.PresPen != nil {
+			payload["presence_penalty"] = *req.PresPen
+		}
+		if req.MaxTok != nil && *req.MaxTok > 0 {
+			payload["max_tokens"] = *req.MaxTok
+		}
+		if req.Seed != nil {
+			payload["seed"] = *req.Seed
+		}
 	}
 	body, _ := json.Marshal(payload)
 
@@ -190,7 +232,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		Method: http.MethodPost,
 		Header: r.Header.Clone(),
 		Body:   body,
-		Stream: req.Stream,
+		Stream: stream,
 		IP:     clientIP(r),
 	}
 	_ = json.Unmarshal(body, &relayReq.JSON)

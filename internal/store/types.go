@@ -44,12 +44,15 @@ const (
 
 // Channel 一个上游渠道。
 type Channel struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Type      string            `json:"type"`
-	BaseURL   string            `json:"base_url"`
-	APIKey    string            `json:"api_key"`
-	Models    []string          `json:"models"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Type    string   `json:"type"`
+	BaseURL string   `json:"base_url"`
+	APIKey  string   `json:"api_key"`
+	Models  []string `json:"models"`
+	// AppendV1 控制是否在接口地址后补全 /v1。nil 表示旧数据，按默认开启处理。
+	// 关闭后按 BaseURL 原样拼接，适合火山方舟（/api/v3）这类非 v1 前缀的服务。
+	AppendV1  *bool             `json:"append_v1,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
 	Enabled   bool              `json:"enabled"`
 	Weight    int               `json:"weight"`
@@ -57,6 +60,11 @@ type Channel struct {
 	Remark    string            `json:"remark,omitempty"`
 	CreatedAt int64             `json:"created_at"`
 	UpdatedAt int64             `json:"updated_at"`
+}
+
+// ShouldAppendV1 返回是否自动补全 /v1；旧数据未设置时默认开启。
+func (c Channel) ShouldAppendV1() bool {
+	return c.AppendV1 == nil || *c.AppendV1
 }
 
 // 模型类型

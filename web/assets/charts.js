@@ -46,6 +46,10 @@
     }
     return tipEl;
   }
+  // 图表重绘 / 切换单位时旧 tooltip 不会收到 mouseleave，需要手动收起
+  function hideTip() {
+    if (tipEl) tipEl.classList.remove('is-on');
+  }
 
   /**
    * 面积折线图
@@ -54,29 +58,37 @@
   function areaChart(container, opts) {
     const { labels = [], series = [], height = 210, spanMs = 86400000 } = opts;
     const valueFmt = opts.valueFmt || ((v) => fmtInt(v));
+    const axisFmt = opts.axisFmt || fmtAxis;
 
     function draw() {
       const W = Math.max(container.clientWidth || 600, 320);
       const H = height;
-      const padL = 46, padR = 14, padT = 14, padB = 26;
-      const iw = W - padL - padR;
-      const ih = H - padT - padB;
+      const padR = 14, padT = 14, padB = 26;
 
       let max = 0;
       series.forEach((s) => s.values.forEach((v) => { if (v > max) max = v; }));
       max = niceMax(max);
+
+      // 坐标轴标签会随单位设置变长（例如 1,000,000），左侧留白按最长标签自动加宽
+      const ticks = 4;
+      const tickVals = [];
+      for (let i = 0; i <= ticks; i++) tickVals.push((max / ticks) * i);
+      const tickTexts = tickVals.map((v) => axisFmt(v));
+      const padL = Math.max(46, 12 + Math.max(...tickTexts.map((s) => String(s).length)) * 6);
+      const iw = W - padL - padR;
+      const ih = H - padT - padB;
+
       const n = labels.length || 1;
       const xAt = (i) => padL + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
       const yAt = (v) => padT + ih - (max === 0 ? 0 : (v / max) * ih);
 
       const parts = [];
       // 网格 + Y 轴
-      const ticks = 4;
       for (let i = 0; i <= ticks; i++) {
-        const v = (max / ticks) * i;
+        const v = tickVals[i];
         const y = yAt(v);
         parts.push(`<line class="grid-line" x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}"/>`);
-        parts.push(`<text class="axis-label" x="${padL - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end">${esc(fmtAxis(v))}</text>`);
+        parts.push(`<text class="axis-label" x="${padL - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end">${esc(tickTexts[i])}</text>`);
       }
       // X 轴刻度
       const step = Math.max(1, Math.ceil(n / 7));
@@ -181,25 +193,32 @@
   function barChart(container, opts) {
     const { labels = [], values = [], height = 210, color = '#f33b7c' } = opts;
     const valueFmt = opts.valueFmt || ((v) => fmtInt(v));
+    const axisFmt = opts.axisFmt || fmtAxis;
 
     function draw() {
       const W = Math.max(container.clientWidth || 600, 320);
       const H = height;
-      const padL = 46, padR = 14, padT = 14, padB = 26;
+      const padR = 14, padT = 14, padB = 26;
+      let max = niceMax(Math.max(0, ...values));
+
+      const ticks = 4;
+      const tickVals = [];
+      for (let i = 0; i <= ticks; i++) tickVals.push((max / ticks) * i);
+      const tickTexts = tickVals.map((v) => axisFmt(v));
+      const padL = Math.max(46, 12 + Math.max(...tickTexts.map((s) => String(s).length)) * 6);
       const iw = W - padL - padR;
       const ih = H - padT - padB;
-      let max = niceMax(Math.max(0, ...values));
+
       const n = Math.max(values.length, 1);
       const slot = iw / n;
       const bw = Math.max(3, Math.min(slot * 0.62, 30));
 
       const parts = [];
-      const ticks = 4;
       for (let i = 0; i <= ticks; i++) {
-        const v = (max / ticks) * i;
+        const v = tickVals[i];
         const y = padT + ih - (v / max) * ih;
         parts.push(`<line class="grid-line" x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}"/>`);
-        parts.push(`<text class="axis-label" x="${padL - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end">${esc(fmtAxis(v))}</text>`);
+        parts.push(`<text class="axis-label" x="${padL - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end">${esc(tickTexts[i])}</text>`);
       }
       const step = Math.max(1, Math.ceil(n / 7));
       for (let i = 0; i < n; i += step) {
@@ -242,6 +261,9 @@
    */
   function donutChart(container, opts) {
     const { items = [], size = 168, thickness = 20 } = opts;
+    const valueFmt = opts.valueFmt || null;
+    const totalFmt = valueFmt || fmtNum;
+    const itemFmt = valueFmt || fmtInt;
     const total = items.reduce((a, b) => a + b.value, 0);
     const r = (size - thickness) / 2;
     const cx = size / 2, cy = size / 2;
@@ -265,7 +287,7 @@
     container.innerHTML = `<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
       <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="flex-shrink:0">
         ${arcs.join('')}
-        <text x="${cx}" y="${cy - 4}" text-anchor="middle" style="font-size:20px;font-weight:700;fill:var(--text);font-family:var(--font)">${esc(fmtNum(total))}</text>
+        <text x="${cx}" y="${cy - 4}" text-anchor="middle" style="font-size:20px;font-weight:700;fill:var(--text);font-family:var(--font)">${esc(totalFmt(total))}</text>
         <text x="${cx}" y="${cy + 15}" text-anchor="middle" style="font-size:10.5px;fill:var(--text-3);font-family:var(--font)">总调用</text>
       </svg>
       <div style="flex:1;min-width:150px;display:flex;flex-direction:column;gap:8px">
@@ -273,7 +295,7 @@
           <div style="display:flex;align-items:center;gap:8px;font-size:12.5px">
             <span style="width:8px;height:8px;border-radius:3px;background:${it.color || PALETTE[i % PALETTE.length]};flex-shrink:0"></span>
             <span class="truncate" style="max-width:140px;font-family:var(--mono);font-size:11.5px">${esc(it.name)}</span>
-            <span style="margin-left:auto;color:var(--text-2);font-variant-numeric:tabular-nums">${esc(fmtInt(it.value))}</span>
+            <span style="margin-left:auto;color:var(--text-2);font-variant-numeric:tabular-nums">${esc(itemFmt(it.value))}</span>
             <span class="muted" style="width:42px;text-align:right;font-size:11px">${total ? ((it.value / total) * 100).toFixed(1) + '%' : '0%'}</span>
           </div>`).join('')}
       </div>
@@ -322,5 +344,5 @@
     };
   }
 
-  window.Charts = { areaChart, barChart, donutChart, rankList, PALETTE, timeLabel };
+  window.Charts = { areaChart, barChart, donutChart, rankList, PALETTE, timeLabel, hideTip };
 })();

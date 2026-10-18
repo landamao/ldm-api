@@ -105,20 +105,66 @@ func IsConversationPath(p string) bool {
 		strings.HasSuffix(p, "/messages")
 }
 
-// JoinURL 智能拼接渠道 base_url 与请求路径，避免出现 /v1/v1 或缺少 /v1。
-func JoinURL(base, path string) string {
+// JoinURL 拼接渠道 base_url 与上游路径。
+// path 里的 /v1 是网关入口的版本段：appendV1 为 true 时自动补全，
+// 为 false 时去掉，由用户决定上游地址要不要带 /v1。
+// base_url 已经带了版本段（/v1、/v1beta 等）时，不会重复拼接。
+func JoinURL(base, path string, appendV1 bool) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if base == "" {
 		base = "https://api.openai.com"
 	}
 	p := "/" + strings.TrimLeft(path, "/")
-	for _, ver := range []string{"/v1beta", "/v1", "/v2"} {
-		if strings.HasSuffix(base, ver) && strings.HasPrefix(p, ver+"/") {
-			p = strings.TrimPrefix(p, ver)
-			break
+
+	// 地址里已经带了同一个版本段时，先去掉路径里重复的那一段。
+	if ver := lastPathSegment(base); versionSegment(ver) {
+		if p == "/"+ver || strings.HasPrefix(p, "/"+ver+"/") {
+			p = strings.TrimPrefix(p, "/"+ver)
+			if p == "" {
+				p = "/"
+			}
+		}
+	}
+
+	// 只处理 v1 风格的路径；Gemini 的 /v1beta/... 保持原样。
+	if p == "/v1" || strings.HasPrefix(p, "/v1/") {
+		p = strings.TrimPrefix(p, "/v1")
+		if p == "" {
+			p = "/"
+		}
+		if appendV1 && !strings.HasSuffix(base, "/v1") {
+			base += "/v1"
 		}
 	}
 	return base + p
+}
+
+// lastPathSegment 返回 base 路径的最后一段。
+func lastPathSegment(base string) string {
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		return base[i+1:]
+	}
+	return base
+}
+
+// versionSegment 判断一个路径片段是否形如 v1 / v2 / v1beta / v1beta1 / v3alpha。
+func versionSegment(seg string) bool {
+	if len(seg) < 2 || seg[0] != 'v' || seg[1] < '0' || seg[1] > '9' {
+		return false
+	}
+	i := 1
+	for i < len(seg) && seg[i] >= '0' && seg[i] <= '9' {
+		i++
+	}
+	if strings.HasPrefix(seg[i:], "alpha") {
+		i += len("alpha")
+	} else if strings.HasPrefix(seg[i:], "beta") {
+		i += len("beta")
+	}
+	for i < len(seg) && seg[i] >= '0' && seg[i] <= '9' {
+		i++
+	}
+	return i == len(seg)
 }
 
 // SetJSONHeaders 是各 Provider 的公共默认头。
@@ -166,6 +212,38 @@ func intOf(v any) (int, bool) {
 func boolOf(v any) (bool, bool) {
 	b, ok := v.(bool)
 	return b, ok
+}
+
+// guessMime 按文件名或地址里的扩展名推断 MIME，用于 Gemini 的 fileData。
+// 推断不出来时返回 application/octet-stream，交给上游报明确的格式错误。
+func guessMime(name, url string) string {
+	s := strings.ToLower(name)
+	if s == "" {
+		s = strings.ToLower(url)
+	}
+	switch {
+	case strings.Contains(s, ".pdf"):
+		return "application/pdf"
+	case strings.Contains(s, ".png"):
+		return "image/png"
+	case strings.Contains(s, ".jpg"), strings.Contains(s, ".jpeg"):
+		return "image/jpeg"
+	case strings.Contains(s, ".gif"):
+		return "image/gif"
+	case strings.Contains(s, ".webp"):
+		return "image/webp"
+	case strings.Contains(s, ".txt"), strings.Contains(s, ".md"), strings.Contains(s, ".csv"):
+		return "text/plain"
+	case strings.Contains(s, ".json"):
+		return "application/json"
+	case strings.Contains(s, ".docx"):
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case strings.Contains(s, ".doc"):
+		return "application/msword"
+	case strings.Contains(s, ".xlsx"):
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	}
+	return "application/octet-stream"
 }
 
 // encode 序列化，失败时返回一个最小可用对象，避免整条链路 panic。

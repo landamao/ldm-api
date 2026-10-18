@@ -62,17 +62,18 @@ func maskKey(k string) string {
 // 指针字段未出现在请求里时表示「不修改」，这样列表页的启停开关只提交
 // enabled 也不会把其余配置清掉；完整编辑表单则带全所有字段（含显式清空）。
 type channelRequest struct {
-	ID      string             `json:"id"`
-	Name    *string            `json:"name"`
-	Type    string             `json:"type"`
-	BaseURL *string            `json:"base_url"`
-	APIKey  string             `json:"api_key"`
-	Models  *[]string          `json:"models"`
-	Headers *map[string]string `json:"headers"`
-	Enabled *bool              `json:"enabled"`
-	Weight  *int               `json:"weight"`
-	Timeout *int               `json:"timeout"`
-	Remark  *string            `json:"remark"`
+	ID       string             `json:"id"`
+	Name     *string            `json:"name"`
+	Type     string             `json:"type"`
+	BaseURL  *string            `json:"base_url"`
+	APIKey   string             `json:"api_key"`
+	AppendV1 *bool              `json:"append_v1"`
+	Models   *[]string          `json:"models"`
+	Headers  *map[string]string `json:"headers"`
+	Enabled  *bool              `json:"enabled"`
+	Weight   *int               `json:"weight"`
+	Timeout  *int               `json:"timeout"`
+	Remark   *string            `json:"remark"`
 }
 
 func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +131,13 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 	if isNew && ch.BaseURL == "" {
 		writeErr(w, http.StatusBadRequest, "接口地址（Base URL）不能为空")
 		return
+	}
+	if req.AppendV1 != nil {
+		v := *req.AppendV1
+		ch.AppendV1 = &v
+	} else if isNew {
+		v := true
+		ch.AppendV1 = &v
 	}
 	// 前端拿到的是掩码后的密钥，未改动时保持原值
 	if req.APIKey != "" && !strings.Contains(req.APIKey, "****") {
@@ -330,7 +338,7 @@ func (s *Server) probeChannel(ch store.Channel) probeResult {
 	if ch.Type == store.ChannelAnthropic {
 		listPath = "/v1/models"
 	}
-	req, err := http.NewRequest(http.MethodGet, upstream.JoinURL(base, listPath), nil)
+	req, err := http.NewRequest(http.MethodGet, upstream.JoinURL(base, listPath, ch.ShouldAppendV1()), nil)
 	if err == nil {
 		upstream.Get(ch.Type).Auth(req, ch)
 		if resp, err := client.Do(req); err == nil {
@@ -372,7 +380,7 @@ func (s *Server) probeChannel(ch store.Channel) probeResult {
 		}
 	}
 	body, _ := json.Marshal(payload)
-	req, err = http.NewRequest(http.MethodPost, upstream.JoinURL(base, path), strings.NewReader(string(body)))
+	req, err = http.NewRequest(http.MethodPost, upstream.JoinURL(base, path, ch.ShouldAppendV1()), strings.NewReader(string(body)))
 	if err != nil {
 		return probeResult{OK: false, Message: err.Error(), Latency: time.Since(start).Milliseconds()}
 	}
@@ -394,13 +402,15 @@ func (s *Server) probeChannel(ch store.Channel) probeResult {
 func parseModelIDs(raw []byte) []string {
 	var openai struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID     string `json:"id"`
+			Status string `json:"status"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &openai); err == nil && len(openai.Data) > 0 {
 		out := make([]string, 0, len(openai.Data))
 		for _, d := range openai.Data {
-			if d.ID != "" {
+			// 火山方舟会把已下线的模型也列出来（status=Shutdown），过滤掉避免干扰选择
+			if d.ID != "" && !strings.EqualFold(d.Status, "Shutdown") {
 				out = append(out, d.ID)
 			}
 		}
@@ -426,10 +436,11 @@ func parseModelIDs(raw []byte) []string {
 // 要保存又必须先填模型」的死循环。
 func (s *Server) discoverChannelModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		BaseURL  string `json:"base_url"`
+		APIKey   string `json:"api_key"`
+		AppendV1 *bool  `json:"append_v1"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
@@ -437,10 +448,11 @@ func (s *Server) discoverChannelModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ch := store.Channel{
-		ID:      strings.TrimSpace(req.ID),
-		Type:    strings.TrimSpace(req.Type),
-		BaseURL: strings.TrimSpace(req.BaseURL),
-		APIKey:  strings.TrimSpace(req.APIKey),
+		ID:       strings.TrimSpace(req.ID),
+		Type:     strings.TrimSpace(req.Type),
+		BaseURL:  strings.TrimSpace(req.BaseURL),
+		APIKey:   strings.TrimSpace(req.APIKey),
+		AppendV1: req.AppendV1,
 	}
 	if ch.Type == "" {
 		ch.Type = store.ChannelOpenAI

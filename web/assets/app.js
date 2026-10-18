@@ -167,6 +167,7 @@
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
     up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
     down: '<path d="M12 5v14M19 12l-7 7-7-7"/>',
+    chevron: '<path d="M6 9l6 6 6-6"/>',
     grip: '<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>',
     link: '<path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7L12 19"/>',
     unlink: '<path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7L12 19"/><path d="M3 3l18 18"/>',
@@ -189,6 +190,9 @@
     wand: '<path d="M15 4V2M15 10V8M12.5 6.5h-2M19.5 6.5h-2M13 4.5l-1.4-1.4M18.4 9.9L17 8.5M3 21l9-9"/>',
     download: '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
     filter: '<path d="M22 3H2l8 9.5V19l4 2v-8.5z"/>',
+    file: '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/>',
+    paperclip: '<path d="M21.4 11.6l-8.5 8.5a6 6 0 01-8.5-8.5l8.5-8.5a4 4 0 015.7 5.7l-8.5 8.5a2 2 0 01-2.8-2.8l7.8-7.8"/>',
+    code: '<path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/>',
   };
 
   function icon(name, size) {
@@ -305,6 +309,458 @@
     del(p, b) { return this.request('DELETE', p, b); },
   };
 
+  // ---------- 下拉框 ----------
+  // 原生 select 的选项一多就难找，这里统一换成自绘下拉：
+  // 原生 select 继续作为数据源（隐藏），旁边放一个按钮触发器；
+  // 选择时回写原生 select 并派发 change，页面里原有的 .value / .onchange 都不用改。
+  const Select = (function () {
+    let openState = null;
+    const isCoarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+
+    // 把原生 select 的 option / optgroup 摊平成渲染用的条目
+    function collect(native) {
+      const items = [];
+      let pendingGroup = null;
+      const walk = (parent) => {
+        Array.from(parent.children).forEach((child) => {
+          if (child.tagName === 'OPTGROUP') {
+            pendingGroup = child.label || '';
+            walk(child);
+          } else if (child.tagName === 'OPTION') {
+            if (pendingGroup !== null) {
+              items.push({ type: 'group', label: pendingGroup });
+              pendingGroup = null;
+            }
+            items.push({
+              type: 'option',
+              el: child,
+              label: (child.textContent || '').replace(/\s+/g, ' ').trim(),
+              value: child.value,
+              disabled: child.disabled,
+            });
+          }
+        });
+      };
+      walk(native);
+      return items;
+    }
+
+    // 原生 select 的值变化后，把显示文字同步到触发器
+    function sync(native) {
+      const trigger = native.__ldmTrigger;
+      if (!trigger) return;
+      const valueEl = trigger.querySelector('.ldm-select__value');
+      if (!valueEl) return;
+      const opt = native.selectedIndex >= 0 ? native.options[native.selectedIndex] : null;
+      const raw = opt ? (opt.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      const label = raw || '请选择';
+      if (valueEl.textContent !== label) valueEl.textContent = label;
+      trigger.classList.toggle('is-placeholder', !raw);
+      trigger.title = raw;
+      trigger.disabled = native.disabled;
+      trigger.setAttribute('aria-expanded', openState && openState.native === native ? 'true' : 'false');
+      // 页面可能动态改内联样式（宽度等），触发器跟着原生 select 走
+      const css = native.style.cssText;
+      if (trigger.getAttribute('data-ldm-style') !== css) {
+        trigger.setAttribute('data-ldm-style', css);
+        trigger.style.cssText = css;
+      }
+    }
+
+    function enhance(native) {
+      if (!native || native.tagName !== 'SELECT' || native.__ldmTrigger) return;
+      if (native.multiple || native.size > 1) return;
+      if (native.dataset.native === '1' || native.dataset.native === 'true') return;
+
+      const trigger = document.createElement('button');
+      trigger.type = 'button';
+      const cls = native.className.split(/\s+/).filter((c) => c && c !== 'ldm-select__native');
+      trigger.className = cls.concat('ldm-select').join(' ');
+      if (native.id) trigger.id = native.id + '__trigger';
+      trigger.innerHTML = `<span class="ldm-select__value"></span><span class="ldm-select__chev">${icon('chevron', 14)}</span>`;
+      trigger.setAttribute('aria-haspopup', 'listbox');
+      trigger.setAttribute('aria-expanded', 'false');
+      const ariaLabel = native.getAttribute('aria-label');
+      if (ariaLabel) trigger.setAttribute('aria-label', ariaLabel);
+      if (native.style.cssText) trigger.style.cssText = native.style.cssText;
+
+      // 原生 select 隐藏后 label 的 for 会指向不可见元素，改指向触发器
+      if (native.id) {
+        document.querySelectorAll('label[for]').forEach((label) => {
+          if (label.htmlFor === native.id) label.htmlFor = trigger.id;
+        });
+      }
+
+      native.parentNode.insertBefore(trigger, native.nextSibling);
+      native.classList.add('ldm-select__native');
+      native.tabIndex = -1;
+      native.setAttribute('aria-hidden', 'true');
+      native.__ldmTrigger = trigger;
+
+      trigger.addEventListener('click', () => {
+        if (openState && openState.native === native) close();
+        else open(native);
+      });
+      trigger.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          open(native, { reverse: e.key === 'ArrowUp' });
+        } else if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          if (openState && openState.native === native) close();
+          else open(native);
+        } else if (e.key === 'Escape' && openState && openState.native === native) {
+          e.preventDefault();
+          e.stopPropagation();
+          close();
+        } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          // 直接敲字也能打开下拉并带入搜索词
+          e.preventDefault();
+          open(native, { query: e.key });
+        }
+      });
+
+      sync(native);
+    }
+
+    function open(native, opts) {
+      const o = opts || {};
+      if (native.disabled) return;
+      if (openState) close();
+      const trigger = native.__ldmTrigger;
+      if (!trigger || !trigger.isConnected) return;
+
+      const pop = document.createElement('div');
+      pop.className = 'ldm-pop';
+      pop.tabIndex = -1;
+
+      const searchWrap = document.createElement('div');
+      searchWrap.className = 'ldm-pop__search-wrap';
+      searchWrap.innerHTML = `${icon('search', 14)}<input class="ldm-pop__search" type="text" placeholder="搜索…" autocomplete="off" spellcheck="false" aria-label="搜索选项">`;
+      const searchEl = searchWrap.querySelector('input');
+      const listEl = document.createElement('div');
+      listEl.className = 'ldm-pop__list';
+      listEl.setAttribute('role', 'listbox');
+      pop.appendChild(searchWrap);
+      pop.appendChild(listEl);
+
+      const items = collect(native);
+      const optionCount = items.filter((it) => it.type === 'option').length;
+      // 选项少的时候没必要放搜索框；超过 5 个才显示。
+      // 仍可用 data-search="always" 强制显示、data-search="off" 强制关闭；
+      // 在下拉按钮上直接敲字时也会临时显示搜索框。
+      const showSearch = native.dataset.search === 'always'
+        || (native.dataset.search !== 'off' && (optionCount > 5 || !!o.query));
+      if (!showSearch) searchWrap.hidden = true;
+
+      openState = { native, trigger, pop, listEl, searchEl, items, filtered: [], active: -1, showSearch };
+      document.body.appendChild(pop);
+      if (o.query) searchEl.value = o.query;
+
+      renderList(o.reverse);
+      position();
+
+      searchEl.addEventListener('input', () => renderList());
+      pop.addEventListener('keydown', onPopKeydown);
+      document.addEventListener('mousedown', onDocDown, true);
+      window.addEventListener('scroll', onScroll, true);
+      window.addEventListener('resize', onResize);
+
+      trigger.setAttribute('aria-expanded', 'true');
+      // 触摸设备不自动聚焦搜索框，避免一打开就弹虚拟键盘
+      if (showSearch && !isCoarse) searchEl.focus();
+      else pop.focus();
+    }
+
+    function renderList(reverse) {
+      if (!openState) return;
+      const st = openState;
+      const q = (st.searchEl.value || '').trim().toLowerCase();
+      st.listEl.innerHTML = '';
+      st.filtered = [];
+      let pendingGroup = null;
+
+      st.items.forEach((it) => {
+        if (it.type === 'group') { pendingGroup = it.label; return; }
+        const hay = (it.label + ' ' + it.value).toLowerCase();
+        if (q && !hay.includes(q)) return;
+        if (pendingGroup) {
+          const g = document.createElement('div');
+          g.className = 'ldm-pop__group';
+          g.textContent = pendingGroup;
+          st.listEl.appendChild(g);
+          pendingGroup = null;
+        }
+        const node = document.createElement('button');
+        node.type = 'button';
+        node.className = 'ldm-opt';
+        node.setAttribute('role', 'option');
+        node.dataset.idx = String(st.filtered.length);
+        const selected = it.el.index === st.native.selectedIndex;
+        if (selected) {
+          node.classList.add('is-selected');
+          node.setAttribute('aria-selected', 'true');
+        }
+        if (it.disabled) node.disabled = true;
+        const label = document.createElement('span');
+        label.className = 'ldm-opt__label';
+        label.textContent = it.label || it.value || '（空）';
+        node.appendChild(label);
+        if (selected) {
+          const check = document.createElement('span');
+          check.className = 'ldm-opt__check';
+          check.innerHTML = icon('check', 14);
+          node.appendChild(check);
+        }
+        node.addEventListener('mousemove', () => {
+          if (openState !== st) return;
+          setActive(Number(node.dataset.idx), false);
+        });
+        node.addEventListener('click', () => choose(it));
+        st.listEl.appendChild(node);
+        st.filtered.push(it);
+      });
+
+      if (!st.filtered.length) {
+        const empty = document.createElement('div');
+        empty.className = 'ldm-pop__empty';
+        empty.textContent = q ? '没有匹配的选项' : '暂无可选项';
+        st.listEl.appendChild(empty);
+        st.active = -1;
+        return;
+      }
+
+      // 初始高亮：当前选中项优先，否则第一项（向上打开时是最后一项）
+      const selIdx = st.filtered.findIndex((it) => it.el.index === st.native.selectedIndex);
+      const idx = selIdx >= 0 ? selIdx : (reverse ? st.filtered.length - 1 : 0);
+      setActive(idx, true);
+    }
+
+    function setActive(idx, scroll) {
+      if (!openState || !openState.filtered.length) return;
+      const st = openState;
+      const n = st.filtered.length;
+      st.active = ((idx % n) + n) % n;
+      const nodes = st.listEl.querySelectorAll('.ldm-opt');
+      nodes.forEach((node, i) => node.classList.toggle('is-active', i === st.active));
+      if (scroll) {
+        const node = nodes[st.active];
+        if (node) node.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function move(delta) {
+      if (!openState || !openState.filtered.length) return;
+      setActive(openState.active + delta, true);
+    }
+
+    function onPopKeydown(e) {
+      if (!openState) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        const { trigger } = openState;
+        close();
+        if (trigger && trigger.isConnected) trigger.focus();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        move(1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        move(-1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        setActive(0, true);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        setActive(openState.filtered.length - 1, true);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const it = openState.filtered[openState.active];
+        if (it) choose(it);
+      } else if (e.key === 'Tab') {
+        // 弹层挂在 body 末尾，交给浏览器跳转会跳到页面末尾，这里先收起并回到触发器
+        e.preventDefault();
+        const { trigger } = openState;
+        close();
+        if (trigger && trigger.isConnected) trigger.focus();
+      }
+    }
+
+    function choose(it) {
+      if (!openState || it.disabled) return;
+      const st = openState;
+      const { native, trigger } = st;
+      const changed = native.selectedIndex !== it.el.index;
+      native.selectedIndex = it.el.index;
+      sync(native);
+      close();
+      if (changed) native.dispatchEvent(new Event('change'));
+      // 页面可能借 change 把焦点移到输入框（例如在线对话），不要抢回来
+      const active = document.activeElement;
+      if (trigger.isConnected && (!active || active === document.body || active === document.documentElement)) {
+        trigger.focus();
+      }
+    }
+
+    function position() {
+      if (!openState) return;
+      const { trigger, pop } = openState;
+      if (!trigger.isConnected) { close(); return; }
+      const r = trigger.getBoundingClientRect();
+      if (!r.width && !r.height) { close(); return; }
+      const vw = document.documentElement.clientWidth;
+      const vh = document.documentElement.clientHeight;
+      const margin = 8;
+      const width = Math.min(Math.max(r.width, 200), vw - margin * 2);
+      pop.style.width = width + 'px';
+      pop.style.maxHeight = '';
+
+      const ph = pop.offsetHeight;
+      let left = Math.min(Math.max(margin, r.left), vw - width - margin);
+      let top = r.bottom + 6;
+      let above = false;
+      if (top + ph > vh - margin && r.top - ph - 6 >= margin) {
+        top = r.top - ph - 6;
+        above = true;
+      }
+      // 上下空间都不够时贴着空间大的一侧，并限制弹层高度（列表内部滚动）
+      if (top + ph > vh - margin) {
+        const below = vh - r.bottom - margin - 6;
+        const up = r.top - margin - 6;
+        if (below >= up) {
+          top = r.bottom + 6;
+          pop.style.maxHeight = Math.max(120, below) + 'px';
+        } else {
+          const h = Math.max(120, up);
+          top = Math.max(margin, r.top - h - 6);
+          pop.style.maxHeight = h + 'px';
+          above = true;
+        }
+      }
+      pop.classList.toggle('ldm-pop--above', above);
+      pop.style.left = Math.round(left) + 'px';
+      pop.style.top = Math.round(top) + 'px';
+    }
+
+    function close() {
+      if (!openState) return;
+      const st = openState;
+      openState = null;
+      document.removeEventListener('mousedown', onDocDown, true);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
+      st.pop.remove();
+      if (st.trigger && st.trigger.isConnected) st.trigger.setAttribute('aria-expanded', 'false');
+    }
+
+    function onDocDown(e) {
+      if (!openState) return;
+      if (openState.pop.contains(e.target) || openState.trigger.contains(e.target)) return;
+      close();
+    }
+
+    function onScroll(e) {
+      if (!openState) return;
+      if (e.target && e.target.nodeType === 1 && openState.pop.contains(e.target)) return;
+      position();
+    }
+
+    function onResize() { position(); }
+
+    // 下拉打开时选项被动态替换（例如参数来源异步加载），重建列表
+    function refreshOpen(native) {
+      if (!openState || openState.native !== native) return;
+      openState.items = collect(native);
+      renderList();
+      position();
+    }
+
+    function enhanceAll(root) {
+      if (!root || !root.querySelectorAll) return;
+      if (root.tagName === 'SELECT') enhance(root);
+      root.querySelectorAll('select').forEach(enhance);
+    }
+
+    // 页面和弹窗都是动态渲染的，用 MutationObserver 自动增强新出现的 select
+    const queued = new Set();
+    let scheduled = false;
+    function schedule() {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        const nodes = Array.from(queued);
+        queued.clear();
+        nodes.forEach((node) => {
+          if (!node.isConnected) return;
+          if (node.tagName === 'SELECT') {
+            enhance(node);
+            sync(node);
+            refreshOpen(node);
+            return;
+          }
+          if (node.tagName === 'OPTION' || node.tagName === 'OPTGROUP') {
+            const sel = node.closest('select');
+            if (sel) { enhance(sel); sync(sel); refreshOpen(sel); }
+            return;
+          }
+          if (node.querySelector && node.querySelector('select')) {
+            node.querySelectorAll('select').forEach((sel) => { enhance(sel); sync(sel); });
+          }
+        });
+      });
+    }
+
+    function observe() {
+      const mo = new MutationObserver((muts) => {
+        muts.forEach((m) => {
+          m.addedNodes.forEach((n) => {
+            if (n.nodeType !== 1) return;
+            if (n.tagName === 'SELECT' || n.tagName === 'OPTION' || n.tagName === 'OPTGROUP'
+              || (n.querySelector && n.querySelector('select'))) {
+              queued.add(n);
+            }
+          });
+          // 当前打开的下拉被移出文档（切页 / 关弹窗）时收起
+          if (m.removedNodes.length && openState) {
+            const trigger = openState.trigger;
+            m.removedNodes.forEach((n) => {
+              if (n.nodeType === 1 && n.contains && n.contains(trigger)) close();
+            });
+          }
+        });
+        if (queued.size) schedule();
+      });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // 页面代码给原生 select 赋值时不会触发 change，这里补一次触发器同步
+    try {
+      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+      if (desc && desc.set) {
+        Object.defineProperty(HTMLSelectElement.prototype, 'value', {
+          configurable: true,
+          enumerable: desc.enumerable,
+          get() { return desc.get.call(this); },
+          set(v) {
+            desc.set.call(this, v);
+            if (this.__ldmTrigger) sync(this);
+          },
+        });
+      }
+    } catch (e) { /* 极端环境下保持原生行为 */ }
+
+    if (document.body) {
+      enhanceAll(document);
+      observe();
+    } else {
+      document.addEventListener('DOMContentLoaded', () => { enhanceAll(document); observe(); }, { once: true });
+    }
+
+    return { enhance, enhanceAll, sync, close, isOpen: () => !!openState };
+  })();
+
   // ---------- 模态框 ----------
   let modalStack = [];
 
@@ -367,9 +823,13 @@
     document.body.style.overflow = 'hidden';
 
     if (onMount) onMount(api);
-    // 自动聚焦第一个输入框
+    // 自动聚焦第一个输入框；如果是下拉框，聚焦到自绘触发器
     setTimeout(() => {
-      const first = bodyEl.querySelector('input:not([type=checkbox]):not([type=radio]), textarea, select');
+      let first = bodyEl.querySelector('input:not([type=checkbox]):not([type=radio]), textarea, select');
+      if (first && first.tagName === 'SELECT') {
+        Select.enhance(first);
+        first = first.__ldmTrigger || first;
+      }
       if (first && !first.dataset.nofocus) first.focus();
     }, 60);
     return api;
@@ -581,7 +1041,7 @@
   // ---------- 导出 ----------
   window.LDM = {
     esc, fmtNum, fmtInt, fmtUnit, fmtTime, fmtTimeShort, relTime, fmtDuration, fmtUptime,
-    copyText, debounce, icon, providerIcon, providerAvatar, Toast, API, openModal, confirmDialog, promptDialog,
+    copyText, debounce, icon, providerIcon, providerAvatar, Toast, API, Select, openModal, confirmDialog, promptDialog,
     badge, statusBadge, emptyState, loadingBlock, switchEl, capBadges, fmtContext, colorBadge,
     Theme, State, routeParam, applyLogo,
     registerPage(name, def) { PAGES[name] = def; },
@@ -726,6 +1186,8 @@
     const actions = document.getElementById('topbar-actions');
     actions.innerHTML = '';
     const inner = document.getElementById('content-inner');
+    // 对话页需要撑满内容区；切到其它页面时恢复默认高度
+    inner.classList.remove('content__inner--fill');
     inner.innerHTML = loadingBlock();
     try {
       await def.render(inner, actions);

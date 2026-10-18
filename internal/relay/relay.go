@@ -398,7 +398,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	if convertBody || isChatPath(req.Path) {
 		upPath = prov.UpstreamPath(req.Path, route.Upstream, req.Stream)
 	}
-	target := upstream.JoinURL(base, upPath)
+	target := upstream.JoinURL(base, upPath, route.Channel.ShouldAppendV1())
 
 	upReq, err := http.NewRequestWithContext(reqCtx, req.Method, target, bytes.NewReader(body))
 	if err != nil {

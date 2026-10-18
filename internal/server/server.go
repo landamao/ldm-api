@@ -304,7 +304,13 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 }
 
 func readJSON(r *http.Request, v any) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	return readJSONLimit(r, v, 8<<20)
+}
+
+// readJSONLimit 与 readJSON 相同，但允许调用方指定请求体上限。
+// 在线对话需要容纳 base64 图片与附件，因此单独放宽到 64MB。
+func readJSONLimit(r *http.Request, v any, limit int64) error {
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit))
 	if err != nil {
 		return err
 	}

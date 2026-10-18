@@ -435,7 +435,7 @@
   function openChannelEditor(ch) {
     const isNew = !ch;
     const data = ch || {
-      id: '', name: '', type: 'openai', base_url: '', api_key: '',
+      id: '', name: '', type: 'openai', base_url: '', api_key: '', append_v1: true,
       models: [], enabled: true, timeout: 300, remark: '', headers: {},
     };
 
@@ -461,7 +461,14 @@
       </div>
 
       <div class="field">
-        <label class="field__label">接口地址（Base URL）<span class="req">*</span></label>
+        <div class="flex-center gap-8" style="margin-bottom:5px">
+          <label class="field__label" style="margin-bottom:0">接口地址（Base URL）<span class="req">*</span></label>
+          <label class="switch ml-auto" style="white-space:nowrap">
+            <input type="checkbox" id="f-append-v1" ${data.append_v1 !== false ? 'checked' : ''}>
+            <span class="switch__track"></span>
+            <span class="switch__label">自动补全 /v1</span>
+          </label>
+        </div>
         <input class="input mono" id="f-base" value="${esc(data.base_url || '')}" placeholder="https://api.openai.com">
         <div class="field__hint" id="base-hint"></div>
       </div>
@@ -545,7 +552,7 @@
             gemini: 'https://generativelanguage.googleapis.com',
           };
           $('#base-hint').innerHTML = `必填，需要带上 <code>https://</code> 或 <code>http://</code>。
-            例如 <code>${examples[typeEl.value]}</code>；填 <code>https://xxx/v1</code> 也可以，网关会自动处理。
+            例如 <code>${examples[typeEl.value]}</code>。
             <b>留空不会回退到官方地址</b>，必须自己填清楚。`;
         };
         updateTypeHint();
@@ -604,6 +611,7 @@
               type: typeEl.value,
               base_url: base,
               api_key: key,
+              append_v1: $('#f-append-v1').checked,
             });
             const list = res.models || [];
             if (!list.length) { Toast.warn('上游没有返回模型列表，请手动填写'); return; }
@@ -650,7 +658,7 @@
           }
           const payload = {
             id, name: $('#f-name').value.trim(), type: typeEl.value,
-            base_url: base, api_key: key, models,
+            base_url: base, api_key: key, append_v1: $('#f-append-v1').checked, models,
             timeout: Number($('#f-timeout').value) || 300,
             enabled: $('#f-enabled').checked,
             headers, remark: $('#f-remark').value.trim(),
@@ -696,7 +704,15 @@
   // ======================================================================
   // 模型管理
   // ======================================================================
-  const modelState = { typeTab: 'all', channelTab: 'all', keyword: '', multi: false, selected: new Set() };
+  const modelState = {
+    type: 'all',      // all | custom | channel
+    channel: 'all',   // all | 渠道 ID
+    provider: 'all',  // all | none | 提供商 ID
+    status: 'all',    // all | enabled | disabled | unavailable
+    keyword: '',
+    multi: false,
+    selected: new Set(),
+  };
 
   window.LDM.registerPage('models', {
     title: '模型管理',
@@ -712,6 +728,9 @@
 
       // 多选模式退出后清理残留选择
       if (!modelState.multi) modelState.selected.clear();
+
+      // 筛选区和表头固定，只让表格内容滚动
+      root.classList.add('content__inner--fill');
 
       actions.innerHTML = `
         <button class="btn" id="btn-providers">${icon('box', 14)}提供商</button>
@@ -739,42 +758,108 @@
       const customCount = models.filter((m) => m.type === 'custom').length;
       const channelCount = models.filter((m) => m.type === 'channel').length;
 
-      // 来源渠道集合
-      const sourceChannels = Array.from(new Set(
-        models.filter((m) => m.type === 'channel').map((m) => m.channel_id)
-      )).sort();
+      // 模型实际用到的渠道：渠道模型看 channel_id，自定义模型看路由里的 channel_id
+      const modelChannels = (m) => {
+        const ids = m.type === 'channel' ? [m.channel_id] : (m.routes || []).map((r) => r.channel_id);
+        return Array.from(new Set(ids.filter(Boolean)));
+      };
+
+      // 渠道下拉跟随类型：全部模型列出所有渠道，自定义/渠道模型只列出该类型实际用到的渠道
+      const channelOrder = new Map(channels.map((c, i) => [c.id, i]));
+      const channelOptionsFor = (type) => {
+        const ids = type === 'all' ? channels.map((c) => c.id) : [];
+        models.forEach((m) => {
+          if (type !== 'all' && m.type !== type) return;
+          modelChannels(m).forEach((cid) => {
+            if (!ids.includes(cid)) ids.push(cid);
+          });
+        });
+        ids.sort((a, b) => {
+          const ia = channelOrder.has(a) ? channelOrder.get(a) : Number.MAX_SAFE_INTEGER;
+          const ib = channelOrder.has(b) ? channelOrder.get(b) : Number.MAX_SAFE_INTEGER;
+          return ia - ib || a.localeCompare(b);
+        });
+        return [
+          ['all', '全部渠道'],
+          ...ids.map((cid) => {
+            const ch = channels.find((c) => c.id === cid);
+            const name = ch && ch.name && ch.name !== cid ? `（${ch.name}）` : '';
+            return [cid, `${cid}${name}`];
+          }),
+        ];
+      };
+
+      // 提供商计数：provider_id 为空或指向已删除的提供商时归入「未设置」
+      const providerCounts = {};
+      models.forEach((m) => {
+        const pid = m.provider_id && providerByID[m.provider_id] ? m.provider_id : '';
+        providerCounts[pid] = (providerCounts[pid] || 0) + 1;
+      });
+      const providerOptions = [
+        ['all', '全部提供商'],
+        ['none', `未设置（${providerCounts[''] || 0}）`],
+        ...providers
+          .filter((p) => providerCounts[p.id])
+          .map((p) => [p.id, `${p.name}（${providerCounts[p.id]}）`]),
+      ];
+
+      // 状态计数：启用且渠道可用才算「已启用」，启用但渠道不可用单独归类
+      const statusCounts = { enabled: 0, disabled: 0, unavailable: 0 };
+      models.forEach((m) => {
+        if (!m.enabled) statusCounts.disabled += 1;
+        else if (m.channel_ready) statusCounts.enabled += 1;
+        else statusCounts.unavailable += 1;
+      });
+      const statusOptions = [
+        ['all', '全部状态'],
+        ['enabled', `已启用（${statusCounts.enabled}）`],
+        ['disabled', `已禁用（${statusCounts.disabled}）`],
+        ['unavailable', `不可用（${statusCounts.unavailable}）`],
+      ];
+
+      const typeOptions = [
+        ['all', `全部模型（${models.length}）`],
+        ['custom', `自定义模型（${customCount}）`],
+        ['channel', `渠道模型（${channelCount}）`],
+      ];
+
+      // 记住的筛选值如果已经不在选项里（渠道/提供商被删），回落到「全部」
+      const ensureValue = (key, opts) => {
+        if (!opts.some(([v]) => v === modelState[key])) modelState[key] = 'all';
+      };
+      ensureValue('type', typeOptions);
+      let channelOptions = channelOptionsFor(modelState.type);
+      ensureValue('channel', channelOptions);
+      ensureValue('provider', providerOptions);
+      ensureValue('status', statusOptions);
+
+      const filterSelect = (id, label, key, opts, width) => `
+        <select class="select" id="${id}" aria-label="${label}" style="width:${width}">
+          ${opts.map(([v, text]) => `<option value="${esc(v)}"${modelState[key] === v ? ' selected' : ''}>${esc(text)}</option>`).join('')}
+        </select>`;
 
       root.innerHTML = `
-        <div class="card" style="overflow:visible">
-          <div class="tabs" id="type-tabs">
-            <div class="tab ${modelState.typeTab === 'all' ? 'is-active' : ''}" data-tab="all">全部模型 <span class="tab__count">${models.length}</span></div>
-            <div class="tab ${modelState.typeTab === 'custom' ? 'is-active' : ''}" data-tab="custom">自定义模型 <span class="tab__count">${customCount}</span></div>
-            <div class="tab ${modelState.typeTab === 'channel' ? 'is-active' : ''}" data-tab="channel">渠道模型 <span class="tab__count">${channelCount}</span></div>
+        <div class="card models-card" style="overflow:visible">
+          <div class="toolbar" style="border-bottom:none;padding-bottom:5px">
+            ${filterSelect('f-type', '模型类型', 'type', typeOptions, '150px')}
+            ${filterSelect('f-channel', '渠道', 'channel', channelOptions, '210px')}
+            ${filterSelect('f-provider', '提供商', 'provider', providerOptions, '170px')}
+            ${filterSelect('f-status', '启用状态', 'status', statusOptions, '145px')}
           </div>
-          <div class="tabs" id="channel-tabs" style="padding-top:4px">
-            <div class="tab ${modelState.channelTab === 'all' ? 'is-active' : ''}" data-ctab="all">全部来源</div>
-            ${sourceChannels.map((cid) => {
-              const ch = channels.find((c) => c.id === cid);
-              const n = models.filter((m) => m.type === 'channel' && m.channel_id === cid).length;
-              return `<div class="tab ${modelState.channelTab === cid ? 'is-active' : ''}" data-ctab="${esc(cid)}">
-                渠道 ${esc(cid)}${ch && ch.name ? '（' + esc(ch.name) + '）' : ''} <span class="tab__count">${n}</span></div>`;
-            }).join('')}
-            <div class="tab ${modelState.channelTab === 'custom' ? 'is-active' : ''}" data-ctab="custom">自定义路由</div>
-          </div>
-          <div class="toolbar">
-            <div class="search">
+          <div class="toolbar" style="padding-top:5px">
+            <div class="search" style="flex:0 1 320px">
               <span class="search__icon">${icon('search', 15)}</span>
               <input class="input" id="model-search" placeholder="搜索模型 ID…" value="${esc(modelState.keyword)}">
             </div>
             <div class="toolbar__spacer"></div>
             <span class="muted fs-12" id="filter-count" ${modelState.multi ? 'style="display:none"' : ''}></span>
-            <button class="btn btn--sm" id="btn-multi" style="margin-left:10px;${modelState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
-            <span class="muted fs-12" id="multi-count" style="margin-left:10px;${modelState.multi ? '' : 'display:none'}">已选 ${modelState.selected.size} 个</span>
+            <button class="btn btn--sm" id="btn-multi" style="${modelState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
+            <span class="muted fs-12" id="multi-count" style="${modelState.multi ? '' : 'display:none'}">已选 ${modelState.selected.size} 个</span>
             <button class="btn btn--sm" id="m-enable" style="${modelState.multi ? '' : 'display:none'}">${icon('play', 13)}批量启用</button>
             <button class="btn btn--sm" id="m-disable" style="${modelState.multi ? '' : 'display:none'}">${icon('pause', 13)}批量禁用</button>
             <button class="btn btn--sm" id="m-provider" style="${modelState.multi ? '' : 'display:none'}">${icon('box', 13)}批量设置提供商</button>
             <button class="btn btn--sm btn--danger" id="m-del" style="${modelState.multi ? '' : 'display:none'}">${icon('trash', 13)}批量删除</button>
-            <button class="btn btn--sm btn--ghost" id="m-exit" style="margin-left:4px;${modelState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
+            <button class="btn btn--sm btn--ghost" id="m-exit" style="${modelState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
           </div>
           <div id="model-table"></div>
         </div>`;
@@ -782,12 +867,20 @@
       const renderTable = () => {
         const kw = modelState.keyword.trim().toLowerCase();
         let list = models.filter((m) => {
-          if (modelState.typeTab === 'custom' && m.type !== 'custom') return false;
-          if (modelState.typeTab === 'channel' && m.type !== 'channel') return false;
-          if (modelState.channelTab === 'custom') {
-            if (m.type !== 'custom') return false;
-          } else if (modelState.channelTab !== 'all') {
-            if (m.type !== 'channel' || m.channel_id !== modelState.channelTab) return false;
+          if (modelState.type === 'custom' && m.type !== 'custom') return false;
+          if (modelState.type === 'channel' && m.type !== 'channel') return false;
+          if (modelState.channel !== 'all' && !modelChannels(m).includes(modelState.channel)) return false;
+          if (modelState.provider === 'none') {
+            if (m.provider_id && providerByID[m.provider_id]) return false;
+          } else if (modelState.provider !== 'all') {
+            if (m.provider_id !== modelState.provider) return false;
+          }
+          if (modelState.status === 'enabled') {
+            if (!m.enabled || !m.channel_ready) return false;
+          } else if (modelState.status === 'disabled') {
+            if (m.enabled) return false;
+          } else if (modelState.status === 'unavailable') {
+            if (!m.enabled || m.channel_ready) return false;
           }
           if (kw) {
             const hay = (m.id + ' ' + (m.display_name || '') + ' ' + (m.channel_name || '') + ' ' + (m.provider_name || '')).toLowerCase();
@@ -804,7 +897,7 @@
             models.length === 0 ? '还没有添加任何模型' : '没有符合条件的模型',
             models.length === 0
               ? '点击右上角「添加模型」，从已配置渠道派生出的渠道模型里批量选择，或者创建自定义模型把多个渠道模型组合成一个入口。'
-              : '试试切换标签或清空搜索关键词。',
+              : '试试调整筛选条件或清空搜索关键词。',
             models.length === 0
               ? `<div class="btn-row" style="justify-content:center">
                    <button class="btn btn--primary" id="e-add">${icon('plus', 15)}添加模型</button>
@@ -903,20 +996,26 @@
         });
       };
 
-      root.querySelectorAll('[data-tab]').forEach((el) => {
-        el.onclick = () => {
-          modelState.typeTab = el.dataset.tab;
-          root.querySelectorAll('#type-tabs .tab').forEach((t) => t.classList.toggle('is-active', t === el));
-          renderTable();
-        };
+      // 下拉筛选：原生 select 由 Select 组件自动增强，直接监听 change 即可
+      const typeEl = root.querySelector('#f-type');
+      typeEl.addEventListener('change', () => {
+        modelState.type = typeEl.value;
+        channelOptions = channelOptionsFor(modelState.type);
+        ensureValue('channel', channelOptions);
+        const channelEl = root.querySelector('#f-channel');
+        channelEl.innerHTML = channelOptions.map(([v, text]) =>
+          `<option value="${esc(v)}"${modelState.channel === v ? ' selected' : ''}>${esc(text)}</option>`).join('');
+        window.LDM.Select.sync(channelEl);
+        renderTable();
       });
-      root.querySelectorAll('[data-ctab]').forEach((el) => {
-        el.onclick = () => {
-          modelState.channelTab = el.dataset.ctab;
-          root.querySelectorAll('#channel-tabs .tab').forEach((t) => t.classList.toggle('is-active', t === el));
-          renderTable();
-        };
-      });
+      [['f-channel', 'channel'], ['f-provider', 'provider'], ['f-status', 'status']]
+        .forEach(([id, key]) => {
+          const el = root.querySelector('#' + id);
+          el.addEventListener('change', () => {
+            modelState[key] = el.value;
+            renderTable();
+          });
+        });
       const searchEl = root.querySelector('#model-search');
       searchEl.addEventListener('input', debounce(() => {
         modelState.keyword = searchEl.value;

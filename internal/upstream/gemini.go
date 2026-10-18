@@ -257,6 +257,14 @@ func geminiParts(content any, vision bool) []any {
 				if img := geminiImage(p); img != nil {
 					parts = append(parts, img)
 				}
+			case "file", "input_file":
+				if f := geminiFile(p); f != nil {
+					parts = append(parts, f)
+				}
+			case "document":
+				if d := geminiDocument(p); d != nil {
+					parts = append(parts, d)
+				}
 			}
 		}
 	}
@@ -270,6 +278,9 @@ func geminiImage(p map[string]any) map[string]any {
 	raw := ""
 	if u := asMap(p["image_url"]); u != nil {
 		raw = str(u["url"])
+	} else {
+		// OpenAI Responses 风格的 input_image 直接把地址放在 image_url 上
+		raw = str(p["image_url"])
 	}
 	if raw == "" {
 		raw = str(p["url"])
@@ -288,6 +299,73 @@ func geminiImage(p map[string]any) map[string]any {
 		}}
 	}
 	return map[string]any{"fileData": map[string]any{"mimeType": "image/png", "fileUri": raw}}
+}
+
+// geminiFile 把 OpenAI 风格的 file / input_file 内容块翻译成 Gemini 的
+// inlineData（base64）或 fileData（远程地址）。纯文本附件直接作为 text part。
+func geminiFile(p map[string]any) map[string]any {
+	file := asMap(p["file"])
+	if file == nil {
+		file = p
+	}
+	name := str(file["filename"])
+	if name == "" {
+		name = str(p["filename"])
+	}
+	data := str(file["file_data"])
+	if data == "" {
+		data = str(file["data"])
+	}
+	if data == "" {
+		data = str(file["file_url"])
+	}
+	if data == "" {
+		data = str(file["url"])
+	}
+	if data == "" {
+		return nil
+	}
+	if strings.HasPrefix(data, "data:") {
+		rest := strings.TrimPrefix(data, "data:")
+		semi := strings.Index(rest, ";base64,")
+		if semi < 0 {
+			return nil
+		}
+		return map[string]any{"inlineData": map[string]any{
+			"mimeType": rest[:semi], "data": rest[semi+len(";base64,"):],
+		}}
+	}
+	if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+		return map[string]any{"fileData": map[string]any{
+			"mimeType": guessMime(name, data), "fileUri": data,
+		}}
+	}
+	return map[string]any{"text": data}
+}
+
+// geminiDocument 兼容 Anthropic 原生的 document 块，便于自定义请求体直接粘贴。
+func geminiDocument(p map[string]any) map[string]any {
+	src := asMap(p["source"])
+	if src == nil {
+		return geminiFile(p)
+	}
+	switch str(src["type"]) {
+	case "base64":
+		return map[string]any{"inlineData": map[string]any{
+			"mimeType": str(src["media_type"]), "data": str(src["data"]),
+		}}
+	case "text":
+		text := str(src["data"])
+		if title := str(p["title"]); title != "" {
+			text = "【" + title + "】\n" + text
+		}
+		return map[string]any{"text": text}
+	case "url":
+		return map[string]any{"fileData": map[string]any{
+			"mimeType": guessMime(str(p["title"]), str(src["url"])), "fileUri": str(src["url"]),
+		}}
+	}
+	return nil
 }
 
 // ---------- 响应转换 ----------

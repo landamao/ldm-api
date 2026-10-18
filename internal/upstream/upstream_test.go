@@ -93,20 +93,37 @@ func TestIsConversationPath(t *testing.T) {
 }
 
 func TestJoinURL(t *testing.T) {
-	cases := []struct{ base, path, want string }{
-		{"https://api.openai.com", "/v1/chat/completions", "https://api.openai.com/v1/chat/completions"},
-		{"https://api.openai.com/", "/v1/chat/completions", "https://api.openai.com/v1/chat/completions"},
-		{"https://api.openai.com/v1", "/v1/chat/completions", "https://api.openai.com/v1/chat/completions"},
-		{"https://api.openai.com/v1/", "v1/chat/completions", "https://api.openai.com/v1/chat/completions"},
-		{"https://api.anthropic.com", "/v1/messages", "https://api.anthropic.com/v1/messages"},
-		{"https://generativelanguage.googleapis.com", "/v1beta/models/x:generateContent",
+	cases := []struct {
+		base, path string
+		appendV1   bool
+		want       string
+	}{
+		// 默认开启：地址里没有 /v1 时补全
+		{"https://api.openai.com", "/v1/chat/completions", true, "https://api.openai.com/v1/chat/completions"},
+		{"https://api.openai.com/", "/v1/chat/completions", true, "https://api.openai.com/v1/chat/completions"},
+		// 地址里已经有 /v1，不重复拼接
+		{"https://api.openai.com/v1", "/v1/chat/completions", true, "https://api.openai.com/v1/chat/completions"},
+		{"https://api.openai.com/v1/", "v1/chat/completions", true, "https://api.openai.com/v1/chat/completions"},
+		// 关闭开关：不补 /v1
+		{"https://api.openai.com", "/v1/chat/completions", false, "https://api.openai.com/chat/completions"},
+		// 火山方舟：地址填到 /api/v3，关闭开关
+		{"https://ark.cn-beijing.volces.com/api/v3", "/v1/chat/completions", false,
+			"https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
+		{"https://ark.cn-beijing.volces.com/api/v3", "/v1/models", false,
+			"https://ark.cn-beijing.volces.com/api/v3/models"},
+		// 开启开关时按用户配置补 /v1（方舟地址应该关闭开关）
+		{"https://ark.cn-beijing.volces.com/api/v3", "/v1/chat/completions", true,
+			"https://ark.cn-beijing.volces.com/api/v3/v1/chat/completions"},
+		// Anthropic 与 Gemini 保持原有行为
+		{"https://api.anthropic.com", "/v1/messages", true, "https://api.anthropic.com/v1/messages"},
+		{"https://generativelanguage.googleapis.com", "/v1beta/models/x:generateContent", true,
 			"https://generativelanguage.googleapis.com/v1beta/models/x:generateContent"},
-		{"https://generativelanguage.googleapis.com/v1beta", "/v1beta/models/x:generateContent",
+		{"https://generativelanguage.googleapis.com/v1beta", "/v1beta/models/x:generateContent", true,
 			"https://generativelanguage.googleapis.com/v1beta/models/x:generateContent"},
 	}
 	for _, c := range cases {
-		if got := JoinURL(c.base, c.path); got != c.want {
-			t.Errorf("JoinURL(%q,%q) = %q, want %q", c.base, c.path, got, c.want)
+		if got := JoinURL(c.base, c.path, c.appendV1); got != c.want {
+			t.Errorf("JoinURL(%q,%q,appendV1=%v) = %q, want %q", c.base, c.path, c.appendV1, got, c.want)
 		}
 	}
 }
@@ -283,6 +300,54 @@ func TestAnthropicBodyDropsImageWhenVisionUnsupported(t *testing.T) {
 	content := out["messages"].([]any)[0].(map[string]any)["content"].([]any)
 	if len(content) != 1 {
 		t.Errorf("图片应被丢弃，剩下 %d 个内容块", len(content))
+	}
+}
+
+func TestAnthropicBodyFileConversion(t *testing.T) {
+	in := mustJSON(t, `{"model":"c","messages":[{"role":"user","content":[
+		{"type":"text","text":"总结附件"},
+		{"type":"file","file":{"filename":"doc.pdf","file_data":"data:application/pdf;base64,JVBERi0="}},
+		{"type":"file","file":{"filename":"note.txt","file_data":"data:text/plain;base64,aGVsbG8="}},
+		{"type":"file","file":{"filename":"remote.pdf","file_url":"https://example.com/remote.pdf"}}
+	]}]}`)
+	out := anthropicBody(in, "c", store.Caps{})
+	content := out["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	if len(content) != 4 {
+		t.Fatalf("内容块数量错误: %d", len(content))
+	}
+
+	pdf := content[1].(map[string]any)
+	if pdf["type"] != "document" || pdf["title"] != "doc.pdf" {
+		t.Errorf("PDF 应转成 document 块，得到 %v", pdf)
+	}
+	src := pdf["source"].(map[string]any)
+	if src["type"] != "base64" || src["media_type"] != "application/pdf" || src["data"] != "JVBERi0=" {
+		t.Errorf("PDF source 解析错误: %v", src)
+	}
+
+	txt := content[2].(map[string]any)
+	tsrc := txt["source"].(map[string]any)
+	if tsrc["type"] != "text" || tsrc["data"] != "hello" {
+		t.Errorf("文本附件应解码成 text source，得到 %v", tsrc)
+	}
+
+	remote := content[3].(map[string]any)
+	rsrc := remote["source"].(map[string]any)
+	if rsrc["type"] != "url" || rsrc["url"] != "https://example.com/remote.pdf" {
+		t.Errorf("远程附件应转成 url source，得到 %v", rsrc)
+	}
+}
+
+func TestAnthropicBodyKeepsNativeDocumentBlock(t *testing.T) {
+	in := mustJSON(t, `{"model":"c","messages":[{"role":"user","content":[
+		{"type":"document","title":"a.pdf","source":{"type":"base64","media_type":"application/pdf","data":"QUJD"}}
+	]}]}`)
+	out := anthropicBody(in, "c", store.Caps{})
+	content := out["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	doc := content[0].(map[string]any)
+	src := doc["source"].(map[string]any)
+	if src["type"] != "base64" || src["data"] != "QUJD" {
+		t.Errorf("原生 document 块应原样透传，得到 %v", doc)
 	}
 }
 
@@ -532,6 +597,36 @@ func TestGeminiBodyConversion(t *testing.T) {
 	}
 	if !found {
 		t.Error("assistant 的 tool_calls 应转换成 functionCall")
+	}
+}
+
+func TestGeminiBodyFileConversion(t *testing.T) {
+	in := mustJSON(t, `{"model":"g","messages":[{"role":"user","content":[
+		{"type":"text","text":"总结"},
+		{"type":"file","file":{"filename":"doc.pdf","file_data":"data:application/pdf;base64,JVBERi0="}},
+		{"type":"document","title":"a.pdf","source":{"type":"base64","media_type":"application/pdf","data":"QUJD"}},
+		{"type":"file","file":{"filename":"remote.pdf","file_url":"https://example.com/remote.pdf"}}
+	]}]}`)
+	out := geminiBody(in, "g", store.Caps{})
+	contents := out["contents"].([]any)
+	parts := contents[0].(map[string]any)["parts"].([]any)
+	if len(parts) != 4 {
+		t.Fatalf("parts 数量错误: %d", len(parts))
+	}
+
+	inline := parts[1].(map[string]any)["inlineData"].(map[string]any)
+	if inline["mimeType"] != "application/pdf" || inline["data"] != "JVBERi0=" {
+		t.Errorf("PDF 应转成 inlineData，得到 %v", inline)
+	}
+
+	doc := parts[2].(map[string]any)["inlineData"].(map[string]any)
+	if doc["mimeType"] != "application/pdf" || doc["data"] != "QUJD" {
+		t.Errorf("Anthropic document 块应转成 inlineData，得到 %v", doc)
+	}
+
+	remote := parts[3].(map[string]any)["fileData"].(map[string]any)
+	if remote["mimeType"] != "application/pdf" || remote["fileUri"] != "https://example.com/remote.pdf" {
+		t.Errorf("远程附件应转成 fileData，得到 %v", remote)
 	}
 }
 
