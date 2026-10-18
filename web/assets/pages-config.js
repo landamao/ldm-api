@@ -196,6 +196,241 @@
     }
   }
 
+  // ---------- 获取模型列表弹窗 ----------
+  // 用标签页切换「获取到的模型」和「上游不存在的模型」。
+  // 两边都可以勾选/取消，确认后以勾选结果为准：取消勾选已添加的模型即从列表中移除。
+  // 模型按名称自动匹配提供商分组，支持展开/折叠。
+  async function openFetchedModelsPicker(cfg) {
+    const { existing, onConfirm } = cfg;
+    const models = Array.from(new Set(cfg.models || []));
+    const before = existing instanceof Set ? Array.from(existing) : Array.from(existing || []);
+    const beforeSet = new Set(before);
+    const fetchedSet = new Set(models);
+    const missing = before.filter((m) => !fetchedSet.has(m));
+
+    let providers = [];
+    try { providers = await State.loadProviders(); } catch (e) { providers = []; }
+    const providerByID = {};
+    providers.forEach((p) => { providerByID[p.id] = p; });
+
+    const itemHtml = (m, isOld) => `<label class="pick-item" data-search="${esc(m.toLowerCase())}">
+        <input type="checkbox" data-model="${esc(m)}" checked>
+        <span class="pick-item__name">${esc(m)}</span>
+        <span class="pick-item__meta">${isOld ? badge('已添加', 'green') : ''}</span>
+      </label>`;
+
+    // 按模型名自动匹配提供商；未命中的统一放到「未识别提供商」
+    const makeGroups = (arr) => {
+      const map = new Map();
+      arr.forEach((m) => {
+        const pid = autoMatchProvider(providers, m);
+        if (!map.has(pid)) map.set(pid, []);
+        map.get(pid).push(m);
+      });
+      const order = providers.map((p) => p.id).filter((pid) => map.has(pid));
+      if (map.has('')) order.push('');
+      return order.map((pid) => {
+        const p = providerByID[pid];
+        return {
+          key: pid || '__none',
+          icon: p ? p.icon : '',
+          name: p ? p.name : '未识别提供商',
+          items: map.get(pid),
+        };
+      });
+    };
+    const fetchedGroups = makeGroups(models);
+    const missingGroups = makeGroups(missing);
+    // 默认全部折叠，先看提供商分组概览
+    const collapsed = new Set([
+      ...fetchedGroups.map((g) => 'fetched:' + g.key),
+      ...missingGroups.map((g) => 'missing:' + g.key),
+    ]);
+
+    const groupsHtml = (groups, listKey, isOld) => groups.map((g) => {
+      const key = listKey + ':' + g.key;
+      return `
+      <div class="pick-group${collapsed.has(key) ? ' is-collapsed' : ''}" data-gkey="${esc(g.key)}" data-listkey="${listKey}">
+        <div class="pick-group__head">
+          <span class="pick-group__arrow">\u25be</span>
+          <input type="checkbox" data-group>
+          ${g.icon ? providerIcon(g.icon, 14) : ''}
+          <span class="pick-group__name${g.key === '__none' ? ' muted' : ''}">${esc(g.name)}</span>
+          <span class="pick-group__count">${g.items.length} 个模型</span>
+          <span class="pick-group__selected"></span>
+        </div>
+        <div class="pick-group__body">${g.items.map((m) => itemHtml(m, isOld(m))).join('')}</div>
+      </div>`;
+    }).join('');
+
+    const body = `
+      <div class="tabs mb-12" id="disc-tabs">
+        <div class="tab is-active" data-disc-tab="fetched">获取到的模型 <span class="tab__count">${models.length}</span></div>
+        <div class="tab" data-disc-tab="missing">上游不存在的模型 <span class="tab__count">${missing.length}</span></div>
+      </div>
+      <div class="search mb-12">
+        <span class="search__icon">${icon('search', 15)}</span>
+        <input class="input" id="disc-search" placeholder="搜索模型名，支持模糊匹配…">
+      </div>
+      <div class="flex-center gap-8 mb-12" style="flex-wrap:wrap">
+        <button class="btn btn--sm" data-pick="all">全选</button>
+        <button class="btn btn--sm" data-pick="none">清空</button>
+        <button class="btn btn--sm" data-pick="expand">展开全部</button>
+        <button class="btn btn--sm" data-pick="collapse">折叠全部</button>
+        <div class="ml-auto muted fs-12" id="disc-count"></div>
+      </div>
+      <div class="disc-panel" data-panel="fetched">
+        <div class="pick-list disc-list" data-list="fetched">
+          ${groupsHtml(fetchedGroups, 'fetched', (m) => beforeSet.has(m))}
+        </div>
+        <div class="disc-empty" data-empty="fetched" style="display:none">没有匹配的模型</div>
+      </div>
+      <div class="disc-panel" data-panel="missing" style="display:none">
+        ${missing.length
+          ? `<div class="pick-list disc-list" data-list="missing">
+              ${groupsHtml(missingGroups, 'missing', () => false)}
+            </div>
+            <div class="disc-empty" data-empty="missing" style="display:none">没有匹配的模型</div>`
+          : `<div class="disc-empty">没有手工填写但上游未返回的模型</div>`}
+      </div>`;
+
+    openModal({
+      title: '获取模型列表',
+      desc: `上游返回 ${models.length} 个模型，已按提供商自动分组。勾选要加入或保留的模型；取消勾选已添加的模型会在确认后移除。手工填写但上游未返回的模型在「上游不存在的模型」标签页中。`,
+      body,
+      size: 'lg',
+      footer: `<div class="spacer"></div>
+        <button class="btn" data-act="cancel">取消</button>
+        <button class="btn btn--primary" data-act="confirm">确定</button>`,
+      onMount(mo) {
+        const tabsEl = mo.body.querySelector('#disc-tabs');
+        const panels = Array.from(mo.body.querySelectorAll('.disc-panel'));
+        const countEl = mo.body.querySelector('#disc-count');
+        const searchEl = mo.body.querySelector('#disc-search');
+        const confirmBtn = mo.foot.querySelector('[data-act=confirm]');
+        let active = 'fetched';
+        const boxes = () => Array.from(mo.body.querySelectorAll('input[data-model]'));
+        const activeBoxes = () => Array.from(
+          mo.body.querySelector(`.disc-panel[data-panel="${active}"]`).querySelectorAll('input[data-model]'),
+        );
+        const activeVisibleBoxes = () => activeBoxes()
+          .filter((i) => i.closest('.pick-item').style.display !== 'none');
+        const activeGroups = () => Array.from(
+          mo.body.querySelectorAll(`.disc-panel[data-panel="${active}"] .pick-group`),
+        );
+
+        const refresh = () => {
+          const n = boxes().filter((i) => i.checked).length;
+          countEl.textContent = n ? `已选择 ${n} 个` : '未选择';
+          confirmBtn.textContent = n ? `确定（${n}）` : '确定';
+
+          mo.body.querySelectorAll('.pick-group').forEach((groupEl) => {
+            const items = Array.from(groupEl.querySelectorAll('input[data-model]'));
+            // 搜索过滤后的条目；折叠不影响分组全选和统计
+            const shown = items.filter((i) => i.closest('.pick-item').style.display !== 'none');
+            const checked = shown.filter((i) => i.checked);
+            const head = groupEl.querySelector('input[data-group]');
+            if (head) {
+              head.checked = shown.length > 0 && checked.length === shown.length;
+              head.indeterminate = checked.length > 0 && checked.length < shown.length;
+            }
+            const badgeEl = groupEl.querySelector('.pick-group__selected');
+            if (badgeEl) badgeEl.textContent = checked.length ? `已选 ${checked.length}` : '';
+          });
+        };
+
+        tabsEl.addEventListener('click', (e) => {
+          const tab = e.target.closest('[data-disc-tab]');
+          if (!tab) return;
+          active = tab.dataset.discTab;
+          tabsEl.querySelectorAll('.tab').forEach((t) => t.classList.toggle('is-active', t === tab));
+          panels.forEach((p) => { p.style.display = p.dataset.panel === active ? '' : 'none'; });
+        });
+
+        searchEl.addEventListener('input', debounce(() => {
+          const kw = searchEl.value.trim().toLowerCase();
+          mo.body.querySelectorAll('.disc-list').forEach((list) => {
+            let visible = 0;
+            list.querySelectorAll('.pick-item').forEach((item) => {
+              const hit = !kw || (item.dataset.search || '').includes(kw);
+              item.style.display = hit ? '' : 'none';
+              if (hit) visible++;
+            });
+            // 组内没有匹配项时整组隐藏
+            list.querySelectorAll('.pick-group').forEach((groupEl) => {
+              const n = Array.from(groupEl.querySelectorAll('.pick-item'))
+                .filter((it) => it.style.display !== 'none').length;
+              groupEl.style.display = n ? '' : 'none';
+            });
+            const empty = list.parentElement.querySelector(`[data-empty="${list.dataset.list}"]`);
+            if (empty) empty.style.display = visible ? 'none' : '';
+          });
+          refresh();
+        }, 150));
+
+        mo.body.addEventListener('click', (e) => {
+          const head = e.target.closest('.pick-group__head');
+          if (!head) return;
+          if (e.target.matches('input[type=checkbox]')) return;
+          const groupEl = head.parentElement;
+          const key = groupEl.dataset.listkey + ':' + groupEl.dataset.gkey;
+          if (collapsed.has(key)) collapsed.delete(key);
+          else collapsed.add(key);
+          groupEl.classList.toggle('is-collapsed', collapsed.has(key));
+        });
+
+        mo.body.addEventListener('change', (e) => {
+          if (e.target.matches('input[data-group]')) {
+            const groupEl = e.target.closest('.pick-group');
+            const on = e.target.checked;
+            // 只勾选搜索过滤后仍在的条目；折叠不影响分组全选
+            groupEl.querySelectorAll('.pick-item').forEach((it) => {
+              if (it.style.display === 'none') return;
+              const cb = it.querySelector('input[data-model]');
+              if (cb) cb.checked = on;
+            });
+          }
+          refresh();
+        });
+
+        mo.body.querySelector('[data-pick=all]').onclick = () => {
+          activeVisibleBoxes().forEach((i) => { i.checked = true; });
+          refresh();
+        };
+        mo.body.querySelector('[data-pick=none]').onclick = () => {
+          activeBoxes().forEach((i) => { i.checked = false; });
+          refresh();
+        };
+        mo.body.querySelector('[data-pick=expand]').onclick = () => {
+          activeGroups().forEach((g) => {
+            collapsed.delete(active + ':' + g.dataset.gkey);
+            g.classList.remove('is-collapsed');
+          });
+          refresh();
+        };
+        mo.body.querySelector('[data-pick=collapse]').onclick = () => {
+          activeGroups().forEach((g) => {
+            collapsed.add(active + ':' + g.dataset.gkey);
+            g.classList.add('is-collapsed');
+          });
+          refresh();
+        };
+        mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
+        mo.foot.querySelector('[data-act=confirm]').onclick = () => {
+          const checkedSet = new Set(boxes().filter((i) => i.checked).map((i) => i.dataset.model));
+          // 保持原有顺序：已填写的按原顺序保留，新勾选的按上游顺序追加
+          const final = before.filter((m) => checkedSet.has(m));
+          models.forEach((m) => {
+            if (checkedSet.has(m) && !beforeSet.has(m)) final.push(m);
+          });
+          mo.close();
+          onConfirm(final);
+        };
+        refresh();
+      },
+    });
+  }
+
   // ---------- 渠道编辑弹窗 ----------
   function openChannelEditor(ch) {
     const isNew = !ch;
@@ -246,7 +481,7 @@
         <div class="flex-center gap-8" style="margin-bottom:6px">
           <label class="field__label" style="margin-bottom:0">可用模型</label>
           <div class="ml-auto"></div>
-          <button class="btn btn--sm" id="btn-discover" type="button">${icon('wand', 13)}从上游获取模型列表</button>
+          <button class="btn btn--sm" id="btn-discover" type="button">${icon('wand', 13)}获取模型列表</button>
         </div>
         <textarea class="textarea" id="f-models" rows="6" placeholder="每行一个，或用逗号分隔&#10;a&#10;b&#10;c">${esc((data.models || []).join('\n'))}</textarea>
         <div class="field__hint">
@@ -329,14 +564,21 @@
             preview.innerHTML = `<div class="field__hint">还没有填写模型。可以先保存渠道，之后再回来补。</div>`;
             return;
           }
-          preview.innerHTML = `<div class="section-title" style="margin-bottom:6px">共 ${list.length} 个模型</div>
-            <div class="badge-group">${list.map((m) => `<span class="badge mono">${esc(m)}</span>`).join('')}</div>
+          preview.innerHTML = `<div class="flex-center gap-8" style="margin-bottom:6px">
+              <div class="section-title" style="margin-bottom:0">共 ${list.length} 个模型</div>
+              <div class="ml-auto muted fs-12">点击模型名可复制</div>
+            </div>
+            <div class="badge-group">${list.map((m) => `<button type="button" class="badge badge--click mono" data-copy-model="${esc(m)}" title="点击复制">${esc(m)}</button>`).join('')}</div>
             <div class="field__hint" style="margin-top:8px">接入到「模型管理」后，它们会分别以
               ${list.slice(0, 3).map((m) => `<code>${esc(cid)}/${esc(m)}</code>`).join('、')}${list.length > 3 ? ' 等' : ''} 的形式出现。</div>`;
         };
         renderPreview();
         modelsEl.addEventListener('input', renderPreview);
         idEl.addEventListener('input', renderPreview);
+        preview.addEventListener('click', (e) => {
+          const el = e.target.closest('[data-copy-model]');
+          if (el) copyText(el.dataset.copyModel, '模型名 ');
+        });
 
         mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
 
@@ -366,17 +608,27 @@
             const list = res.models || [];
             if (!list.length) { Toast.warn('上游没有返回模型列表，请手动填写'); return; }
             const before = parseModels(modelsEl.value);
-            const beforeSet = new Set(before);
-            const merged = Array.from(new Set([...before, ...list]));
-            modelsEl.value = merged.join('\n');
-            renderPreview();
-            const added = merged.length - beforeSet.size;
-            Toast.success(`上游共 ${list.length} 个模型，新增 ${added} 个${added === 0 ? '（已全部存在）' : ''}`, '获取成功');
+            await openFetchedModelsPicker({
+              models: list,
+              existing: before,
+              onConfirm(final) {
+                const beforeSet = new Set(before);
+                const afterSet = new Set(final);
+                const added = final.filter((m) => !beforeSet.has(m)).length;
+                const removed = before.filter((m) => !afterSet.has(m)).length;
+                modelsEl.value = final.join('\n');
+                renderPreview();
+                const parts = [`当前共 ${final.length} 个模型`];
+                if (added) parts.push(`新增 ${added} 个`);
+                if (removed) parts.push(`移除 ${removed} 个`);
+                Toast.success(parts.join('，'), '模型列表已更新');
+              },
+            });
           } catch (e) {
             Toast.error(e.message, '获取失败');
           } finally {
             discoverBtn.disabled = false;
-            discoverBtn.innerHTML = icon('wand', 13) + '从上游获取模型列表';
+            discoverBtn.innerHTML = icon('wand', 13) + '获取模型列表';
           }
         };
 
@@ -902,11 +1154,16 @@
   // mode='route' ：列出全部渠道模型（含未添加的），当前路由默认勾选；
   //                「已添加」徽章取打开弹窗时的路由草稿快照，本次会话内不随勾选变化；
   //                未添加的渠道模型只作为路由目标，不会加入模型列表；确认后替换路由。
+  // 支持按渠道 / 按提供商两种分组方式，两种视图各自记住折叠状态。
   async function openModelPicker(cfg) {
     const { mode, title, desc, preselected, top, onConfirm } = cfg;
     let list;
+    let providers = [];
     try {
-      list = await API.get('/api/models/available');
+      [list, providers] = await Promise.all([
+        API.get('/api/models/available'),
+        State.loadProviders().catch(() => []),
+      ]);
     } catch (e) { Toast.error(e.message); return; }
 
     if (!list.length) {
@@ -924,17 +1181,100 @@
       return;
     }
 
-    const groups = {};
-    list.forEach((it) => {
-      (groups[it.channel_id] = groups[it.channel_id] || []).push(it);
-    });
-    const groupIds = Object.keys(groups).sort();
-    // 分组标题用「渠道ID（渠道名）」，渠道 ID 和名称用不同样式区分
+    const isAdd = mode === 'add';
+    const checkedSet = preselected || new Set();
     const chanName = {};
     list.forEach((it) => { if (it.channel_name) chanName[it.channel_id] = it.channel_name; });
-    const groupLabel = (cid) => `<span class="pick-group__id">${esc(cid)}</span>${chanName[cid] ? `（${esc(chanName[cid])}）` : ''}`;
-    const checkedSet = preselected || new Set();
-    const isAdd = mode === 'add';
+    const providerByID = {};
+    (providers || []).forEach((p) => { providerByID[p.id] = p; });
+    // 渠道模型带了提供商名称但提供商已被删除时，仍用名称兜底显示
+    const providerMeta = {};
+    list.forEach((it) => {
+      if (it.provider_id && !providerByID[it.provider_id] && it.provider_name) {
+        providerMeta[it.provider_id] = { name: it.provider_name, icon: it.provider_icon || '' };
+      }
+    });
+
+    // 按渠道分组，标题用「渠道ID（渠道名）」，渠道 ID 和名称用不同样式区分
+    const channelGroups = () => {
+      const map = new Map();
+      list.forEach((it) => {
+        if (!map.has(it.channel_id)) map.set(it.channel_id, []);
+        map.get(it.channel_id).push(it);
+      });
+      return Array.from(map.keys()).sort().map((cid) => ({
+        key: 'c:' + cid,
+        icon: '',
+        nameHtml: `<span class="pick-group__id">${esc(cid)}</span>${chanName[cid] ? `（${esc(chanName[cid])}）` : ''}`,
+        items: map.get(cid),
+      }));
+    };
+
+    // 按提供商分组：按提供商配置顺序排列，未识别的统一放到最后
+    const providerGroups = () => {
+      const map = new Map();
+      list.forEach((it) => {
+        const pid = it.provider_id || '';
+        if (!map.has(pid)) map.set(pid, []);
+        map.get(pid).push(it);
+      });
+      const order = (providers || []).map((p) => p.id).filter((pid) => map.has(pid));
+      Array.from(map.keys()).forEach((pid) => {
+        if (pid && !order.includes(pid)) order.push(pid);
+      });
+      if (map.has('')) order.push('');
+      return order.map((pid) => {
+        const p = providerByID[pid] || providerMeta[pid];
+        return {
+          key: 'p:' + (pid || '__none'),
+          icon: p ? (p.icon || '') : '',
+          nameHtml: pid
+            ? esc((p && p.name) || pid)
+            : '<span class="muted">未识别提供商</span>',
+          items: map.get(pid),
+        };
+      });
+    };
+
+    const groupBuilders = { channel: channelGroups, provider: providerGroups };
+    let groupBy = 'channel';
+    const currentGroups = () => groupBuilders[groupBy]();
+    // 两种分组、两种模式都默认全部折叠，先看分组概览
+    const collapsedState = {
+      channel: new Set(channelGroups().map((g) => g.key)),
+      provider: new Set(providerGroups().map((g) => g.key)),
+    };
+    const collapsed = () => collapsedState[groupBy];
+
+    const itemHtml = (it) => {
+      const disabled = isAdd && it.added;
+      const checked = checkedSet.has(it.id);
+      return `<label class="pick-item${disabled ? ' is-disabled' : ''}"
+             data-search="${esc((it.id + ' ' + (it.upstream || '') + ' ' + (it.channel_name || '') + ' ' + (it.provider_name || '')).toLowerCase())}">
+        <input type="checkbox" data-id="${esc(it.id)}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+        ${it.provider_name && groupBy !== 'provider' ? `<span class="pick-item__provider" title="${esc(it.provider_name)}">${providerIcon(it.provider_icon, 14)}</span>` : ''}
+        <span class="pick-item__name">${esc(it.id)}</span>
+        <span class="pick-item__meta">
+          ${!it.channel_ready ? badge('渠道已禁用', 'red') : ''}
+          ${isAdd
+            ? (it.added ? badge('已添加', 'green') : '')
+            : (checked ? badge('已添加', 'green') : '')}
+        </span>
+      </label>`;
+    };
+
+    const groupHtml = (g) => `
+      <div class="pick-group${collapsed().has(g.key) ? ' is-collapsed' : ''}" data-gkey="${esc(g.key)}">
+        <div class="pick-group__head">
+          <span class="pick-group__arrow">\u25be</span>
+          <input type="checkbox" data-group>
+          ${g.icon ? providerIcon(g.icon, 14) : ''}
+          <span class="pick-group__name">${g.nameHtml}</span>
+          <span class="pick-group__count">${g.items.length} 个模型</span>
+          <span class="pick-group__selected"></span>
+        </div>
+        <div class="pick-group__body">${g.items.map(itemHtml).join('')}</div>
+      </div>`;
 
     const body = `
       <div class="search mb-12">
@@ -942,42 +1282,17 @@
         <input class="input" id="pick-search" placeholder="搜索模型 ID，支持模糊匹配…">
       </div>
       <div class="flex-center gap-8 mb-12" style="flex-wrap:wrap">
+        <div class="pill-toggle" id="pick-groupby">
+          <button type="button" data-groupby="channel" class="is-on">按渠道分组</button>
+          <button type="button" data-groupby="provider">按提供商分组</button>
+        </div>
         <button class="btn btn--sm" data-pick="all">${isAdd ? '全选可添加' : '全选'}</button>
         <button class="btn btn--sm" data-pick="none">清空</button>
         <button class="btn btn--sm" data-pick="expand">展开全部</button>
         <button class="btn btn--sm" data-pick="collapse">折叠全部</button>
         <div class="ml-auto muted fs-12" id="pick-count"></div>
       </div>
-      <div class="pick-list" id="pick-list">
-        ${groupIds.map((cid) => `
-          <div class="pick-group" data-cid="${esc(cid)}">
-            <div class="pick-group__head">
-              <span class="pick-group__arrow">\u25be</span>
-              <input type="checkbox" data-group="${esc(cid)}">
-              <span class="pick-group__name">${groupLabel(cid)}</span>
-              <span class="pick-group__count">${groups[cid].length} 个模型</span>
-              <span class="pick-group__selected" data-selected="${esc(cid)}"></span>
-            </div>
-            <div class="pick-group__body">
-              ${groups[cid].map((it) => {
-                const disabled = isAdd && it.added;
-                const checked = checkedSet.has(it.id);
-                return `<label class="pick-item${disabled ? ' is-disabled' : ''}"
-                       data-search="${esc((it.id + ' ' + (it.upstream || '') + ' ' + (it.channel_name || '') + ' ' + (it.provider_name || '')).toLowerCase())}">
-                  <input type="checkbox" data-id="${esc(it.id)}" data-cid="${esc(cid)}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
-                  ${it.provider_name ? `<span class="pick-item__provider" title="${esc(it.provider_name)}">${providerIcon(it.provider_icon, 14)}</span>` : ''}
-                  <span class="pick-item__name">${esc(it.id)}</span>
-                  <span class="pick-item__meta">
-                    ${!it.channel_ready ? badge('渠道已禁用', 'red') : ''}
-                    ${isAdd
-                      ? (it.added ? badge('已添加', 'green') : '')
-                      : (checked ? badge('已添加', 'green') : '')}
-                  </span>
-                </label>`;
-              }).join('')}
-            </div>
-          </div>`).join('')}
-      </div>`;
+      <div class="pick-list" id="pick-list">${currentGroups().map(groupHtml).join('')}</div>`;
 
     openModal({
       title,
@@ -993,13 +1308,12 @@
         const countEl = mo.body.querySelector('#pick-count');
         const searchEl = mo.body.querySelector('#pick-search');
         const confirmBtn = mo.foot.querySelector('[data-act=confirm]');
-        const collapsed = new Set();
 
         const selected = () => Array.from(listEl.querySelectorAll('input[data-id]:checked')).map((i) => i.dataset.id);
         const selectedItems = () => selected().map((id) => list.find((it) => it.id === id)).filter(Boolean);
-        // 当前真实可见的条目：style.display 没被过滤隐藏，且不在折叠的分组里
-        const visibleItems = () => Array.from(listEl.querySelectorAll('.pick-item'))
-          .filter((it) => it.style.display !== 'none' && it.offsetParent !== null);
+        // 搜索过滤后的条目；折叠只是视图状态，不影响全选和统计口径
+        const shownItems = () => Array.from(listEl.querySelectorAll('.pick-item'))
+          .filter((it) => it.style.display !== 'none');
 
         const refresh = () => {
           const sel = selected();
@@ -1011,23 +1325,21 @@
             confirmBtn.textContent = `完成${sel.length ? `（${sel.length}）` : ''}`;
           }
 
-          groupIds.forEach((cid) => {
-            // 勾选状态只统计当前真实可见（未被搜索过滤掉、未折叠）的条目，和全选行为一致
-            const items = Array.from(listEl.querySelectorAll(`input[data-cid="${cid}"]`))
-              .filter((i) => i.closest('.pick-item').style.display !== 'none' && i.closest('.pick-item').offsetParent !== null);
-            const enabled = items.filter((i) => !i.disabled);
+          listEl.querySelectorAll('.pick-group').forEach((groupEl) => {
+            const items = Array.from(groupEl.querySelectorAll('input[data-id]'));
+            const shown = items.filter((i) => i.closest('.pick-item').style.display !== 'none');
+            const enabled = shown.filter((i) => !i.disabled);
             const checked = enabled.filter((i) => i.checked);
-            // 「已全部添加」按该渠道的全量条目判断，不受搜索过滤影响
-            const allOfGroup = Array.from(listEl.querySelectorAll(`input[data-cid="${cid}"]`));
-            const allAdded = isAdd && allOfGroup.length > 0 && allOfGroup.every((i) => i.disabled);
-            const head = listEl.querySelector(`.pick-group[data-cid="${cid}"] input[data-group]`);
+            // 「已全部添加」按该分组的全量条目判断，不受搜索过滤影响
+            const allAdded = isAdd && items.length > 0 && items.every((i) => i.disabled);
+            const head = groupEl.querySelector('input[data-group]');
             if (head) {
               head.checked = enabled.length > 0 && checked.length === enabled.length;
               head.indeterminate = checked.length > 0 && checked.length < enabled.length;
-              // 渠道下所有模型都已添加过：整组无可选项，复选框置灰不可勾
+              // 分组下所有模型都已添加过：整组无可选项，复选框置灰不可勾
               head.disabled = allAdded;
             }
-            const badgeEl = listEl.querySelector(`[data-selected="${cid}"]`);
+            const badgeEl = groupEl.querySelector('.pick-group__selected');
             if (badgeEl) {
               badgeEl.textContent = allAdded
                 ? '已全部添加'
@@ -1040,8 +1352,7 @@
         // 按关键词过滤；不打乱用户当前的折叠状态，折叠的分组照常被过滤
         const applyFilter = () => {
           const kw = searchEl.value.trim().toLowerCase();
-          groupIds.forEach((cid) => {
-            const groupEl = listEl.querySelector(`.pick-group[data-cid="${cid}"]`);
+          listEl.querySelectorAll('.pick-group').forEach((groupEl) => {
             let visible = 0;
             groupEl.querySelectorAll('.pick-item').forEach((it) => {
               const hit = !kw || (it.dataset.search || '').includes(kw);
@@ -1049,8 +1360,19 @@
               if (hit) visible++;
             });
             groupEl.style.display = visible ? '' : 'none';
-            groupEl.classList.toggle('is-collapsed', collapsed.has(cid));
+            groupEl.classList.toggle('is-collapsed', collapsed().has(groupEl.dataset.gkey));
           });
+        };
+
+        // 切换分组方式：保留已勾选状态，按新分组重绘
+        const renderList = () => {
+          const checkedNow = new Set(Array.from(listEl.querySelectorAll('input[data-id]:checked')).map((i) => i.dataset.id));
+          listEl.innerHTML = currentGroups().map(groupHtml).join('');
+          listEl.querySelectorAll('input[data-id]').forEach((i) => {
+            i.checked = checkedNow.has(i.dataset.id) && !i.disabled;
+          });
+          applyFilter();
+          refresh();
         };
 
         // 点分组标题折叠/展开；点复选框则只切换勾选
@@ -1058,19 +1380,20 @@
           const head = e.target.closest('.pick-group__head');
           if (!head) return;
           if (e.target.matches('input[type=checkbox]')) return;
-          const cid = head.parentElement.dataset.cid;
-          if (collapsed.has(cid)) collapsed.delete(cid);
-          else collapsed.add(cid);
-          head.parentElement.classList.toggle('is-collapsed', collapsed.has(cid));
+          const groupEl = head.parentElement;
+          const key = groupEl.dataset.gkey;
+          if (collapsed().has(key)) collapsed().delete(key);
+          else collapsed().add(key);
+          groupEl.classList.toggle('is-collapsed', collapsed().has(key));
         });
 
         listEl.addEventListener('change', (e) => {
           if (e.target.matches('input[data-group]')) {
-            const cid = e.target.dataset.group;
+            const groupEl = e.target.closest('.pick-group');
             const on = e.target.checked;
-            // 只勾选当前真实可见（未被搜索过滤掉、未折叠）的条目
-            listEl.querySelectorAll(`.pick-group[data-cid="${cid}"] .pick-item`).forEach((it) => {
-              if (it.style.display === 'none' || it.offsetParent === null) return;
+            // 只勾选搜索过滤后仍在的条目；折叠不影响分组全选
+            groupEl.querySelectorAll('.pick-item').forEach((it) => {
+              if (it.style.display === 'none') return;
               const i = it.querySelector('input[data-id]');
               if (i && !i.disabled) i.checked = on;
             });
@@ -1083,9 +1406,20 @@
           refresh();
         }, 150));
 
+        mo.body.querySelectorAll('#pick-groupby button').forEach((btn) => {
+          btn.onclick = () => {
+            if (btn.dataset.groupby === groupBy) return;
+            groupBy = btn.dataset.groupby;
+            mo.body.querySelectorAll('#pick-groupby button').forEach((b) => {
+              b.classList.toggle('is-on', b === btn);
+            });
+            renderList();
+          };
+        });
+
         mo.body.querySelector('[data-pick=all]').onclick = () => {
-          // 只全选当前可见的条目，搜索后点它不会误选被过滤掉的内容
-          visibleItems().forEach((it) => {
+          // 只全选搜索过滤后仍在的条目，点它不会误选被过滤掉的内容
+          shownItems().forEach((it) => {
             const cb = it.querySelector('input[data-id]');
             if (cb && !cb.disabled) cb.checked = true;
           });
@@ -1096,11 +1430,11 @@
           refresh();
         };
         mo.body.querySelector('[data-pick=expand]').onclick = () => {
-          collapsed.clear();
+          collapsed().clear();
           applyFilter();
         };
         mo.body.querySelector('[data-pick=collapse]').onclick = () => {
-          groupIds.forEach((cid) => collapsed.add(cid));
+          currentGroups().forEach((g) => collapsed().add(g.key));
           applyFilter();
         };
         mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
@@ -1637,6 +1971,9 @@
       paramSource: m.param_source || '',
     };
 
+    // 目标路由模型的长说明收进问号：悬停看摘要，点击看完整规则
+    const routeHelpText = '普通条目按从上到下的顺序依次尝试；「合并」相邻条目成组后，组内先按权重比例随机选一个开始（权重全部相等时等概率），失败后按配置顺序继续试组内其余条目，全部失败再到后面的条目。按住左侧手柄拖动调整单条位置，按住组头左侧握把拖动调整整组位置；拖出弹窗只会收起当前条目所在的分组（拖回不会自动展开，松手后恢复），不影响其他分组。组外条目用「合并」按钮，组内条目用「分开」按钮。';
+
     const body = `
       <div class="field">
         <label class="field__label">模型 ID<span class="req">*</span></label>
@@ -1645,14 +1982,25 @@
       </div>
 
       <div class="field">
-        <label class="field__label">目标路由模型<span class="req">*</span></label>
-        <div class="field__hint" style="margin-top:0;margin-bottom:8px">
-          普通条目按从上到下的顺序依次尝试；「合并」相邻条目成组后，组内按权重加权随机抽首选（权重 0 = 等概率），失败时组内顺延再到后面的条目。
-          按住左侧手柄拖动调整单条位置，按住组头左侧握把拖动调整整组位置；拖出弹窗只会收起当前条目所在的分组（拖回不会自动展开，松手后恢复），不影响其他分组。组外条目用 <b>合并</b> 按钮，组内条目用 <b>分开</b> 按钮。
+        <div class="field__label" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+          <span>目标路由模型<span class="req">*</span><button type="button" class="badge badge--blue badge--click field__help" id="cm-route-help" title="${esc(routeHelpText)}" aria-label="查看路由规则">?</button></span>
+          <div class="pill-toggle" id="cm-route-mode" style="margin-left:auto">
+            <button type="button" data-route-mode="visual" class="is-on">可视化</button>
+            <button type="button" data-route-mode="json">JSON</button>
+          </div>
         </div>
-        <div id="route-host"></div>
-        <div class="btn-row mt-8">
-          <button class="btn btn--sm" data-act="pick">${icon('plus', 13)}选择渠道模型</button>
+        <div id="route-visual">
+          <div id="route-host"></div>
+          <div class="btn-row mt-8">
+            <button class="btn btn--sm" data-act="pick">${icon('plus', 13)}选择渠道模型</button>
+          </div>
+        </div>
+        <div id="route-json" style="display:none">
+          <textarea class="textarea" id="cm-route-json" spellcheck="false" style="min-height:180px" placeholder='[{"channel_id":"渠道ID","upstream":"模型名","weight":0,"group":0}]'></textarea>
+          <div class="btn-row mt-8">
+            <button class="btn btn--sm" data-act="copy-json">${icon('copy', 13)}复制 JSON</button>
+          </div>
+          <div class="field__hint">可直接复制粘贴复用。channel_id + upstream 定位渠道模型；相同 group 且相邻的条目自动成组；weight 决定组内第一个尝试的条目（按比例随机，全部相等时等概率），失败后按组内配置顺序顺延。</div>
         </div>
       </div>
 
@@ -1745,6 +2093,93 @@
           }
         };
         const weightSum = (seg) => seg.reduce((s, i) => s + Math.max(0, draft.routes[i].weight || 0), 0);
+
+        // ---------- 路由可视化 / JSON 双向切换 ----------
+        const routeModeEl = mo.body.querySelector('#cm-route-mode');
+        const routeVisualEl = mo.body.querySelector('#route-visual');
+        const routeJsonEl = mo.body.querySelector('#route-json');
+        const routeJsonInput = mo.body.querySelector('#cm-route-json');
+        let routeMode = 'visual';
+
+        const serializeRoutes = () => JSON.stringify(draft.routes.map((r) => ({
+          channel_id: r.channel_id,
+          upstream: r.upstream,
+          weight: r.weight || 0,
+          group: r.group || 0,
+        })), null, 2);
+
+        // 接受纯数组，也接受包含 routes 数组的对象；只认配置字段，model_id 仅用于兼容导入
+        const parseRoutesJSON = (text) => {
+          let parsed;
+          try {
+            parsed = JSON.parse(text);
+          } catch (e) {
+            throw new Error('JSON 解析失败：' + e.message);
+          }
+          const arr = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.routes) ? parsed.routes : null);
+          if (!arr) throw new Error('需要一个路由数组，或包含 routes 数组的对象');
+          const seen = new Set();
+          return arr.map((it, idx) => {
+            const n = idx + 1;
+            if (!it || typeof it !== 'object' || Array.isArray(it)) throw new Error(`第 ${n} 条必须是对象`);
+            let channelID = typeof it.channel_id === 'string' ? it.channel_id.trim() : '';
+            let upstream = typeof it.upstream === 'string' ? it.upstream.trim() : '';
+            if ((!channelID || !upstream) && typeof it.model_id === 'string') {
+              const slash = it.model_id.indexOf('/');
+              if (slash > 0) {
+                if (!channelID) channelID = it.model_id.slice(0, slash).trim();
+                if (!upstream) upstream = it.model_id.slice(slash + 1).trim();
+              }
+            }
+            if (!channelID || !upstream) throw new Error(`第 ${n} 条缺少 channel_id 或 upstream`);
+            const key = channelID + '/' + upstream;
+            if (seen.has(key)) throw new Error(`路由目标重复：${key}`);
+            seen.add(key);
+            const weight = it.weight === undefined || it.weight === null ? 0 : Number(it.weight);
+            if (!Number.isInteger(weight) || weight < 0 || weight > 1000) {
+              throw new Error(`第 ${n} 条 weight 需为 0–1000 的整数`);
+            }
+            const group = it.group === undefined || it.group === null ? 0 : Number(it.group);
+            if (!Number.isInteger(group) || group < 0 || group > 1000) {
+              throw new Error(`第 ${n} 条 group 需为 0–1000 的整数`);
+            }
+            return {
+              model_id: key,
+              channel_id: channelID,
+              upstream,
+              channel_name: typeof it.channel_name === 'string' ? it.channel_name : '',
+              weight,
+              group,
+            };
+          });
+        };
+
+        const applyRouteJSON = () => {
+          draft.routes = parseRoutesJSON(routeJsonInput.value);
+          normalizeGroups();
+          renderRoutes();
+        };
+
+        const setRouteMode = (mode) => {
+          if (mode === routeMode) return;
+          if (mode === 'json') {
+            routeJsonInput.value = serializeRoutes();
+          } else {
+            try {
+              applyRouteJSON();
+            } catch (e) {
+              Toast.error(e.message, 'JSON 格式有误');
+              return;
+            }
+          }
+          routeMode = mode;
+          routeVisualEl.style.display = mode === 'visual' ? '' : 'none';
+          routeJsonEl.style.display = mode === 'json' ? '' : 'none';
+          routeModeEl.querySelectorAll('[data-route-mode]').forEach((b) => {
+            b.classList.toggle('is-on', b.dataset.routeMode === mode);
+          });
+        };
+
         // 分组折叠态：key 为组首条目的模型 ID（唯一），重排后依然能对上
         const collapsed = new Set();
 
@@ -2226,7 +2661,7 @@
               <span class="route-item__name">${esc(r.model_id)}</span>
               <span class="route-item__meta">
                 ${channelReady[r.channel_id] === false ? badge('渠道已禁用', 'red') : ''}
-                ${inGroup ? `<span class="route-item__weight" title="组内权重：按权重加权随机抽首选，0 为等概率">
+                ${inGroup ? `<span class="route-item__weight" title="组内权重：按比例随机决定组内先试哪个，失败后按顺序顺延">
                   <input type="number" class="input route-w-input" data-w="${i}" min="0" max="1000" value="${r.weight || 0}">
                   <span class="muted fs-11">权</span>
                 </span>` : ''}
@@ -2371,6 +2806,28 @@
           renderCaps();
         };
 
+        mo.body.querySelector('#cm-route-help').onclick = () => {
+          openModal({
+            title: '路由规则',
+            size: 'sm',
+            body: `<div class="fs-13" style="line-height:1.8">
+              <div style="margin-bottom:8px"><b>尝试顺序</b>：普通条目按从上到下的顺序依次尝试。</div>
+              <div style="margin-bottom:8px"><b>合并分组</b>：相邻条目「合并」成组后，组内先按权重比例随机选一个开始（权重全部相等时等概率）；失败后按配置顺序继续试组内其余条目，全部失败再到后面的条目。</div>
+              <div style="margin-bottom:8px"><b>拖拽排序</b>：按住左侧手柄拖动调整单条位置；按住组头左侧握把拖动调整整组位置。</div>
+              <div style="margin-bottom:8px"><b>拖出弹窗</b>：只会收起当前条目所在的分组（拖回不会自动展开，松手后恢复），不影响其他分组。</div>
+              <div><b>合并 / 分开</b>：组外条目用「合并」按钮，组内条目用「分开」按钮。</div>
+            </div>`,
+            footer: `<div class="spacer"></div><button class="btn" data-close>知道了</button>`,
+          });
+        };
+
+        routeModeEl.querySelectorAll('[data-route-mode]').forEach((b) => {
+          b.onclick = () => setRouteMode(b.dataset.routeMode);
+        });
+        mo.body.querySelector('[data-act=copy-json]').onclick = () => {
+          copyText(routeJsonInput.value, '路由 JSON ');
+        };
+
         mo.body.querySelector('[data-act=pick]').onclick = () => {
           openRoutePicker(draft.routes, (picked) => {
             draft.routes = picked;
@@ -2384,6 +2841,15 @@
           const newID = (mo.body.querySelector('#cm-id').value || '').trim();
           if (!newID) { Toast.warn('请填写模型 ID'); return; }
           if (newID.includes('/')) { Toast.warn('模型 ID 不能包含 “/”'); return; }
+          // JSON 模式下直接保存时，先把 textarea 里的内容解析回草稿
+          if (routeMode === 'json') {
+            try {
+              applyRouteJSON();
+            } catch (e) {
+              Toast.error(e.message, 'JSON 格式有误');
+              return;
+            }
+          }
           if (!draft.routes.length) { Toast.warn('请至少选择一个目标路由模型'); return; }
 
           const payload = {

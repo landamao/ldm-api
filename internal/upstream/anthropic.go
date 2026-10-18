@@ -606,6 +606,7 @@ func (s *anthropicStream) Usage() Usage        { return s.usage }
 func (s *anthropicStream) OutputChars() int    { return s.chars }
 func (s *anthropicStream) ReasoningChars() int { return s.reasonCh }
 func (s *anthropicStream) Err() error          { return s.err }
+func (s *anthropicStream) Done() bool          { return s.finished }
 
 func nonEmpty(v, def string) string {
 	if strings.TrimSpace(v) == "" {

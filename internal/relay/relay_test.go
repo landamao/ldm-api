@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -531,9 +533,9 @@ func TestStoreLogsAndStats(t *testing.T) {
 	st := newTestStore(t)
 	now := time.Now().UnixMilli()
 	for i, l := range []store.Log{
-		{ID: "l1", Time: now, ModelID: "LDM", ChannelID: "A", StatusCode: 200, TotalTokens: 10, LatencyMs: 100},
+		{ID: "l1", Time: now, ModelID: "LDM", ChannelID: "A", StatusCode: 200, TotalTokens: 10, LatencyMs: 100, Stream: true, FirstByteMs: 40, TokensPerSec: 10},
 		{ID: "l2", Time: now + 1, ModelID: "A/a", ChannelID: "A", StatusCode: 500, Error: "boom", TotalTokens: 0, LatencyMs: 50},
-		{ID: "l3", Time: now + 2, ModelID: "LDM", ChannelID: "B", StatusCode: 200, TotalTokens: 20, LatencyMs: 200},
+		{ID: "l3", Time: now + 2, ModelID: "LDM", ChannelID: "B", StatusCode: 200, TotalTokens: 20, LatencyMs: 200, Stream: true, FirstByteMs: 60, TokensPerSec: 20},
 	} {
 		_ = st.AppendLog(l)
 		_ = st.RecordStat(l)
@@ -591,13 +593,25 @@ func TestStoreLogsAndStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	var reqs, errs2, toks int64
+	var speedCount int64
+	var speedSum float64
+	var speedLatency, speedFirstByte int64
 	for _, b := range buckets {
 		reqs += b.Requests
 		errs2 += b.Errors
 		toks += b.TotalTokens
+		speedCount += b.SpeedCount
+		speedSum += b.SpeedSum
+		speedLatency += b.SpeedLatencySum
+		speedFirstByte += b.SpeedFirstByteSum
 	}
 	if reqs != 3 || errs2 != 1 || toks != 30 {
 		t.Errorf("统计聚合错误: reqs=%d errors=%d tokens=%d", reqs, errs2, toks)
+	}
+	// 只有同时具备首字、总耗时、速度的记录才计入平均速度
+	if speedCount != 2 || speedSum != 30 || speedLatency != 300 || speedFirstByte != 100 {
+		t.Errorf("速度聚合错误: count=%d sum=%v latency=%d firstByte=%d",
+			speedCount, speedSum, speedLatency, speedFirstByte)
 	}
 
 	removed, err := st.PurgeLogsBefore(now + 2)
@@ -1008,5 +1022,134 @@ func TestUpstreamStreamDisconnectMarksFailure(t *testing.T) {
 	}
 	if len(got.Routes) != 1 || got.Routes[0].Channel.ID != "stream-good" {
 		t.Fatalf("断流的上游应进入冷却，期望只剩 stream-good，得到 %+v", got.Routes)
+	}
+}
+
+// 上游已经发出 [DONE]（响应内容完整）后客户端立刻关闭连接，是很多客户端的
+// 正常行为，不能记成「客户端中途断开」。
+func TestClientDisconnectAfterDoneCountsAsSuccess(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		// 保持连接不主动关闭，直到客户端（relay）取消请求。
+		<-r.Context().Done()
+	}))
+	defer up.Close()
+
+	if err := st.SaveChannel(store.Channel{
+		ID: "done-ch", Name: "正常线路", Type: store.ChannelOpenAI, BaseURL: up.URL,
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "done/model", Type: store.ModelTypeCustom,
+		Routes:  []store.Route{{ChannelID: "done-ch", Upstream: "m"}},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	body := []byte(`{"model":"done/model","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: body, Stream: true,
+		JSON: map[string]any{"model": "done/model", "stream": true},
+	}
+	// 网关把 [DONE] 写给客户端时立刻取消，等价于客户端收到 [DONE] 后挂断。
+	w := &cancelOnWrite{ResponseWriter: httptest.NewRecorder(), needle: []byte("[DONE]"), cancel: cancel}
+	res := New(st).Do(ctx, w, req)
+	if res.Canceled {
+		t.Fatalf("上游已发 [DONE]，客户端随后断开不应记为取消: %+v", res)
+	}
+	if res.Err != "" {
+		t.Fatalf("上游已发 [DONE]，不应记为失败: %+v", res)
+	}
+	if res.Usage.CompletionTokens != 2 || res.Usage.TotalTokens != 5 {
+		t.Fatalf("应保留上游上报的用量，得到 %+v", res.Usage)
+	}
+}
+
+// 还没收到结束标记就断开，才是真正的中途取消，仍按黄色 200 记账。
+func TestClientDisconnectMidStreamMarksCanceled(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer up.Close()
+
+	if err := st.SaveChannel(store.Channel{
+		ID: "mid-ch", Name: "正常线路", Type: store.ChannelOpenAI, BaseURL: up.URL,
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "mid/model", Type: store.ModelTypeCustom,
+		Routes:  []store.Route{{ChannelID: "mid-ch", Upstream: "m"}},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	body := []byte(`{"model":"mid/model","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: body, Stream: true,
+		JSON: map[string]any{"model": "mid/model", "stream": true},
+	}
+	// 正文块刚写出去就断开，此时还没有任何结束标记。
+	w := &cancelOnWrite{ResponseWriter: httptest.NewRecorder(), needle: []byte("hi"), cancel: cancel}
+	res := New(st).Do(ctx, w, req)
+	if !res.Canceled {
+		t.Fatalf("收到结束标记前断开应记为取消: %+v", res)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("取消应记为 200，得到 %d", res.StatusCode)
+	}
+}
+
+// cancelOnWrite 在响应体出现 needle 时取消请求，用来模拟客户端读到某个
+// 事件后立刻断开连接。取消发生在 Write 内部，因此一定晚于网关解析该事件。
+type cancelOnWrite struct {
+	http.ResponseWriter
+	needle []byte
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (w *cancelOnWrite) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if bytes.Contains(p, w.needle) {
+		w.once.Do(w.cancel)
+	}
+	return n, err
+}
+
+func (w *cancelOnWrite) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
 }

@@ -6,7 +6,7 @@
 
   const {
     esc, API, State, Toast, openModal, confirmDialog, promptDialog, icon, providerIcon, providerAvatar,
-    badge, statusBadge, emptyState, loadingBlock, fmtTime, fmtInt, fmtNum, fmtDuration,
+    badge, statusBadge, emptyState, loadingBlock, fmtTime, fmtInt, fmtUnit, fmtNum, fmtDuration,
     fmtUptime, relTime, copyText, debounce, fmtContext, Theme, switchEl, colorBadge,
   } = window.LDM;
 
@@ -110,9 +110,11 @@
               <div class="stat__foot">${t.errors ? `<span class="stat__delta down">${fmtInt(t.errors)} 次失败</span>` : '全部成功'}</div>
             </div>
             <div class="stat">
-              <div class="stat__label">${icon('clock', 13)}平均延迟</div>
-              <div class="stat__value">${t.requests ? (t.avg_latency / 1000).toFixed(2) : '0.00'}<small>s</small></div>
-              <div class="stat__foot">今日平均响应耗时</div>
+              <div class="stat__label">${icon('clock', 13)}平均速度</div>
+              <div class="stat__value">${t.speed_samples ? `${t.avg_speed.toFixed(1)}<small>t/s</small>` : '—'}</div>
+              <div class="stat__foot">${t.speed_samples
+                ? `首字 ${fmtDuration(t.avg_first_byte)} · 总耗时 ${fmtDuration(t.avg_speed_latency)}`
+                : '暂无流式记录'}</div>
             </div>
             <div class="stat">
               <div class="stat__label">${icon('channels', 13)}渠道</div>
@@ -1426,6 +1428,9 @@
   // 调用日志
   // ======================================================================
   const logState = { limit: 30, offset: 0, status: '', model: '', channel: '', token: '' };
+  const LOG_UNIT_KEY = 'ldmapi.logs.unit';
+  const logUnit = { on: true };
+  try { logUnit.on = localStorage.getItem(LOG_UNIT_KEY) !== '0'; } catch (e) { /* 存储不可用时默认开启 */ }
 
   window.LDM.registerPage('logs', {
     title: '调用日志',
@@ -1474,6 +1479,7 @@
               <option value="error">失败</option>
             </select>
             <div class="toolbar__spacer"></div>
+            ${switchEl(logUnit.on, '单位', 'id="log-unit" title="开启后 Token 数按 K / M / B 显示，悬停可查看精确值"')}
             <button class="btn btn--sm" id="btn-reload">${icon('refresh', 13)}刷新</button>
           </div>
         </div>
@@ -1502,6 +1508,12 @@
       q('#f-token').onchange = (e) => { logState.token = e.target.value; logState.offset = 0; load(); };
       q('#f-status').onchange = (e) => { logState.status = e.target.value; logState.offset = 0; load(); };
       q('#btn-reload').onclick = () => load();
+      const unitInput = q('#log-unit').querySelector('input');
+      unitInput.onchange = () => {
+        logUnit.on = unitInput.checked;
+        try { localStorage.setItem(LOG_UNIT_KEY, logUnit.on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
+        renderTable();
+      };
       q('#page-prev').onclick = () => {
         logState.offset = Math.max(0, logState.offset - logState.limit);
         load();
@@ -1547,6 +1559,79 @@
         });
       }
 
+      let lastItems = null; // null 表示最近一次加载失败，切换单位时保持当前内容
+      // 开启「单位」后把 token 数缩写为 K / M / B，悬停仍显示精确值
+      const tok = (n) => (logUnit.on
+        ? `<span title="${fmtInt(n)}">${fmtUnit(n)}</span>`
+        : fmtInt(n));
+
+      function renderTable() {
+        if (lastItems == null) return;
+        const host = q('#log-table');
+        const items = lastItems;
+        if (!items.length) {
+          const emptyDesc = logState.status === 'error'
+            ? '当前只看失败请求，把状态筛选切回「全部状态」试试。'
+            : logState.status === 'success'
+              ? '当前只看成功请求，把状态筛选切回「全部状态」试试。'
+              : '发起一次 API 调用后就能在这里看到记录。';
+          host.innerHTML = emptyState('没有符合条件的日志', emptyDesc, '', 'logs');
+          return;
+        }
+        host.innerHTML = `<div class="table-wrap table-scroll" style="border:none;border-radius:0">
+          <table class="tbl">
+            <thead><tr>
+              <th>时间</th><th style="min-width:190px">模型</th><th style="min-width:140px">渠道</th><th>密钥</th>
+              <th class="right" style="min-width:96px">输入</th>
+              <th class="right" style="min-width:130px">输出</th>
+              <th class="right" style="min-width:106px">耗时</th>
+              <th>状态</th><th>来源 IP</th>
+            </tr></thead>
+            <tbody>${items.map((l, idx) => `<tr>
+              <td class="nowrap muted fs-12">${esc(fmtTime(l.time))}</td>
+              <td>
+                <div class="flex-center gap-6" style="flex-wrap:wrap">
+                  ${colorBadge(l.model_id)}
+                  ${l.stream ? '<span class="badge badge--gray">流式</span>' : ''}
+                  ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
+                </div>
+              </td>
+              <td class="fs-12">
+                ${l.channel_id
+                  ? `${colorBadge(channelLabel(l.channel_id))}
+                     ${l.upstream_model ? `<div class="muted fs-12 mono" style="margin-top:2px">${esc(l.upstream_model)}</div>` : ''}`
+                  : '<span class="muted">未命中渠道</span>'}
+              </td>
+              <td class="fs-12">${colorBadge(l.token_name)}</td>
+              <td class="right num">${tok(l.prompt_tokens)}
+                ${l.cached_tokens ? `<div class="muted fs-12">缓存读 ${tok(l.cached_tokens)}</div>` : ''}</td>
+              <td class="right num">${tok(l.completion_tokens)}
+                ${l.reasoning_tokens
+                  ? `<div class="muted fs-12">思考 ${tok(l.reasoning_tokens)}</div>`
+                  : (l.reasoning_chars ? `<div class="muted fs-12">思考 ${tok(l.reasoning_chars)} 字</div>` : '')}
+                ${l.tokens_per_sec ? `<div class="muted fs-12">${l.tokens_per_sec.toFixed(1)} t/s</div>` : ''}</td>
+              <td class="right num">${esc(fmtDuration(l.latency_ms))}
+                ${l.first_byte_ms ? `<div class="muted fs-12">首字 ${esc(fmtDuration(l.first_byte_ms))}</div>` : ''}
+                <div class="muted fs-12">总token ${tok(l.total_tokens)}</div></td>
+              <td>${l.canceled
+                ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" title="${esc(l.error)}">${esc(l.status_code || 200)}</button>`
+                : (l.status_code > 0 && l.status_code < 400 && !l.error
+                  ? '<span class="badge badge--green">成功</span>'
+                  : (l.error
+                    ? `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" title="${esc(l.error)}">${esc(l.status_code || '失败')}</button>`
+                    : `<span class="badge badge--red">${esc(l.status_code || '失败')}</span>`))}</td>
+              <td class="muted fs-12 mono">${esc(l.ip || '—')}</td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </div>`;
+        host.querySelectorAll('[data-attempts]').forEach((btn) => {
+          btn.onclick = () => showRetryHistory(items[Number(btn.dataset.attempts)]);
+        });
+        host.querySelectorAll('[data-log-error]').forEach((btn) => {
+          btn.onclick = () => showLogError(items[Number(btn.dataset.logError)]);
+        });
+      }
+
       async function load() {
         const host = q('#log-table');
         host.innerHTML = loadingBlock();
@@ -1560,71 +1645,13 @@
         try {
           const res = await API.get('/api/logs?' + params.toString());
           const items = res.items || [];
+          lastItems = items;
           q('#log-total').textContent = `共 ${fmtInt(res.total)} 条，当前显示第 ${logState.offset + 1} - ${logState.offset + items.length} 条`;
           q('#page-prev').disabled = logState.offset === 0;
           q('#page-next').disabled = logState.offset + items.length >= res.total;
-          if (!items.length) {
-            const emptyDesc = logState.status === 'error'
-              ? '当前只看失败请求，把状态筛选切回「全部状态」试试。'
-              : logState.status === 'success'
-                ? '当前只看成功请求，把状态筛选切回「全部状态」试试。'
-                : '发起一次 API 调用后就能在这里看到记录。';
-            host.innerHTML = emptyState('没有符合条件的日志', emptyDesc, '', 'logs');
-            return;
-          }
-          host.innerHTML = `<div class="table-wrap table-scroll" style="border:none;border-radius:0">
-            <table class="tbl">
-              <thead><tr>
-                <th>时间</th><th style="min-width:190px">模型</th><th style="min-width:140px">渠道</th><th>密钥</th>
-                <th class="right" style="min-width:96px">输入</th>
-                <th class="right" style="min-width:130px">输出</th>
-                <th class="right" style="min-width:106px">耗时</th>
-                <th>状态</th><th>来源 IP</th>
-              </tr></thead>
-              <tbody>${items.map((l, idx) => `<tr>
-                <td class="nowrap muted fs-12">${esc(fmtTime(l.time))}</td>
-                <td>
-                  <div class="flex-center gap-6" style="flex-wrap:wrap">
-                    ${colorBadge(l.model_id)}
-                    ${l.stream ? '<span class="badge badge--gray">流式</span>' : ''}
-                    ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
-                  </div>
-                </td>
-                <td class="fs-12">
-                  ${l.channel_id
-                    ? `${colorBadge(channelLabel(l.channel_id))}
-                       ${l.upstream_model ? `<div class="muted fs-12 mono" style="margin-top:2px">${esc(l.upstream_model)}</div>` : ''}`
-                    : '<span class="muted">未命中渠道</span>'}
-                </td>
-                <td class="fs-12">${colorBadge(l.token_name)}</td>
-                <td class="right num">${fmtInt(l.prompt_tokens)}
-                  ${l.cached_tokens ? `<div class="muted fs-12">缓存读 ${fmtInt(l.cached_tokens)}</div>` : ''}</td>
-                <td class="right num">${fmtInt(l.completion_tokens)}
-                  ${l.reasoning_tokens
-                    ? `<div class="muted fs-12">思考 ${fmtInt(l.reasoning_tokens)}</div>`
-                    : (l.reasoning_chars ? `<div class="muted fs-12">思考 ${fmtInt(l.reasoning_chars)} 字</div>` : '')}
-                  ${l.tokens_per_sec ? `<div class="muted fs-12">${l.tokens_per_sec.toFixed(1)} t/s</div>` : ''}</td>
-                <td class="right num">${esc(fmtDuration(l.latency_ms))}
-                  ${l.first_byte_ms ? `<div class="muted fs-12">首字 ${esc(fmtDuration(l.first_byte_ms))}</div>` : ''}
-                  <div class="muted fs-12">总token ${fmtInt(l.total_tokens)}</div></td>
-                <td>${l.canceled
-                  ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" title="${esc(l.error)}">${esc(l.status_code || 200)}</button>`
-                  : (l.status_code > 0 && l.status_code < 400 && !l.error
-                    ? '<span class="badge badge--green">成功</span>'
-                    : (l.error
-                      ? `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" title="${esc(l.error)}">${esc(l.status_code || '失败')}</button>`
-                      : `<span class="badge badge--red">${esc(l.status_code || '失败')}</span>`))}</td>
-                <td class="muted fs-12 mono">${esc(l.ip || '—')}</td>
-              </tr>`).join('')}</tbody>
-            </table>
-          </div>`;
-          host.querySelectorAll('[data-attempts]').forEach((btn) => {
-            btn.onclick = () => showRetryHistory(items[Number(btn.dataset.attempts)]);
-          });
-          host.querySelectorAll('[data-log-error]').forEach((btn) => {
-            btn.onclick = () => showLogError(items[Number(btn.dataset.logError)]);
-          });
+          renderTable();
         } catch (e) {
+          lastItems = null;
           host.innerHTML = `<div class="card--pad"><div class="alert alert--warn">${icon('alert', 15)}<div>${esc(e.message)}</div></div></div>`;
         }
       }

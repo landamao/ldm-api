@@ -137,6 +137,7 @@ type openAIStream struct {
 	usage    Usage
 	chars    int
 	reasonCh int
+	done     bool
 }
 
 func (s *openAIStream) Translate(line []byte) []byte {
@@ -146,7 +147,9 @@ func (s *openAIStream) Translate(line []byte) []byte {
 	}
 	if bytes.HasPrefix(trimmed, []byte("data:")) {
 		payload := bytes.TrimSpace(trimmed[5:])
-		if !bytes.Equal(payload, []byte("[DONE]")) {
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			s.done = true
+		} else {
 			var probe struct {
 				Usage *struct {
 					PromptTokens     int `json:"prompt_tokens"`
@@ -165,6 +168,7 @@ func (s *openAIStream) Translate(line []byte) []byte {
 						Content          string `json:"content"`
 						ReasoningContent string `json:"reasoning_content"`
 					} `json:"delta"`
+					FinishReason *string `json:"finish_reason"`
 				} `json:"choices"`
 			}
 			if err := json.Unmarshal(payload, &probe); err == nil {
@@ -181,6 +185,9 @@ func (s *openAIStream) Translate(line []byte) []byte {
 					}
 				}
 				for _, c := range probe.Choices {
+					if c.FinishReason != nil && *c.FinishReason != "" {
+						s.done = true
+					}
 					s.chars += len([]rune(c.Delta.Content))
 					s.reasonCh += len([]rune(c.Delta.ReasoningContent))
 				}
@@ -195,6 +202,7 @@ func (s *openAIStream) Usage() Usage        { return s.usage }
 func (s *openAIStream) OutputChars() int    { return s.chars }
 func (s *openAIStream) ReasoningChars() int { return s.reasonCh }
 func (s *openAIStream) Err() error          { return nil }
+func (s *openAIStream) Done() bool          { return s.done }
 
 // NormalizeBase 清理渠道地址：去掉尾部斜杠，缺少协议头时补上 https://。
 // 地址为空时返回空字符串——网关不会替用户猜一个默认上游，由调用方报错。

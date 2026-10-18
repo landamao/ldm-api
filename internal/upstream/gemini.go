@@ -534,3 +534,4 @@ func (s *geminiStream) Usage() Usage        { return s.usage }
 func (s *geminiStream) OutputChars() int    { return s.chars }
 func (s *geminiStream) ReasoningChars() int { return s.reasonCh }
 func (s *geminiStream) Err() error          { return s.err }
+func (s *geminiStream) Done() bool          { return s.finished }

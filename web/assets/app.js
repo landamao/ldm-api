@@ -27,6 +27,22 @@
     return (Number(n) || 0).toLocaleString('zh-CN');
   }
 
+  // 紧凑数值：12345 -> 12.3K，1234567 -> 1.2M，用于日志里的 token 数
+  function fmtUnit(n) {
+    n = Number(n) || 0;
+    if (Math.abs(n) < 1000) return String(n);
+    const units = ['K', 'M', 'B'];
+    let v = n;
+    let i = -1;
+    do { v /= 1000; i += 1; } while (Math.abs(v) >= 1000 && i < units.length - 1);
+    const rounded = Math.round(v * 10) / 10;
+    // 999999 这类值四舍五入后会变成 1000K，需要进位到下一单位
+    if (Math.abs(rounded) >= 1000 && i < units.length - 1) {
+      return Math.round((v / 1000) * 10) / 10 + units[i + 1];
+    }
+    return rounded + units[i];
+  }
+
   function fmtTime(ms) {
     if (!ms) return '—';
     const d = new Date(Number(ms));
@@ -564,7 +580,7 @@
 
   // ---------- 导出 ----------
   window.LDM = {
-    esc, fmtNum, fmtInt, fmtTime, fmtTimeShort, relTime, fmtDuration, fmtUptime,
+    esc, fmtNum, fmtInt, fmtUnit, fmtTime, fmtTimeShort, relTime, fmtDuration, fmtUptime,
     copyText, debounce, icon, providerIcon, providerAvatar, Toast, API, openModal, confirmDialog, promptDialog,
     badge, statusBadge, emptyState, loadingBlock, switchEl, capBadges, fmtContext, colorBadge,
     Theme, State, routeParam, applyLogo,

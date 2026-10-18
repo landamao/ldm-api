@@ -625,6 +625,11 @@ html[data-theme="dark"] code, html[data-theme="dark"] .code { color: var(--pink-
   margin-bottom: 5px;
 }
 .field__label .req { color: var(--primary); margin-left: 2px; }
+.field__label .field__help {
+  width: 14px; height: 14px; padding: 0; margin-left: 6px;
+  justify-content: center; vertical-align: middle;
+  font-size: 9px;
+}
 .field__hint { font-size: 11px; color: var(--text-3); margin-top: 4px; line-height: 1.55; }
 .field__error { font-size: 11px; color: var(--red-500); margin-top: 4px; }
 
@@ -847,6 +852,16 @@ html[data-theme="dark"] .tristate__opt.is-on { background: rgba(255, 255, 255, .
   overflow-y: auto;
   background: var(--surface-2);
 }
+
+/* 获取模型列表弹窗：标签页切换上游返回 / 上游不存在 */
+.disc-list { max-height: 300px; }
+.disc-list .pick-item__name { overflow-wrap: anywhere; }
+.disc-empty {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 76px; padding: 12px;
+  border: 1px dashed var(--border-strong); border-radius: 12px;
+  color: var(--text-3); font-size: 12px; text-align: center;
+}
 .pick-group__head {
   position: sticky; top: 0; z-index: 2;
   display: flex; align-items: center; gap: 9px;
@@ -889,6 +904,8 @@ html[data-theme="dark"] .tristate__opt.is-on { background: rgba(255, 255, 255, .
 .pick-item:hover { background: var(--primary-soft); }
 .pick-item:active { transform: scale(.985); }
 .pick-item.is-disabled { opacity: .5; cursor: not-allowed; }
+/* 没有渠道分组时的平铺列表，不需要为分组箭头留缩进 */
+.pick-list--flat .pick-item { padding-left: 12px; }
 .pick-item__name { font-family: var(--mono); font-size: 12px; }
 .pick-item__meta { margin-left: auto; font-size: 11px; color: var(--text-3); display: flex; gap: 6px; align-items: center; }
 

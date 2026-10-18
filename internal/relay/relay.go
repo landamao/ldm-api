@@ -510,12 +510,21 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		}
 		if rerr != nil {
 			if rerr != io.EOF {
+				// 上游是否已发出结束标记必须在 Finish 之前判断：
+				// Anthropic/Gemini 的 Finish 本身会把 finished 置位。
+				done := st.Done()
 				// 客户端可能已经断开，尽力把收尾事件发出去
 				w.Write(st.Finish())
 				if flusher != nil {
 					flusher.Flush()
 				}
 				usage, est := streamUsage(st, req)
+				// 结束标记已经发出去，说明响应内容已经完整；此时客户端关连接
+				// （收到 [DONE] 就挂断很常见）或上游断开都不算这次调用失败。
+				if done && st.Err() == nil {
+					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
+						wrote: true, estimated: est, reasoning: st.ReasoningChars()}
+				}
 				// 客户端断开和上游断开要分开记账：前者黄色 200 记成功，后者红色 200 记错误
 				if ctx.Err() != nil {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,

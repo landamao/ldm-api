@@ -185,17 +185,23 @@ type Log struct {
 
 // Bucket 按小时聚合的统计。
 type Bucket struct {
-	Hour             int64            `json:"hour"`
-	Requests         int64            `json:"requests"`
-	Errors           int64            `json:"errors"`
-	PromptTokens     int64            `json:"prompt_tokens"`
-	CompletionTokens int64            `json:"completion_tokens"`
-	TotalTokens      int64            `json:"total_tokens"`
-	LatencySum       int64            `json:"latency_sum"`
-	ModelCounts      map[string]int64 `json:"model_counts"`
-	ModelErrors      map[string]int64 `json:"model_errors,omitempty"`
-	ChannelCounts    map[string]int64 `json:"channel_counts"`
-	TokenCounts      map[string]int64 `json:"token_counts"`
+	Hour             int64 `json:"hour"`
+	Requests         int64 `json:"requests"`
+	Errors           int64 `json:"errors"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+	LatencySum       int64 `json:"latency_sum"`
+	// 以下字段只统计同时有首字耗时、总耗时和输出速度的记录（流式且有输出），
+	// 用于数据看板的「平均速度」指标。
+	SpeedCount        int64            `json:"speed_count"`
+	SpeedSum          float64          `json:"speed_sum"`
+	SpeedLatencySum   int64            `json:"speed_latency_sum"`
+	SpeedFirstByteSum int64            `json:"speed_first_byte_sum"`
+	ModelCounts       map[string]int64 `json:"model_counts"`
+	ModelErrors       map[string]int64 `json:"model_errors,omitempty"`
+	ChannelCounts     map[string]int64 `json:"channel_counts"`
+	TokenCounts       map[string]int64 `json:"token_counts"`
 }
 
 // Settings 系统设置。

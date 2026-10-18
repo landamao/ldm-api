@@ -505,6 +505,13 @@ func (s *Store) RecordStat(l Log) error {
 		bk.CompletionTokens += int64(l.CompletionTokens)
 		bk.TotalTokens += int64(l.TotalTokens)
 		bk.LatencySum += l.LatencyMs
+		// 平均速度只统计首字、总耗时、速度三项都有的记录
+		if l.TokensPerSec > 0 && l.FirstByteMs > 0 && l.LatencyMs > 0 {
+			bk.SpeedCount++
+			bk.SpeedSum += l.TokensPerSec
+			bk.SpeedLatencySum += l.LatencyMs
+			bk.SpeedFirstByteSum += l.FirstByteMs
+		}
 		if l.ModelID != "" {
 			bk.ModelCounts[l.ModelID]++
 			if failed {

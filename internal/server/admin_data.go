@@ -201,11 +201,17 @@ type bucketSummary struct {
 	TotalTokens      int64   `json:"total_tokens"`
 	AvgLatency       float64 `json:"avg_latency"`
 	SuccessRate      float64 `json:"success_rate"`
+	// 平均速度只统计首字、总耗时、速度三项都有的记录
+	SpeedSamples    int64   `json:"speed_samples"`
+	AvgSpeed        float64 `json:"avg_speed"`
+	AvgFirstByte    float64 `json:"avg_first_byte"`
+	AvgSpeedLatency float64 `json:"avg_speed_latency"`
 }
 
 func sumBuckets(bs []store.Bucket) bucketSummary {
 	var out bucketSummary
-	var latencySum int64
+	var latencySum, speedLatencySum, firstByteSum int64
+	var speedSum float64
 	for _, b := range bs {
 		out.Requests += b.Requests
 		out.Errors += b.Errors
@@ -213,12 +219,21 @@ func sumBuckets(bs []store.Bucket) bucketSummary {
 		out.CompletionTokens += b.CompletionTokens
 		out.TotalTokens += b.TotalTokens
 		latencySum += b.LatencySum
+		out.SpeedSamples += b.SpeedCount
+		speedSum += b.SpeedSum
+		speedLatencySum += b.SpeedLatencySum
+		firstByteSum += b.SpeedFirstByteSum
 	}
 	if out.Requests > 0 {
 		out.AvgLatency = float64(latencySum) / float64(out.Requests)
 		out.SuccessRate = float64(out.Requests-out.Errors) * 100 / float64(out.Requests)
 	} else {
 		out.SuccessRate = 100
+	}
+	if out.SpeedSamples > 0 {
+		out.AvgSpeed = speedSum / float64(out.SpeedSamples)
+		out.AvgFirstByte = float64(firstByteSum) / float64(out.SpeedSamples)
+		out.AvgSpeedLatency = float64(speedLatencySum) / float64(out.SpeedSamples)
 	}
 	return out
 }
@@ -253,6 +268,10 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 			acc.CompletionTokens += b.CompletionTokens
 			acc.TotalTokens += b.TotalTokens
 			acc.LatencySum += b.LatencySum
+			acc.SpeedCount += b.SpeedCount
+			acc.SpeedSum += b.SpeedSum
+			acc.SpeedLatencySum += b.SpeedLatencySum
+			acc.SpeedFirstByteSum += b.SpeedFirstByteSum
 			if acc.ModelCounts == nil {
 				acc.ModelCounts = map[string]int64{}
 			}

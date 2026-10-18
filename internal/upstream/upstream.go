@@ -55,6 +55,10 @@ type Stream interface {
 	ReasoningChars() int
 	// Err 返回翻译过程中遇到的致命错误。
 	Err() error
+	// Done 表示上游已经发出结束标记（OpenAI 的 [DONE]/finish_reason、
+	// Anthropic 的 stop_reason、Gemini 的 finishReason）。客户端在这之后
+	// 关闭连接说明响应已经收全，不应算作中途断开。
+	Done() bool
 }
 
 // Provider 描述一种上游协议。

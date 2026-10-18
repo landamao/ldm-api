@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bufio"
 	"encoding/json"
+	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +13,7 @@ import (
 
 	"ldmapi/internal/relay"
 	"ldmapi/internal/store"
+	"ldmapi/internal/upstream"
 )
 
 func TestPasswordHashAndVerify(t *testing.T) {
@@ -696,6 +700,76 @@ func TestTokensPerSecond(t *testing.T) {
 	}
 }
 
+// 平均速度只统计有首字、总耗时和速度的记录，并分别求平均。
+func TestSumBucketsSpeed(t *testing.T) {
+	got := sumBuckets([]store.Bucket{
+		{Requests: 10, Errors: 1, SpeedCount: 2, SpeedSum: 30, SpeedLatencySum: 300, SpeedFirstByteSum: 100},
+		{Requests: 5, SpeedCount: 2, SpeedSum: 10, SpeedLatencySum: 500, SpeedFirstByteSum: 300},
+	})
+	if got.SpeedSamples != 4 {
+		t.Errorf("样本数应为 4，得到 %d", got.SpeedSamples)
+	}
+	if got.AvgSpeed != 10 {
+		t.Errorf("平均速度应为 10，得到 %v", got.AvgSpeed)
+	}
+	if got.AvgSpeedLatency != 200 {
+		t.Errorf("平均总耗时应为 200，得到 %v", got.AvgSpeedLatency)
+	}
+	if got.AvgFirstByte != 100 {
+		t.Errorf("平均首字应为 100，得到 %v", got.AvgFirstByte)
+	}
+
+	empty := sumBuckets(nil)
+	if empty.SpeedSamples != 0 || empty.AvgSpeed != 0 || empty.AvgFirstByte != 0 || empty.AvgSpeedLatency != 0 {
+		t.Errorf("没有样本时平均速度应为 0，得到 %+v", empty)
+	}
+}
+
+// 数据看板的平均速度只统计有首字、总耗时和速度的流式记录。
+func TestStatsOverviewAverageSpeed(t *testing.T) {
+	s, _ := newTestServer(t, "stats-speed")
+	tok := store.Token{ID: "tk", Name: "测试"}
+
+	// 流式且有首字：计入平均速度
+	s.record(tok, &relay.Request{Path: "/v1/chat/completions", Stream: true}, &relay.Result{
+		ModelID: "m", StatusCode: http.StatusOK, Stream: true,
+		Usage:     upstream.Usage{CompletionTokens: 100, TotalTokens: 100},
+		LatencyMs: 2000, FirstByteMs: 500,
+	})
+	// 非流式没有输出速度：不计入
+	s.record(tok, &relay.Request{Path: "/v1/chat/completions"}, &relay.Result{
+		ModelID: "m", StatusCode: http.StatusOK,
+		Usage:     upstream.Usage{CompletionTokens: 100, TotalTokens: 100},
+		LatencyMs: 1000, FirstByteMs: 100,
+	})
+
+	rec := httptest.NewRecorder()
+	s.statsOverview(rec, httptest.NewRequest(http.MethodGet, "/api/stats/overview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	var today map[string]any
+	if err := json.Unmarshal(out["today"], &today); err != nil {
+		t.Fatal(err)
+	}
+	if got := today["speed_samples"].(float64); got != 1 {
+		t.Errorf("速度样本数应为 1，得到 %v", got)
+	}
+	if got := today["avg_speed"].(float64); math.Abs(got-1000.0/15) > 0.001 {
+		t.Errorf("平均速度应为 %.4f，得到 %v", 1000.0/15, got)
+	}
+	if got := today["avg_first_byte"].(float64); got != 500 {
+		t.Errorf("平均首字应为 500，得到 %v", got)
+	}
+	if got := today["avg_speed_latency"].(float64); got != 2000 {
+		t.Errorf("平均总耗时应为 2000，得到 %v", got)
+	}
+}
+
 // ---------- 静态资源缓存 ----------
 
 func TestContentHashStableAndDistinct(t *testing.T) {
@@ -806,5 +880,96 @@ func TestRecordPersistsAttempts(t *testing.T) {
 	if got.Attempts[1].ChannelID != "B" || got.Attempts[1].StatusCode != 200 ||
 		got.Attempts[1].Error != "" {
 		t.Errorf("第二次尝试明细错误: %+v", got.Attempts[1])
+	}
+}
+
+// 端到端复现线上现象：客户端读到 [DONE] 后立刻关闭连接，而上游还保持连接。
+// 这条请求已经完整收完，日志不能记成「客户端已断开」。
+func TestClientDisconnectAfterDoneIsNotLoggedCanceled(t *testing.T) {
+	s, st := newTestServer(t, "disconnect-done")
+	now := time.Now().UnixMilli()
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		// 上游不主动收尾，模拟「客户端先挂断、网关还在等上游 EOF」的竞态。
+		<-r.Context().Done()
+	}))
+	defer up.Close()
+
+	if err := st.SaveChannel(store.Channel{
+		ID: "e2e-ch", Name: "端到端线路", Type: store.ChannelOpenAI, BaseURL: up.URL,
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "e2e/model", Type: store.ModelTypeCustom,
+		Routes:  []store.Route{{ChannelID: "e2e-ch", Upstream: "m"}},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key, err := s.EnsureDefaultToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+
+	req, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"e2e/model","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(resp.Body)
+	for {
+		line, rerr := br.ReadString('\n')
+		if rerr != nil {
+			resp.Body.Close()
+			t.Fatalf("读取流失败: %v", rerr)
+		}
+		if strings.Contains(line, "[DONE]") {
+			break
+		}
+	}
+	// 收到 [DONE] 立即断开，与线上客户端行为一致。
+	resp.Body.Close()
+
+	var logs []store.Log
+	for i := 0; i < 100; i++ {
+		logs, _, err = st.QueryLogs(store.LogFilter{Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(logs) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("应写入 1 条日志，得到 %d 条", len(logs))
+	}
+	got := logs[0]
+	if got.Canceled {
+		t.Fatalf("收到 [DONE] 后断开不应记为取消: %+v", got)
+	}
+	if got.Error != "" || got.StatusCode != http.StatusOK {
+		t.Fatalf("应记为成功的 200，得到 status=%d err=%q", got.StatusCode, got.Error)
+	}
+	if got.CompletionTokens != 2 || got.TotalTokens != 5 {
+		t.Fatalf("应保留上游上报的用量，得到 %+v", got)
 	}
 }
