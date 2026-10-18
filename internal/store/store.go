@@ -642,49 +642,6 @@ func (s *Store) ChannelModelIDs() (map[string]ChannelModel, error) {
 	return out, nil
 }
 
-// DeleteChannelCascade 删除渠道，并清理它派生出的渠道模型及其路由引用。
-func (s *Store) DeleteChannelCascade(id string) (removedModels []string, err error) {
-	models, err := s.ListModels()
-	if err != nil {
-		return nil, err
-	}
-	prefix := id + "/"
-	var toDelete []string
-	for _, m := range models {
-		if m.Type == ModelTypeChannel && m.ChannelID == id {
-			toDelete = append(toDelete, m.ID)
-			continue
-		}
-		if m.Type == ModelTypeCustom {
-			kept := m.Routes[:0]
-			changed := false
-			for _, r := range m.Routes {
-				if r.ChannelID == id {
-					changed = true
-					continue
-				}
-				kept = append(kept, r)
-			}
-			if changed {
-				m.Routes = append([]Route{}, kept...)
-				if err := s.SaveModel(m); err != nil {
-					return nil, err
-				}
-			}
-		}
-		_ = prefix
-	}
-	if len(toDelete) > 0 {
-		if err := s.DeleteModels(toDelete); err != nil {
-			return nil, err
-		}
-	}
-	if err := s.DeleteChannel(id); err != nil {
-		return nil, err
-	}
-	return toDelete, nil
-}
-
 // ModelRouteRefs 返回引用了某个渠道模型的所有自定义模型 ID。
 func (s *Store) ModelRouteRefs(channelID, upstream string) ([]string, error) {
 	models, err := s.ListModels()

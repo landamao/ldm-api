@@ -503,16 +503,30 @@
     const providerHtml = m.provider_name
       ? `<span class="provider-tag">${providerIcon(m.provider_icon, 15)}${esc(m.provider_name)}</span>`
       : '<span class="muted">未设置</span>';
+    const statusHtml = (() => {
+      if (m.status === 'disabled') return statusBadge(false, '', '已禁用');
+      if (m.status === 'channel_disabled') return badge('渠道已禁用', 'red');
+      if (m.status === 'channel_missing' || m.status === 'model_missing') return badge('渠道模型不存在', 'red');
+      if (m.status === 'not_added') return badge('未接入模型管理', 'red');
+      if (m.status === 'ok') return statusBadge(true, '可用');
+      return badge('不可用', 'red');
+    })();
 
     // 来源：自定义模型展示路由模型列表，有分组时按组显示（与模型配置页一致）；
     // 渠道模型展示所属渠道。
+    const routeStatusBadge = (r) => {
+      if (r.status === 'channel_disabled') return badge('渠道已禁用', 'red');
+      if (r.status === 'channel_missing' || r.status === 'model_missing') return badge('渠道模型不存在', 'red');
+      if (r.status === 'ok') return badge('可用', 'green');
+      return r.channel_ready === false ? badge('不可用', 'red') : badge('可用', 'green');
+    };
     const routeItemHtml = (r, num, inGroup) => `
       <div class="route-item ${inGroup ? 'is-grouped' : ''}">
         ${num ? `<span class="route-item__idx">${num}</span>` : ''}
         <span class="route-item__name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.model_id)}</span>
         <span class="route-item__meta">
           ${r.channel_name ? `<span class="muted fs-12" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.channel_name)}</span>` : ''}
-          ${r.channel_ready ? badge('可用', 'green') : badge('渠道已禁用', 'red')}
+          ${routeStatusBadge(r)}
         </span>
       </div>`;
     // 连续相同 group 的条目归为一组（group=0 视为普通条目），与模型配置页的分组规则一致
@@ -572,6 +586,7 @@
             <dl class="kv">
               ${row('模型 ID', `<span class="mono">${esc(m.id)}</span>`)}
               ${row('类型', isCustom ? '自定义模型' : '渠道模型')}
+              ${row('状态', statusHtml)}
               ${row('提供商', providerHtml)}
               ${row(isCustom ? '路由模型' : '来源', sourceHtml)}
               ${isCustom && m.routes && m.routes.length
@@ -644,13 +659,17 @@
     document.body.style.overflow = 'hidden';
   }
 
+  // 模型管理页复用同一个详情抽屉。
+  window.LDM.openModelDrawer = openModelDrawer;
+
   // ======================================================================
   // 在线对话
   // ======================================================================
   function rateColor(r) {
     r = Number(r) || 0;
-    if (r >= 99) return 'var(--green-500)';
-    if (r >= 90) return 'var(--amber-500)';
+    if (r >= 90) return 'var(--green-500)';
+    if (r >= 80) return 'var(--blue-500)';
+    if (r >= 70) return 'var(--amber-500)';
     return 'var(--red-500)';
   }
 

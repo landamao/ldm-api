@@ -634,6 +634,527 @@ func TestSaveChannelExplicitClear(t *testing.T) {
 	}
 }
 
+// 渠道里删掉模型名时，不应直接改动模型管理：
+// 先把仍被引用的条目录出来，等用户确认后再清理。
+func TestChannelUpdateKeepsModelRefsUntilConfirmed(t *testing.T) {
+	s, st := newTestServer(t, "refs1")
+
+	if err := st.SaveChannel(store.Channel{
+		ID: "A", Name: "主线路", Type: store.ChannelOpenAI,
+		BaseURL: "https://api.example.com", APIKey: "sk-live",
+		Models: []string{"a", "b"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, up := range []string{"a", "b"} {
+		if err := st.SaveModel(store.Model{
+			ID: "A/" + up, Type: store.ModelTypeChannel, ChannelID: "A", Upstream: up, Enabled: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "router", Type: store.ModelTypeCustom, Enabled: true,
+		Routes: []store.Route{
+			{ChannelID: "A", Upstream: "a"},
+			{ChannelID: "A", Upstream: "b"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	saveChannel := func(models []string) map[string]any {
+		t.Helper()
+		raw, _ := json.Marshal(map[string]any{"id": "A", "models": models})
+		req := httptest.NewRequest(http.MethodPut, "/api/channels/A", strings.NewReader(string(raw)))
+		req.SetPathValue("id", "A")
+		rec := httptest.NewRecorder()
+		s.saveChannel(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("保存渠道失败，状态码 %d: %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out
+	}
+
+	out := saveChannel([]string{"b"})
+	gone, _ := out["removed_upstreams"].([]any)
+	if len(gone) != 1 || gone[0] != "a" {
+		t.Fatalf("应报告移除 a，得到 %v", out["removed_upstreams"])
+	}
+	refs, _ := out["refs"].([]any)
+	if len(refs) != 2 {
+		t.Fatalf("应报告 2 条引用（渠道模型 + 自定义路由），得到 %v", refs)
+	}
+
+	// 未确认前，模型和路由都必须原样保留。
+	if _, err := st.GetModel("A/a"); err != nil {
+		t.Fatalf("A/a 不应被自动删除: %v", err)
+	}
+	router, err := st.GetModel("router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(router.Routes) != 2 {
+		t.Fatalf("自定义模型路由不应被自动清理，得到 %v", router.Routes)
+	}
+
+	// 孤立模型仍能正常启停和编辑，不能因为渠道列表变了就锁死。
+	raw, _ := json.Marshal(map[string]any{"enabled": false})
+	req := httptest.NewRequest(http.MethodPut, "/api/models/A/a", strings.NewReader(string(raw)))
+	req.SetPathValue("id", "A/a")
+	rec := httptest.NewRecorder()
+	s.saveModel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("孤立渠道模型应仍可编辑，状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	orphan, _ := st.GetModel("A/a")
+	if orphan.Enabled {
+		t.Error("孤立模型的启停修改应生效")
+	}
+
+	// 自定义模型原样保存旧路由也应通过。
+	raw, _ = json.Marshal(map[string]any{
+		"id": "router", "type": "custom",
+		"routes": []map[string]any{
+			{"channel_id": "A", "upstream": "a"},
+			{"channel_id": "A", "upstream": "b"},
+		},
+	})
+	req = httptest.NewRequest(http.MethodPut, "/api/models/router", strings.NewReader(string(raw)))
+	req.SetPathValue("id", "router")
+	rec = httptest.NewRecorder()
+	s.saveModel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保留旧路由的自定义模型应可保存，状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 用户确认后清理引用；当前渠道仍声明的 b 不能被误删。
+	raw, _ = json.Marshal(map[string]any{"upstreams": []string{"a", "b"}})
+	req = httptest.NewRequest(http.MethodPost, "/api/channels/A/prune-refs", strings.NewReader(string(raw)))
+	req.SetPathValue("id", "A")
+	rec = httptest.NewRecorder()
+	s.pruneChannelRefs(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("清理引用失败，状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := st.GetModel("A/a"); err != store.ErrNotFound {
+		t.Errorf("确认后 A/a 应被删除，得到 err=%v", err)
+	}
+	if _, err := st.GetModel("A/b"); err != nil {
+		t.Errorf("当前渠道仍声明的 A/b 不应被删除: %v", err)
+	}
+	router, err = st.GetModel("router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(router.Routes) != 1 || router.Routes[0].Upstream != "b" {
+		t.Errorf("确认后只应保留 b 路由，得到 %v", router.Routes)
+	}
+}
+
+// 删除渠道只删渠道本身：模型管理里的渠道模型和自定义路由都必须保留，
+// 引用该渠道的模型自然变成不可用，由用户自己决定是否清理。
+func TestDeleteChannelKeepsModelRefs(t *testing.T) {
+	s, st := newTestServer(t, "del1")
+
+	for _, ch := range []store.Channel{
+		{ID: "A", Name: "A", Type: store.ChannelOpenAI, BaseURL: "https://a.example.com", APIKey: "k", Models: []string{"a", "b"}, Enabled: true},
+		{ID: "B", Name: "B", Type: store.ChannelOpenAI, BaseURL: "https://b.example.com", APIKey: "k", Models: []string{"b"}, Enabled: true},
+	} {
+		if err := st.SaveChannel(ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"A/a", "A/b", "B/b"} {
+		chID, up, _ := strings.Cut(id, "/")
+		if err := st.SaveModel(store.Model{
+			ID: id, Type: store.ModelTypeChannel, ChannelID: chID, Upstream: up, Enabled: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "router", Type: store.ModelTypeCustom, Enabled: true,
+		Routes: []store.Route{
+			{ChannelID: "A", Upstream: "a"},
+			{ChannelID: "B", Upstream: "b"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/channels/A", nil)
+	req.SetPathValue("id", "A")
+	rec := httptest.NewRecorder()
+	s.deleteChannel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("删除渠道失败，状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := st.GetChannel("A"); err != store.ErrNotFound {
+		t.Error("渠道 A 应被删除")
+	}
+	for _, id := range []string{"A/a", "A/b", "B/b"} {
+		if _, err := st.GetModel(id); err != nil {
+			t.Errorf("模型 %s 不应随渠道删除: %v", id, err)
+		}
+	}
+	router, err := st.GetModel("router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(router.Routes) != 2 {
+		t.Errorf("自定义模型路由不应随渠道删除，得到 %v", router.Routes)
+	}
+
+	// 保留的模型仍能启停；自定义模型带着失效旧路由也能继续编辑。
+	raw, _ := json.Marshal(map[string]any{"enabled": false})
+	req = httptest.NewRequest(http.MethodPut, "/api/models/A/b", strings.NewReader(string(raw)))
+	req.SetPathValue("id", "A/b")
+	rec = httptest.NewRecorder()
+	s.saveModel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("渠道删除后孤立模型应仍可编辑，状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+
+	raw, _ = json.Marshal(map[string]any{
+		"id": "router", "type": "custom", "enabled": true,
+		"routes": []map[string]any{
+			{"channel_id": "A", "upstream": "a"},
+			{"channel_id": "B", "upstream": "b"},
+		},
+	})
+	req = httptest.NewRequest(http.MethodPut, "/api/models/router", strings.NewReader(string(raw)))
+	req.SetPathValue("id", "router")
+	rec = httptest.NewRecorder()
+	s.saveModel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("带失效旧路由的自定义模型应仍可保存，状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 指向已删除渠道的新路由也不再阻止保存，只会在状态里标出来。
+	raw, _ = json.Marshal(map[string]any{
+		"id": "router", "type": "custom", "enabled": true,
+		"routes": []map[string]any{
+			{"channel_id": "A", "upstream": "a"},
+			{"channel_id": "B", "upstream": "b"},
+			{"channel_id": "A", "upstream": "c"},
+		},
+	})
+	req = httptest.NewRequest(http.MethodPut, "/api/models/router", strings.NewReader(string(raw)))
+	req.SetPathValue("id", "router")
+	rec = httptest.NewRecorder()
+	s.saveModel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("指向已删除渠道的路由应允许保存，状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	router, err = st.GetModel("router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(router.Routes) != 3 {
+		t.Errorf("新路由应被保存，得到 %v", router.Routes)
+	}
+
+	// 渠道 A 的模型变为不可用；还有 B 路由的自定义模型仍然可用。
+	req = httptest.NewRequest(http.MethodGet, "/api/models", nil)
+	rec = httptest.NewRecorder()
+	s.listModels(rec, req)
+	var views []modelView
+	if err := json.Unmarshal(rec.Body.Bytes(), &views); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range views {
+		switch v.ID {
+		case "A/a":
+			if v.ChannelReady {
+				t.Error("渠道删除后 A/a 应显示为不可用")
+			}
+			if v.Status != statusChannelMissing {
+				t.Errorf("A/a 状态应为 %s，得到 %s", statusChannelMissing, v.Status)
+			}
+		case "router":
+			if !v.ChannelReady {
+				t.Error("router 还有可用路由，不应整体不可用")
+			}
+			if v.Status != statusOK {
+				t.Errorf("router 状态应为 %s，得到 %s", statusOK, v.Status)
+			}
+			for _, r := range v.Routes {
+				switch r.ModelID {
+				case "A/a", "A/c":
+					if r.Status != statusChannelMissing {
+						t.Errorf("%s 路由状态应为 %s，得到 %s", r.ModelID, statusChannelMissing, r.Status)
+					}
+				case "B/b":
+					if r.Status != statusOK {
+						t.Errorf("%s 路由状态应为 %s，得到 %s", r.ModelID, statusOK, r.Status)
+					}
+				}
+			}
+		}
+	}
+}
+
+// 删除渠道时确认「同时移除模型」后，才清理渠道模型与自定义路由。
+func TestDeleteChannelWithRefs(t *testing.T) {
+	s, st := newTestServer(t, "del2")
+
+	if err := st.SaveChannel(store.Channel{
+		ID: "A", Name: "A", Type: store.ChannelOpenAI,
+		BaseURL: "https://a.example.com", APIKey: "k",
+		Models: []string{"a", "b"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, up := range []string{"a", "b"} {
+		if err := st.SaveModel(store.Model{
+			ID: "A/" + up, Type: store.ModelTypeChannel, ChannelID: "A", Upstream: up, Enabled: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "router", Type: store.ModelTypeCustom, Enabled: true,
+		Routes: []store.Route{{ChannelID: "A", Upstream: "a"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/channels/A/refs", nil)
+	req.SetPathValue("id", "A")
+	rec := httptest.NewRecorder()
+	s.listChannelRefs(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取引用失败，状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	var refsOut struct {
+		Refs []channelRefView `json:"refs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &refsOut); err != nil {
+		t.Fatal(err)
+	}
+	if len(refsOut.Refs) != 3 {
+		t.Fatalf("应有 3 条引用（2 个渠道模型 + 1 条路由），得到 %+v", refsOut.Refs)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/channels/A?remove_refs=1", nil)
+	req.SetPathValue("id", "A")
+	rec = httptest.NewRecorder()
+	s.deleteChannel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("删除渠道失败，状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Removed []string `json:"removed_models"`
+		Updated []string `json:"updated_models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Removed) != 2 {
+		t.Errorf("应移除 2 个渠道模型，得到 %v", out.Removed)
+	}
+	if len(out.Updated) != 1 || out.Updated[0] != "router" {
+		t.Errorf("应清理 router 的路由，得到 %v", out.Updated)
+	}
+	if _, err := st.GetChannel("A"); err != store.ErrNotFound {
+		t.Error("渠道 A 应被删除")
+	}
+	if _, err := st.GetModel("A/a"); err != store.ErrNotFound {
+		t.Error("确认后 A/a 应被删除")
+	}
+	router, err := st.GetModel("router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(router.Routes) != 0 {
+		t.Errorf("router 的 A 路由应被清理，得到 %v", router.Routes)
+	}
+}
+
+// 启停等部分更新只能改 enabled，不能把路由、参数、描述等已有配置清空。
+func TestModelPartialUpdateKeepsConfig(t *testing.T) {
+	s, st := newTestServer(t, "partial1")
+	if err := st.SaveChannel(store.Channel{
+		ID: "A", Name: "A", Type: store.ChannelOpenAI,
+		BaseURL: "https://a.example.com", APIKey: "k", Models: []string{"a"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := 128000
+	tool := true
+	if err := st.SaveModel(store.Model{
+		ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a", Enabled: true,
+		DisplayName: "A 模型", Description: "渠道模型描述", Tags: []string{"tag-a"},
+		Caps: store.Caps{ContextLength: &ctx, ToolCalling: &tool},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "router", Type: store.ModelTypeCustom, Enabled: true,
+		Routes:      []store.Route{{ChannelID: "A", Upstream: "a"}},
+		ParamSource: "A/a", DisplayName: "路由模型", Description: "自定义描述", Tags: []string{"tag-b"},
+		Caps:     store.Caps{MaxOutput: &ctx},
+		Affinity: true, CooldownSec: 120, CooldownReset: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	put := func(id string, body map[string]any) {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPut, "/api/models/"+id, strings.NewReader(string(raw)))
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		s.saveModel(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s 部分更新失败，状态码 %d: %s", id, rec.Code, rec.Body.String())
+		}
+	}
+
+	// 只提交 enabled：渠道模型的描述、标签、能力参数都要保留。
+	put("A/a", map[string]any{"enabled": false})
+	chModel, err := st.GetModel("A/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chModel.Enabled {
+		t.Error("渠道模型应已禁用")
+	}
+	if chModel.DisplayName != "A 模型" || chModel.Description != "渠道模型描述" || len(chModel.Tags) != 1 {
+		t.Errorf("渠道模型的展示信息被清空: %+v", chModel)
+	}
+	if chModel.Caps.ContextLength == nil || *chModel.Caps.ContextLength != ctx {
+		t.Errorf("渠道模型的能力参数被清空: %+v", chModel.Caps)
+	}
+
+	// 只提交 enabled：自定义模型的路由、调度、参数来源、描述都要保留。
+	put("router", map[string]any{"enabled": false})
+	m, err := st.GetModel("router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Enabled {
+		t.Error("自定义模型应已禁用")
+	}
+	if len(m.Routes) != 1 || m.Routes[0].ChannelID != "A" || m.Routes[0].Upstream != "a" {
+		t.Errorf("自定义模型路由被清空: %+v", m.Routes)
+	}
+	if m.ParamSource != "A/a" || m.DisplayName != "路由模型" || m.Description != "自定义描述" || len(m.Tags) != 1 {
+		t.Errorf("自定义模型的配置被清空: %+v", m)
+	}
+	if !m.Affinity || m.CooldownSec != 120 || !m.CooldownReset {
+		t.Errorf("自定义模型的调度配置被清空: %+v", m)
+	}
+	if m.Caps.MaxOutput == nil || *m.Caps.MaxOutput != ctx {
+		t.Errorf("自定义模型的能力参数被清空: %+v", m.Caps)
+	}
+
+	// 显式提交空值仍然可以清空，保证编辑表单能正常保存。
+	put("router", map[string]any{
+		"description": "", "tags": []string{}, "caps": map[string]any{}, "routes": []map[string]any{},
+		"affinity": false, "cooldown_sec": 0, "cooldown_reset": false, "param_source": "",
+	})
+	m, err = st.GetModel("router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Description != "" || len(m.Tags) != 0 || len(m.Routes) != 0 {
+		t.Errorf("显式空值应清空配置: %+v", m)
+	}
+	if m.Caps.ContextLength != nil || m.Caps.MaxOutput != nil {
+		t.Errorf("显式空 caps 应清空能力参数: %+v", m.Caps)
+	}
+	if m.ParamSource != "" || m.Affinity || m.CooldownSec != 0 || m.CooldownReset {
+		t.Errorf("显式空值应清空调度配置: %+v", m)
+	}
+}
+
+// 模型状态要能区分：可用 / 渠道已禁用 / 渠道模型不存在 / 不可用 / 已禁用。
+func TestModelStatusDetails(t *testing.T) {
+	s, st := newTestServer(t, "status1")
+
+	for _, ch := range []store.Channel{
+		{ID: "A", Name: "A", Type: store.ChannelOpenAI, BaseURL: "https://a.example.com", APIKey: "k", Models: []string{"a"}, Enabled: true},
+		{ID: "C", Name: "C", Type: store.ChannelOpenAI, BaseURL: "https://c.example.com", APIKey: "k", Models: []string{"c"}, Enabled: false},
+		{ID: "D", Name: "D", Type: store.ChannelOpenAI, BaseURL: "https://d.example.com", APIKey: "k", Models: []string{}, Enabled: true},
+	} {
+		if err := st.SaveChannel(ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, m := range []store.Model{
+		{ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a", Enabled: true},
+		{ID: "C/c", Type: store.ModelTypeChannel, ChannelID: "C", Upstream: "c", Enabled: true},
+		{ID: "D/x", Type: store.ModelTypeChannel, ChannelID: "D", Upstream: "x", Enabled: true},
+		{ID: "missing/z", Type: store.ModelTypeChannel, ChannelID: "missing", Upstream: "z", Enabled: true},
+		{
+			ID: "mixed", Type: store.ModelTypeCustom, Enabled: true,
+			Routes: []store.Route{
+				{ChannelID: "A", Upstream: "a"},
+				{ChannelID: "C", Upstream: "c"},
+				{ChannelID: "D", Upstream: "x"},
+				{ChannelID: "missing", Upstream: "z"},
+			},
+		},
+		{
+			ID: "bad", Type: store.ModelTypeCustom, Enabled: true,
+			Routes: []store.Route{
+				{ChannelID: "C", Upstream: "c"},
+				{ChannelID: "D", Upstream: "x"},
+				{ChannelID: "missing", Upstream: "z"},
+			},
+		},
+		{ID: "empty", Type: store.ModelTypeCustom, Enabled: true},
+		{ID: "off", Type: store.ModelTypeCustom, Enabled: false, Routes: []store.Route{{ChannelID: "A", Upstream: "a"}}},
+	} {
+		if err := st.SaveModel(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
+	rec := httptest.NewRecorder()
+	s.listModels(rec, req)
+	var views []modelView
+	if err := json.Unmarshal(rec.Body.Bytes(), &views); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]modelView{}
+	for _, v := range views {
+		byID[v.ID] = v
+	}
+
+	want := map[string]string{
+		"A/a":       statusOK,
+		"C/c":       statusChannelDisabled,
+		"D/x":       statusModelMissing,
+		"missing/z": statusChannelMissing,
+		"mixed":     statusOK,
+		"bad":       statusUnavailable,
+		"empty":     statusNoRoutes,
+		"off":       statusDisabled,
+	}
+	for id, status := range want {
+		if got := byID[id].Status; got != status {
+			t.Errorf("%s 状态应为 %s，得到 %s", id, status, got)
+		}
+	}
+	routeWant := map[string]string{
+		"A/a":       statusOK,
+		"C/c":       statusChannelDisabled,
+		"D/x":       statusModelMissing,
+		"missing/z": statusChannelMissing,
+	}
+	for _, r := range byID["mixed"].Routes {
+		if got, ok := routeWant[r.ModelID]; ok && r.Status != got {
+			t.Errorf("mixed 的路由 %s 状态应为 %s，得到 %s", r.ModelID, got, r.Status)
+		}
+	}
+}
+
 func TestDiscoverRequiresBaseURL(t *testing.T) {
 	s, _ := newTestServer(t, "u2")
 
@@ -668,7 +1189,7 @@ func TestRelayRefusesChannelWithoutBaseURL(t *testing.T) {
 	body := `{"model":"A/a","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	s.relay.Do(req.Context(), rec, &relay.Request{
+	res := s.relay.Do(req.Context(), rec, &relay.Request{
 		Path: "/v1/chat/completions", Method: http.MethodPost,
 		Header: http.Header{}, Body: []byte(body),
 		JSON: map[string]any{"model": "A/a"},
@@ -677,8 +1198,15 @@ func TestRelayRefusesChannelWithoutBaseURL(t *testing.T) {
 	if rec.Code == http.StatusOK {
 		t.Fatal("没有接口地址的渠道不应转发成功")
 	}
-	if !strings.Contains(rec.Body.String(), "没有配置接口地址") {
-		t.Errorf("应给出明确错误，实际响应：%s", rec.Body.String())
+	// 内部配置错误只进日志，对外只给笼统的不可用提示。
+	if !strings.Contains(rec.Body.String(), "暂时不可用") {
+		t.Errorf("应给出笼统错误，实际响应：%s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "没有配置接口地址") {
+		t.Errorf("不应把内部配置错误回给调用方：%s", rec.Body.String())
+	}
+	if !strings.Contains(res.Err, "没有配置接口地址") {
+		t.Errorf("日志应保留内部原因，实际：%q", res.Err)
 	}
 }
 

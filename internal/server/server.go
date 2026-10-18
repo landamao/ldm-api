@@ -59,7 +59,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/channels", s.admin(s.saveChannel))
 	mux.HandleFunc("PUT /api/channels/{id}", s.admin(s.saveChannel))
 	mux.HandleFunc("DELETE /api/channels/{id}", s.admin(s.deleteChannel))
+	mux.HandleFunc("GET /api/channels/{id}/refs", s.admin(s.listChannelRefs))
 	mux.HandleFunc("POST /api/channels/{id}/test", s.admin(s.testChannel))
+	mux.HandleFunc("POST /api/channels/{id}/prune-refs", s.admin(s.pruneChannelRefs))
 	mux.HandleFunc("POST /api/channels/discover", s.admin(s.discoverChannelModels))
 
 	// ---- 模型 ----

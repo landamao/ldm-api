@@ -19,6 +19,7 @@ type plazaItem struct {
 	Tags          []string    `json:"tags"`
 	Caps          store.Caps  `json:"caps"`
 	Available     bool        `json:"available"`
+	Status        string      `json:"status"`
 	Source        string      `json:"source,omitempty"`
 	Upstream      string      `json:"upstream,omitempty"`
 	ChannelType   string      `json:"channel_type,omitempty"`
@@ -88,37 +89,50 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 		}
 		if m.Type == store.ModelTypeChannel {
 			item.Upstream = m.Upstream
+			status, ready := routeState(m.ChannelID, m.Upstream, byID)
+			item.Status = status
+			item.Available = m.Enabled && ready
 			if c, ok := byID[m.ChannelID]; ok {
 				item.Source = c.ID
 				if c.Name != "" {
 					item.Source = c.ID + "（" + c.Name + "）"
 				}
 				item.ChannelType = c.Type
-				if !c.Enabled {
-					item.Available = false
-				}
-			} else {
-				item.Available = false
+			}
+			if !m.Enabled {
+				item.Status = statusDisabled
 			}
 		} else {
-			ready := len(m.Routes) > 0
+			// 只要还有一条路由可用，自定义模型就整体可用；不可用的条目只在详情里标状态。
+			anyReady := false
 			for _, rt := range m.Routes {
+				status, routeReady := routeState(rt.ChannelID, rt.Upstream, byID)
 				rv := routeView{
 					ModelID: rt.ChannelID + "/" + rt.Upstream, ChannelID: rt.ChannelID,
 					Upstream: rt.Upstream, UpstreamModel: rt.Upstream,
 					Weight: rt.Weight, Group: rt.Group,
+					Status: status, ChannelReady: routeReady,
 				}
 				if c, ok := byID[rt.ChannelID]; ok {
 					rv.ChannelName = c.Name
-					rv.ChannelReady = c.Enabled
 					item.ChannelType = c.Type
 				}
-				if !rv.ChannelReady {
-					ready = false
+				if routeReady {
+					anyReady = true
 				}
 				item.Routes = append(item.Routes, rv)
 			}
-			item.Available = m.Enabled && ready
+			item.Available = m.Enabled && anyReady
+			switch {
+			case !m.Enabled:
+				item.Status = statusDisabled
+			case anyReady:
+				item.Status = statusOK
+			case len(m.Routes) == 0:
+				item.Status = statusNoRoutes
+			default:
+				item.Status = statusUnavailable
+			}
 			if len(m.Routes) > 0 {
 				parts := make([]string, 0, len(m.Routes))
 				for _, rt := range m.Routes {

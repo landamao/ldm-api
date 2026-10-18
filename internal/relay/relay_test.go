@@ -436,42 +436,6 @@ func TestEffectiveCapsInheritance(t *testing.T) {
 	}
 }
 
-func TestDeleteChannelCascade(t *testing.T) {
-	st := newTestStore(t)
-	seedChannels(t, st)
-	now := time.Now().UnixMilli()
-	for _, id := range []string{"A/a", "A/c", "B/a"} {
-		chID, up, _ := splitRef(id)
-		_ = st.SaveModel(store.Model{
-			ID: id, Type: store.ModelTypeChannel, ChannelID: chID, Upstream: up,
-			Enabled: true, CreatedAt: now, UpdatedAt: now,
-		})
-	}
-	_ = st.SaveModel(store.Model{
-		ID: "LDM", Type: store.ModelTypeCustom,
-		Routes:  []store.Route{{ChannelID: "A", Upstream: "c"}, {ChannelID: "B", Upstream: "a"}},
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
-	})
-
-	removed, err := st.DeleteChannelCascade("A")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(removed) != 2 {
-		t.Errorf("应移除 A/a 与 A/c 两个模型，实际 %v", removed)
-	}
-	if _, err := st.GetChannel("A"); err != store.ErrNotFound {
-		t.Error("渠道 A 应被删除")
-	}
-	m, err := st.GetModel("LDM")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(m.Routes) != 1 || m.Routes[0].ChannelID != "B" {
-		t.Errorf("自定义模型的 A 路由应被清理，得到 %+v", m.Routes)
-	}
-}
-
 func TestUpdateChannelModelsRemovesStaleEntries(t *testing.T) {
 	st := newTestStore(t)
 	seedChannels(t, st)
@@ -1152,4 +1116,103 @@ func (w *cancelOnWrite) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// 对外错误不能带渠道 ID、渠道状态或上游原始报错，这些只留在日志里。
+func TestClientErrorsHideInternals(t *testing.T) {
+	now := time.Now().UnixMilli()
+	reqFor := func(model string) *Request {
+		body := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`)
+		return &Request{
+			Path: "/v1/chat/completions", Method: http.MethodPost,
+			Header: http.Header{}, Body: body,
+			JSON: map[string]any{"model": model},
+		}
+	}
+	seedCustom := func(t *testing.T, st *store.Store, enabled bool, baseURL string) {
+		t.Helper()
+		if err := st.SaveChannel(store.Channel{
+			ID: "secret-chan", Name: "内部线路", Type: store.ChannelOpenAI,
+			BaseURL: baseURL, Enabled: enabled, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SaveModel(store.Model{
+			ID: "smart", Type: store.ModelTypeCustom,
+			Routes:  []store.Route{{ChannelID: "secret-chan", Upstream: "m"}},
+			Enabled: true, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("渠道已禁用", func(t *testing.T) {
+		st := newTestStore(t)
+		seedCustom(t, st, false, "http://127.0.0.1:1")
+
+		rec := httptest.NewRecorder()
+		res := New(st).Do(context.Background(), rec, reqFor("smart"))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("状态码应为 503，得到 %d", rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "模型「smart」当前没有可用渠道") {
+			t.Errorf("对外文案不正确: %s", body)
+		}
+		if strings.Contains(body, "secret-chan") || strings.Contains(body, "禁用") {
+			t.Errorf("对外文案泄露了渠道信息: %s", body)
+		}
+		if !strings.Contains(res.Err, "secret-chan") {
+			t.Errorf("日志应保留内部原因，得到 %q", res.Err)
+		}
+	})
+
+	t.Run("上游报错", func(t *testing.T) {
+		st := newTestStore(t)
+		bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, `{"error":{"message":"secret-upstream-detail"}}`)
+		}))
+		defer bad.Close()
+		seedCustom(t, st, true, bad.URL)
+
+		rec := httptest.NewRecorder()
+		res := New(st).Do(context.Background(), rec, reqFor("smart"))
+		body := rec.Body.String()
+		// 上游自己的错误原样返回，但不能带网关的渠道信息。
+		if !strings.Contains(body, "secret-upstream-detail") {
+			t.Errorf("应透传上游原始错误: %s", body)
+		}
+		if strings.Contains(body, "secret-chan") {
+			t.Errorf("对外文案泄露了渠道信息: %s", body)
+		}
+		if !strings.Contains(res.Err, "secret-chan") || !strings.Contains(res.Err, "secret-upstream-detail") {
+			t.Errorf("日志应保留渠道与上游错误，得到 %q", res.Err)
+		}
+	})
+
+	t.Run("模型已禁用", func(t *testing.T) {
+		st := newTestStore(t)
+		if err := st.SaveModel(store.Model{
+			ID: "smart", Type: store.ModelTypeCustom,
+			Enabled: false, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		rec := httptest.NewRecorder()
+		New(st).Do(context.Background(), rec, reqFor("smart"))
+		if !strings.Contains(rec.Body.String(), "模型「smart」不可用") {
+			t.Errorf("对外文案不正确: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("模型不存在", func(t *testing.T) {
+		st := newTestStore(t)
+		rec := httptest.NewRecorder()
+		New(st).Do(context.Background(), rec, reqFor("nope"))
+		if !strings.Contains(rec.Body.String(), "模型「nope」不存在") {
+			t.Errorf("对外文案不正确: %s", rec.Body.String())
+		}
+	})
 }

@@ -90,7 +90,7 @@ func publicSettings(st store.Settings) store.Settings {
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	st, err := s.store.GetSettings()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "读取设置失败")
 		return
 	}
 	writeOK(w, publicSettings(st))

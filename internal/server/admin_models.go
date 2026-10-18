@@ -21,6 +21,7 @@ type modelView struct {
 	ChannelName   string      `json:"channel_name,omitempty"`
 	ChannelType   string      `json:"channel_type,omitempty"`
 	ChannelReady  bool        `json:"channel_ready"`
+	Status        string      `json:"status"`
 	ProviderName  string      `json:"provider_name,omitempty"`
 	ProviderIcon  string      `json:"provider_icon,omitempty"`
 	ProviderColor string      `json:"provider_color,omitempty"`
@@ -35,9 +36,36 @@ type routeView struct {
 	ChannelName   string `json:"channel_name,omitempty"`
 	Upstream      string `json:"upstream"`
 	ChannelReady  bool   `json:"channel_ready"`
+	Status        string `json:"status"`
 	UpstreamModel string `json:"upstream_model"`
 	Weight        int    `json:"weight,omitempty"`
 	Group         int    `json:"group,omitempty"`
+}
+
+// 模型/路由状态。前端据此显示「可用」「不可用」「渠道已禁用」「渠道模型不存在」。
+const (
+	statusOK              = "ok"
+	statusDisabled        = "disabled"
+	statusChannelDisabled = "channel_disabled"
+	statusChannelMissing  = "channel_missing"
+	statusModelMissing    = "model_missing"
+	statusNoRoutes        = "no_routes"
+	statusUnavailable     = "unavailable"
+)
+
+// routeState 判断一条「渠道 + 上游模型」引用是否真的可用。
+func routeState(channelID, upstream string, byID map[string]store.Channel) (string, bool) {
+	c, ok := byID[channelID]
+	if !ok {
+		return statusChannelMissing, false
+	}
+	if !c.Enabled {
+		return statusChannelDisabled, false
+	}
+	if !containsString(c.Models, upstream) {
+		return statusModelMissing, false
+	}
+	return statusOK, true
 }
 
 func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +88,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]modelView, 0, len(models))
 	for _, m := range models {
-		v := modelView{Model: m, ChannelReady: true}
+		v := modelView{Model: m, Status: statusOK}
 		if p, ok := providerByID[m.ProviderID]; ok {
 			v.ProviderName = p.Name
 			v.ProviderIcon = p.Icon
@@ -70,15 +98,14 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 			if c, ok := byID[m.ChannelID]; ok {
 				v.ChannelName = c.Name
 				v.ChannelType = c.Type
-				v.ChannelReady = c.Enabled
-			} else {
-				v.ChannelReady = false
 			}
+			v.Status, v.ChannelReady = routeState(m.ChannelID, m.Upstream, byID)
 		} else {
-			// 自定义模型只要还有一条路由的渠道可用，整体就算可用；
-			// 调度时会自动跳过渠道已禁用的条目，不能因为部分条目不可用就整模判死。
+			// 自定义模型只要还有一条路由真正可用，整体就算可用；
+			// 其余条目的具体原因放在 route.status 里。
 			anyReady := false
 			for _, rt := range m.Routes {
+				status, ready := routeState(rt.ChannelID, rt.Upstream, byID)
 				rv := routeView{
 					ModelID:       rt.ChannelID + "/" + rt.Upstream,
 					ChannelID:     rt.ChannelID,
@@ -86,17 +113,28 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 					UpstreamModel: rt.Upstream,
 					Weight:        rt.Weight,
 					Group:         rt.Group,
+					Status:        status,
+					ChannelReady:  ready,
 				}
 				if c, ok := byID[rt.ChannelID]; ok {
 					rv.ChannelName = c.Name
-					rv.ChannelReady = c.Enabled
 				}
 				v.Routes = append(v.Routes, rv)
-				if rv.ChannelReady {
+				if ready {
 					anyReady = true
 				}
 			}
 			v.ChannelReady = anyReady
+			if anyReady {
+				v.Status = statusOK
+			} else if len(m.Routes) == 0 {
+				v.Status = statusNoRoutes
+			} else {
+				v.Status = statusUnavailable
+			}
+		}
+		if !m.Enabled {
+			v.Status = statusDisabled
 		}
 		v.CapsSource = m.ParamSource
 		v.Effective = s.effectiveCapsOf(m, modelByID, 0)
@@ -176,21 +214,21 @@ func (s *Server) availableChannelModels(w http.ResponseWriter, r *http.Request) 
 }
 
 type modelRequest struct {
-	ID            string        `json:"id"`
-	Type          string        `json:"type"`
-	ChannelID     string        `json:"channel_id"`
-	Upstream      string        `json:"upstream"`
-	Routes        []store.Route `json:"routes"`
-	ParamSource   string        `json:"param_source"`
-	ProviderID    *string       `json:"provider_id"`
-	Caps          store.Caps    `json:"caps"`
-	Enabled       *bool         `json:"enabled"`
-	DisplayName   string        `json:"display_name"`
-	Description   string        `json:"description"`
-	Tags          []string      `json:"tags"`
-	Affinity      bool          `json:"affinity"`
-	CooldownSec   int           `json:"cooldown_sec"`
-	CooldownReset bool          `json:"cooldown_reset"`
+	ID            string         `json:"id"`
+	Type          string         `json:"type"`
+	ChannelID     string         `json:"channel_id"`
+	Upstream      string         `json:"upstream"`
+	Routes        *[]store.Route `json:"routes"`
+	ParamSource   *string        `json:"param_source"`
+	ProviderID    *string        `json:"provider_id"`
+	Caps          *store.Caps    `json:"caps"`
+	Enabled       *bool          `json:"enabled"`
+	DisplayName   *string        `json:"display_name"`
+	Description   *string        `json:"description"`
+	Tags          *[]string      `json:"tags"`
+	Affinity      *bool          `json:"affinity"`
+	CooldownSec   *int           `json:"cooldown_sec"`
+	CooldownReset *bool          `json:"cooldown_reset"`
 }
 
 func (s *Server) clearModelCooldowns(w http.ResponseWriter, r *http.Request) {
@@ -269,15 +307,7 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "渠道模型必须指定渠道与上游模型名")
 			return
 		}
-		ch, err := s.store.GetChannel(m.ChannelID)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "渠道 "+m.ChannelID+" 不存在")
-			return
-		}
-		if !containsString(ch.Models, m.Upstream) {
-			writeErr(w, http.StatusBadRequest, fmt.Sprintf("渠道 %s 未配置模型 %s，请先在渠道设置中添加", m.ChannelID, m.Upstream))
-			return
-		}
+		// 不校验渠道与上游模型是否存在：允许先配好模型，之后再补渠道或模型名。
 		// 渠道模型的 ID 必须与「渠道ID/上游模型名」一致，保证可追溯
 		m.ID = m.ChannelID + "/" + m.Upstream
 		req.ID = m.ID
@@ -293,32 +323,45 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		m.CooldownSec = 0
 		m.CooldownReset = false
 	} else {
-		if err := s.validateCustomRoutes(req.Routes); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		m.Routes = req.Routes
-		if m.Routes == nil {
-			m.Routes = []store.Route{}
-		}
-		m.Affinity = req.Affinity
-		m.CooldownSec = req.CooldownSec
-		if m.CooldownSec < 0 {
-			m.CooldownSec = 0
-		}
-		if m.CooldownSec > 86400 {
-			m.CooldownSec = 86400
-		}
-		m.CooldownReset = req.CooldownReset
-		m.ChannelID = ""
-		m.Upstream = ""
-		if req.ParamSource != "" && req.ParamSource != m.ID {
-			if _, err := s.store.GetModel(req.ParamSource); err != nil {
-				writeErr(w, http.StatusBadRequest, "参数来源模型 "+req.ParamSource+" 不存在")
+		// 只更新请求里出现的字段：启停等部分更新不能把路由、参数和描述清空。
+		if req.Routes != nil {
+			if err := s.validateCustomRoutes(*req.Routes); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			m.ParamSource = req.ParamSource
-		} else {
+			m.Routes = *req.Routes
+			if m.Routes == nil {
+				m.Routes = []store.Route{}
+			}
+		} else if isNew {
+			m.Routes = []store.Route{}
+		}
+		if req.Affinity != nil {
+			m.Affinity = *req.Affinity
+		}
+		if req.CooldownSec != nil {
+			m.CooldownSec = *req.CooldownSec
+			if m.CooldownSec < 0 {
+				m.CooldownSec = 0
+			}
+			if m.CooldownSec > 86400 {
+				m.CooldownSec = 86400
+			}
+		}
+		if req.CooldownReset != nil {
+			m.CooldownReset = *req.CooldownReset
+		}
+		m.ChannelID = ""
+		m.Upstream = ""
+		// 不校验参数来源模型是否存在：不存在时按本模型参数使用。
+		if req.ParamSource != nil {
+			ps := strings.TrimSpace(*req.ParamSource)
+			if ps != "" && ps != m.ID {
+				m.ParamSource = ps
+			} else {
+				m.ParamSource = ""
+			}
+		} else if isNew {
 			m.ParamSource = ""
 		}
 	}
@@ -334,27 +377,30 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	// 没给时，新模型或尚未归属的模型按关键词自动匹配。
 	providers, _ := s.store.ListProviders()
 	if req.ProviderID != nil {
-		pid := strings.TrimSpace(*req.ProviderID)
-		if pid != "" {
-			if _, ok := providerMap(providers)[pid]; !ok {
-				writeErr(w, http.StatusBadRequest, "提供商 "+pid+" 不存在")
-				return
-			}
-		}
-		m.ProviderID = pid
+		m.ProviderID = strings.TrimSpace(*req.ProviderID)
 	} else if isNew || m.ProviderID == "" {
 		m.ProviderID = matchProvider(providers, providerMatchKey(m))
 	}
 
-	// 始终以请求为准：否则用户没法把已有配置清空回「全部透传」
-	m.Caps = req.Caps
+	// 只更新请求里出现的字段；显式传空值（caps: {} / tags: [] / ""）才清空。
+	if req.Caps != nil {
+		m.Caps = *req.Caps
+	}
 	if req.Enabled != nil {
 		m.Enabled = *req.Enabled
 	}
-	m.DisplayName = strings.TrimSpace(req.DisplayName)
-	m.Description = strings.TrimSpace(req.Description)
-	m.Tags = req.Tags
-	if m.Tags == nil {
+	if req.DisplayName != nil {
+		m.DisplayName = strings.TrimSpace(*req.DisplayName)
+	}
+	if req.Description != nil {
+		m.Description = strings.TrimSpace(*req.Description)
+	}
+	if req.Tags != nil {
+		m.Tags = *req.Tags
+		if m.Tags == nil {
+			m.Tags = []string{}
+		}
+	} else if isNew {
 		m.Tags = []string{}
 	}
 	m.UpdatedAt = time.Now().UnixMilli()
@@ -504,6 +550,7 @@ func (s *Server) testModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) validateCustomRoutes(routes []store.Route) error {
+	// 只做结构性校验；渠道/上游是否存在由模型列表接口计算状态，不阻止保存。
 	seen := map[string]bool{}
 	for i, rt := range routes {
 		key := rt.ChannelID + "/" + rt.Upstream
@@ -519,13 +566,6 @@ func (s *Server) validateCustomRoutes(routes []store.Route) error {
 		}
 		if rt.Group < 0 || rt.Group > 1000 {
 			return fmt.Errorf("第 %d 条路由的分组需在 0–1000 之间", i+1)
-		}
-		ch, err := s.store.GetChannel(rt.ChannelID)
-		if err != nil {
-			return fmt.Errorf("路由目标 %s 的渠道不存在", key)
-		}
-		if !containsString(ch.Models, rt.Upstream) {
-			return fmt.Errorf("渠道 %s 未配置模型 %s", rt.ChannelID, rt.Upstream)
 		}
 	}
 	return nil
@@ -567,11 +607,6 @@ func (s *Server) batchAddModels(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请至少选择一个渠道模型")
 		return
 	}
-	chans, _ := s.store.ListChannels()
-	chanByID := map[string]store.Channel{}
-	for _, c := range chans {
-		chanByID[c.ID] = c
-	}
 	providers, _ := s.store.ListProviders()
 
 	now := time.Now().UnixMilli()
@@ -585,15 +620,6 @@ func (s *Server) batchAddModels(w http.ResponseWriter, r *http.Request) {
 		chID, upstream, ok := splitChannelModel(id)
 		if !ok {
 			skipped = append(skipped, id+"（格式错误）")
-			continue
-		}
-		ch, ok := chanByID[chID]
-		if !ok {
-			skipped = append(skipped, id+"（渠道不存在）")
-			continue
-		}
-		if !containsString(ch.Models, upstream) {
-			skipped = append(skipped, id+"（渠道未配置该模型）")
 			continue
 		}
 		if _, err := s.store.GetModel(id); err == nil {

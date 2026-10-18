@@ -214,11 +214,11 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	resolved, err := r.Resolve(modelID)
 	if err != nil {
 		code := http.StatusNotFound
-		msg := "模型 " + modelID + " 不存在"
+		msg := "模型「" + modelID + "」不存在"
 		typ := "invalid_request_error"
 		if errors.Is(err, ErrModelDisabled) {
 			code = http.StatusForbidden
-			msg = "模型 " + modelID + " 已被禁用"
+			msg = "模型「" + modelID + "」不可用"
 		}
 		writeAPIError(w, code, typ, msg)
 		res.StatusCode = code
@@ -227,8 +227,9 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		return res
 	}
 	if len(resolved.Routes) == 0 {
+		// 客户端只看到笼统结论，具体原因（渠道已禁用等）只写进日志，避免泄露内部信息。
 		writeAPIError(w, http.StatusServiceUnavailable, "server_error",
-			"模型 "+modelID+" 当前没有可用渠道："+resolved.NoRoute)
+			"模型「"+modelID+"」当前没有可用渠道")
 		res.StatusCode = http.StatusServiceUnavailable
 		res.Err = resolved.NoRoute
 		res.LatencyMs = time.Since(start).Milliseconds()
@@ -237,6 +238,8 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 
 	var lastErr string
 	var lastStatus int
+	var lastRaw []byte // 上游最后一次失败响应体，用于原样透传
+	var lastRawHdr http.Header
 	wrote := false
 	var attempts []store.LogAttempt
 	for i, route := range resolved.Routes {
@@ -246,6 +249,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 
 		attemptStarted := time.Now()
 		outcome := r.attempt(ctx, w, req, resolved, route, i == len(resolved.Routes)-1)
+		lastRaw, lastRawHdr = outcome.upstreamRaw, outcome.upstreamHdr
 		attempts = append(attempts, store.LogAttempt{
 			ChannelID:     route.Channel.ID,
 			ChannelName:   route.Channel.Name,
@@ -323,7 +327,13 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	}
 	// 上游的原始响应已经透传过了，就不要再追加一层错误体
 	if lastErr != "" && !wrote {
-		writeAPIError(w, lastStatus, "server_error", lastErr)
+		if lastRaw != nil {
+			// 上游自己的错误响应原样返回，但不会带上网关的渠道信息。
+			writeUpstreamRawParts(w, lastRawHdr, lastStatus, lastRaw)
+		} else {
+			// 网关自身原因（配置缺失、网络错误等）只写进日志，对外给笼统结论。
+			writeAPIError(w, lastStatus, "server_error", clientErrorMessage(modelID))
+		}
 	}
 	return res
 }
@@ -339,6 +349,10 @@ type attemptOutcome struct {
 	reasoning int
 	// canceled 表示这次失败是客户端主动断开造成的，不是上游的问题。
 	canceled bool
+	// upstreamRaw/upstreamHdr 是上游错误响应，仅在最后一次尝试时保留，
+	// 用于把上游原始错误原样透传给调用方。
+	upstreamRaw []byte
+	upstreamHdr http.Header
 	// upstreamBroken 表示上游在响应中途断开，即使已经写出响应也要标记失败。
 	upstreamBroken bool
 }
@@ -432,7 +446,12 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 			writeUpstreamRaw(w, resp, raw)
 			return attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: false, wrote: true}
 		}
-		return attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: !isLast}
+		out := attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: !isLast}
+		if isLast {
+			// 已经是最后一条路由：上游原始错误留给 Do 原样返回给调用方
+			out.upstreamRaw, out.upstreamHdr = raw, resp.Header
+		}
+		return out
 	}
 
 	firstByte := time.Since(started).Milliseconds()
@@ -613,8 +632,13 @@ var respPassthrough = map[string]bool{
 }
 
 func writeUpstreamRaw(w http.ResponseWriter, resp *http.Response, raw []byte) {
+	writeUpstreamRawParts(w, resp.Header, resp.StatusCode, raw)
+}
+
+// writeUpstreamRawParts 按上游的响应头和状态码原样写出响应体。
+func writeUpstreamRawParts(w http.ResponseWriter, hdr http.Header, status int, raw []byte) {
 	h := w.Header()
-	for k, vs := range resp.Header {
+	for k, vs := range hdr {
 		lk := strings.ToLower(k)
 		if strings.HasPrefix(lk, "x-") || respPassthrough[lk] {
 			for _, v := range vs {
@@ -625,7 +649,7 @@ func writeUpstreamRaw(w http.ResponseWriter, resp *http.Response, raw []byte) {
 	if h.Get("Content-Type") == "" {
 		h.Set("Content-Type", "application/json; charset=utf-8")
 	}
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(status)
 	w.Write(raw)
 }
 
@@ -633,6 +657,11 @@ func writeAPIError(w http.ResponseWriter, code int, typ, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	w.Write([]byte(fmt.Sprintf(`{"error":{"message":%s,"type":%s,"code":%s}}`, jsonStr(msg), jsonStr(typ), jsonStr(typ))))
+}
+
+// clientErrorMessage 把网关自身的失败原因收敛成不含渠道、上游地址等细节的对外文案。
+func clientErrorMessage(modelID string) string {
+	return "模型「" + modelID + "」暂时不可用，请稍后重试"
 }
 
 func cleanNetErr(err error) string {

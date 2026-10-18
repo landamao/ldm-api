@@ -24,8 +24,9 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// 存储层异常不把原始错误回给调用方，避免暴露内部细节。
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
-			"error": map[string]any{"message": err.Error(), "type": "invalid_api_key", "code": "invalid_api_key"},
+			"error": map[string]any{"message": "无效的 API 密钥", "type": "invalid_api_key", "code": "invalid_api_key"},
 		})
 		return
 	}
@@ -47,7 +48,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "读取请求体失败: "+err.Error())
+		writeErr(w, http.StatusBadRequest, "读取请求体失败")
 		return
 	}
 	r.Body.Close()
@@ -72,7 +73,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			if mv, ok := m["model"].(string); ok && !tokenAllowsModel(token, mv) {
 				writeJSON(w, http.StatusForbidden, map[string]any{
 					"error": map[string]any{
-						"message": "该 API 密钥无权调用模型 " + mv, "type": "permission_error", "code": "model_not_allowed",
+						"message": "该 API 密钥无权调用模型「" + mv + "」", "type": "permission_error", "code": "model_not_allowed",
 					},
 				})
 				return
@@ -89,7 +90,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveModelList(w http.ResponseWriter, token store.Token) {
 	models, err := s.store.ListModels()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "读取模型列表失败")
 		return
 	}
 	created := time.Now().Unix()

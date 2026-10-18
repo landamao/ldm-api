@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -173,13 +174,22 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 渠道模型改名后，同步更新已添加的渠道模型与自定义模型路由
-	removed := s.syncChannelModelRefs(ch, existing, isNew)
+	// 渠道里删掉模型名后，不再直接改动模型管理里的配置：
+	// 把「已从渠道移除、但仍被模型引用」的条目录出来，交给前端确认是否一起清理。
+	gone := missingChannelModels(existing.Models, ch.Models)
+	refs := []channelRefView{}
+	if len(gone) > 0 {
+		if refs, err = s.channelRefsFor(ch.ID, gone); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	writeOK(w, map[string]any{
-		"channel":        ch,
-		"removed_models": removed,
-		"channel_models": prefixed(ch.ID, ch.Models),
-		"created":        isNew,
+		"channel":           ch,
+		"removed_upstreams": gone,
+		"refs":              refs,
+		"channel_models":    prefixed(ch.ID, ch.Models),
+		"created":           isNew,
 	})
 }
 
@@ -191,61 +201,184 @@ func prefixed(id string, models []string) []string {
 	return out
 }
 
-// syncChannelModelRefs 处理渠道模型列表变化带来的引用清理。
-func (s *Server) syncChannelModelRefs(ch, old store.Channel, isNew bool) []string {
-	if isNew {
-		return nil
+// channelRefView 描述一条仍然引用「渠道已移除模型」的模型配置。
+type channelRefView struct {
+	Type      string `json:"type"` // channel_model | custom_route
+	ModelID   string `json:"model_id"`
+	ChannelID string `json:"channel_id"`
+	Upstream  string `json:"upstream"`
+}
+
+// missingChannelModels 返回 old 里有、cur 里已经没有的模型名，保持原顺序。
+func missingChannelModels(old, cur []string) []string {
+	curSet := make(map[string]bool, len(cur))
+	for _, m := range cur {
+		curSet[m] = true
 	}
-	oldSet := map[string]bool{}
-	for _, m := range old.Models {
-		oldSet[m] = true
-	}
-	newSet := map[string]bool{}
-	for _, m := range ch.Models {
-		newSet[m] = true
-	}
-	var gone []string
-	for m := range oldSet {
-		if !newSet[m] {
-			gone = append(gone, m)
+	seen := map[string]bool{}
+	out := []string{}
+	for _, m := range old {
+		if !curSet[m] && !seen[m] {
+			seen[m] = true
+			out = append(out, m)
 		}
 	}
-	if len(gone) == 0 {
-		return nil
+	return out
+}
+
+// channelRefsFor 找出仍在引用这些上游模型的渠道模型与自定义模型路由。
+func (s *Server) channelRefsFor(chID string, upstreams []string) ([]channelRefView, error) {
+	set := make(map[string]bool, len(upstreams))
+	for _, u := range upstreams {
+		set[u] = true
 	}
+	return s.channelRefs(chID, set)
+}
+
+// allChannelRefs 找出引用该渠道的全部模型与路由，用于删除前的确认。
+func (s *Server) allChannelRefs(chID string) ([]channelRefView, error) {
+	return s.channelRefs(chID, nil)
+}
+
+// channelRefs 中 upstreams 为 nil 表示不按上游模型名过滤。
+func (s *Server) channelRefs(chID string, upstreams map[string]bool) ([]channelRefView, error) {
 	models, err := s.store.ListModels()
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	var removed []string
+	matches := func(up string) bool { return upstreams == nil || upstreams[up] }
+	refs := []channelRefView{}
 	for _, m := range models {
-		if m.Type == store.ModelTypeChannel && m.ChannelID == ch.ID {
-			for _, g := range gone {
-				if m.Upstream == g {
-					_ = s.store.DeleteModel(m.ID)
-					removed = append(removed, m.ID)
-				}
+		if m.Type == store.ModelTypeChannel {
+			if m.ChannelID == chID && matches(m.Upstream) {
+				refs = append(refs, channelRefView{
+					Type: "channel_model", ModelID: m.ID, ChannelID: chID, Upstream: m.Upstream,
+				})
 			}
 			continue
 		}
-		if m.Type == store.ModelTypeCustom {
-			kept := make([]store.Route, 0, len(m.Routes))
-			changed := false
-			for _, rt := range m.Routes {
-				if rt.ChannelID == ch.ID && !newSet[rt.Upstream] {
-					changed = true
-					continue
-				}
-				kept = append(kept, rt)
-			}
-			if changed {
-				m.Routes = kept
-				m.UpdatedAt = time.Now().UnixMilli()
-				_ = s.store.SaveModel(m)
+		for _, rt := range m.Routes {
+			if rt.ChannelID == chID && matches(rt.Upstream) {
+				refs = append(refs, channelRefView{
+					Type: "custom_route", ModelID: m.ID, ChannelID: chID, Upstream: rt.Upstream,
+				})
 			}
 		}
 	}
-	return removed
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].Upstream != refs[j].Upstream {
+			return refs[i].Upstream < refs[j].Upstream
+		}
+		if refs[i].Type != refs[j].Type {
+			return refs[i].Type < refs[j].Type
+		}
+		return refs[i].ModelID < refs[j].ModelID
+	})
+	return refs, nil
+}
+
+// listChannelRefs 返回删除渠道前需要确认的引用列表。
+func (s *Server) listChannelRefs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.store.GetChannel(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "渠道不存在")
+		} else {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	refs, err := s.allChannelRefs(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeOK(w, map[string]any{"refs": refs})
+}
+
+// pruneChannelRefs 在用户确认后，清理仍引用指定上游模型的渠道模型与自定义路由。
+// 只允许清理当前渠道已经不再声明的模型，避免前端拿过期数据误删刚加回来的模型。
+func (s *Server) pruneChannelRefs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ch, err := s.store.GetChannel(id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var req struct {
+		Upstreams []string `json:"upstreams"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	current := make(map[string]bool, len(ch.Models))
+	for _, m := range ch.Models {
+		current[m] = true
+	}
+	gone := map[string]bool{}
+	for _, u := range req.Upstreams {
+		u = strings.TrimSpace(u)
+		if u != "" && !current[u] {
+			gone[u] = true
+		}
+	}
+	removed, updated, err := s.pruneChannelRefsNow(id, gone)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeOK(w, map[string]any{"removed_models": removed, "updated_models": updated})
+}
+
+func (s *Server) pruneChannelRefsNow(chID string, upstreams map[string]bool) (removed, updated []string, err error) {
+	if len(upstreams) == 0 {
+		return nil, nil, nil
+	}
+	models, err := s.store.ListModels()
+	if err != nil {
+		return nil, nil, err
+	}
+	now := time.Now().UnixMilli()
+	for _, m := range models {
+		if m.Type == store.ModelTypeChannel {
+			if m.ChannelID == chID && upstreams[m.Upstream] {
+				if err := s.store.DeleteModel(m.ID); err != nil {
+					return removed, updated, err
+				}
+				removed = append(removed, m.ID)
+			}
+			continue
+		}
+		if m.Type != store.ModelTypeCustom {
+			continue
+		}
+		kept := make([]store.Route, 0, len(m.Routes))
+		changed := false
+		for _, rt := range m.Routes {
+			if rt.ChannelID == chID && upstreams[rt.Upstream] {
+				changed = true
+				continue
+			}
+			kept = append(kept, rt)
+		}
+		if !changed {
+			continue
+		}
+		m.Routes = kept
+		m.UpdatedAt = now
+		if err := s.store.SaveModel(m); err != nil {
+			return removed, updated, err
+		}
+		updated = append(updated, m.ID)
+	}
+	sort.Strings(removed)
+	sort.Strings(updated)
+	return removed, updated, nil
 }
 
 func validateChannelID(id string) error {
@@ -288,18 +421,79 @@ func normalizeModelNames(in []string) ([]string, error) {
 
 func (s *Server) deleteChannel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	ch, err := s.store.GetChannel(id)
-	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "渠道不存在")
+	if _, err := s.store.GetChannel(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "渠道不存在")
+		} else {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+		}
 		return
 	}
-	removed, err := s.store.DeleteChannelCascade(id)
-	if err != nil {
+	// 默认只删除渠道本身，模型和路由保持原样；
+	// 只有前端在确认框里选择「删除并移除模型」时才带 remove_refs=1 一起清理。
+	removeRefs := r.URL.Query().Get("remove_refs") == "1"
+	var removed, updated []string
+	if removeRefs {
+		var err error
+		removed, updated, err = s.removeChannelRefsNow(id)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if err := s.store.DeleteChannel(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = ch
-	writeOK(w, map[string]any{"success": true, "removed_models": removed})
+	writeOK(w, map[string]any{
+		"success":        true,
+		"removed_models": removed,
+		"updated_models": updated,
+	})
+}
+
+// removeChannelRefsNow 删除渠道前清理它的全部引用，只在用户明确确认后调用。
+func (s *Server) removeChannelRefsNow(chID string) (removed, updated []string, err error) {
+	models, err := s.store.ListModels()
+	if err != nil {
+		return nil, nil, err
+	}
+	now := time.Now().UnixMilli()
+	for _, m := range models {
+		if m.Type == store.ModelTypeChannel {
+			if m.ChannelID == chID {
+				if err := s.store.DeleteModel(m.ID); err != nil {
+					return removed, updated, err
+				}
+				removed = append(removed, m.ID)
+			}
+			continue
+		}
+		if m.Type != store.ModelTypeCustom {
+			continue
+		}
+		kept := make([]store.Route, 0, len(m.Routes))
+		changed := false
+		for _, rt := range m.Routes {
+			if rt.ChannelID == chID {
+				changed = true
+				continue
+			}
+			kept = append(kept, rt)
+		}
+		if !changed {
+			continue
+		}
+		m.Routes = kept
+		m.UpdatedAt = now
+		if err := s.store.SaveModel(m); err != nil {
+			return removed, updated, err
+		}
+		updated = append(updated, m.ID)
+	}
+	sort.Strings(removed)
+	sort.Strings(updated)
+	return removed, updated, nil
 }
 
 // ---------- 渠道测试 / 探测 ----------

@@ -16,6 +16,7 @@
   ];
 
   const CHANNEL_HINT_KEY = 'ldmapi.channels.hint.dismissed';
+  const CHANNEL_DISABLED_HINT_KEY = 'ldmapi.channels.disabled-warning.dismissed';
 
   function channelHintDismissed() {
     try { return localStorage.getItem(CHANNEL_HINT_KEY) === '1'; } catch (e) { return false; }
@@ -23,6 +24,38 @@
 
   function dismissChannelHint() {
     try { localStorage.setItem(CHANNEL_HINT_KEY, '1'); } catch (e) { /* 存储不可用时仅本次隐藏 */ }
+  }
+
+  function channelDisabledHintDismissed() {
+    try { return localStorage.getItem(CHANNEL_DISABLED_HINT_KEY) === '1'; } catch (e) { return false; }
+  }
+
+  function dismissChannelDisabledHint() {
+    try { localStorage.setItem(CHANNEL_DISABLED_HINT_KEY, '1'); } catch (e) { /* 存储不可用时仅本次隐藏 */ }
+  }
+
+  // 渠道被禁用时只做提示，不改变任何配置。
+  function showChannelDisabledNotice(ch) {
+    if (channelDisabledHintDismissed()) return;
+    const name = ch.name && ch.name !== ch.id ? `（${ch.name}）` : '';
+    openModal({
+      title: '渠道已禁用',
+      size: 'sm',
+      body: `<div style="font-size:13.5px;line-height:1.7;color:var(--text-2)">
+        渠道 <code>${esc(ch.id)}</code>${esc(name)} 已禁用。<br><br>
+        请注意，如果有自定义模型还在引用该渠道的模型，使用该模型时将自动跳过请求这些模型，日志也不会有跳过记录。
+      </div>`,
+      footer: `<div class="spacer"></div>
+        <button class="btn" data-act="never">不再提示</button>
+        <button class="btn btn--primary" data-act="ok">我知道了</button>`,
+      onMount(mo) {
+        mo.foot.querySelector('[data-act=never]').onclick = () => {
+          dismissChannelDisabledHint();
+          mo.close();
+        };
+        mo.foot.querySelector('[data-act=ok]').onclick = () => mo.close();
+      },
+    });
   }
 
   function typeLabel(t) {
@@ -150,6 +183,7 @@
   });
 
   async function toggleChannel(ch) {
+    const disabling = ch.enabled;
     try {
       await API.put('/api/channels/' + encodeURIComponent(ch.id), {
         id: ch.id, enabled: !ch.enabled,
@@ -158,26 +192,93 @@
       State.invalidate('channels');
       State.invalidate('models');
       window.LDM.navigate();
+      if (disabling) showChannelDisabledNotice(ch);
     } catch (e) { Toast.error(e.message); }
   }
 
   async function removeChannel(ch) {
-    const ok = await confirmDialog({
-      title: '删除渠道',
-      message: `确定删除渠道 <b>${esc(ch.id)}</b> 吗？<br><br>
-        它派生出的 <b>${(ch.channel_models || []).length}</b> 个渠道模型会一并从模型列表中移除，
-        引用这些模型的自定义模型路由也会被清理。<br><br>该操作不可撤销。`,
-      confirmText: '删除渠道',
-      danger: true,
-    });
-    if (!ok) return;
+    let refs = [];
     try {
-      const res = await API.del('/api/channels/' + encodeURIComponent(ch.id));
-      const n = (res && res.removed_models) ? res.removed_models.length : 0;
-      Toast.success(`渠道 ${ch.id} 已删除${n ? `，同时移除 ${n} 个模型` : ''}`);
+      const res = await API.get(`/api/channels/${encodeURIComponent(ch.id)}/refs`);
+      refs = (res && res.refs) || [];
+    } catch (e) {
+      Toast.error(e.message, '读取引用失败');
+      return;
+    }
+    if (!refs.length) {
+      const ok = await confirmDialog({
+        title: '删除渠道',
+        message: `确定删除渠道 <b>${esc(ch.id)}</b> 吗？<br><br>模型管理里没有引用它的模型。<br><br>该操作不可撤销。`,
+        confirmText: '删除渠道',
+        danger: true,
+      });
+      if (!ok) return;
+      await deleteChannelNow(ch, false);
+      return;
+    }
+    const action = await confirmDeleteChannelRefs(ch, refs);
+    if (!action) return;
+    await deleteChannelNow(ch, action === 'remove');
+  }
+
+  async function deleteChannelNow(ch, removeRefs) {
+    try {
+      const suffix = removeRefs ? '?remove_refs=1' : '';
+      const res = await API.del('/api/channels/' + encodeURIComponent(ch.id) + suffix);
+      const removed = (res && res.removed_models) || [];
+      const updated = (res && res.updated_models) || [];
+      if (removeRefs) {
+        Toast.success(
+          `渠道 ${ch.id} 已删除，移除 ${removed.length} 个渠道模型${updated.length ? `，并清理 ${updated.length} 个自定义模型的路由` : ''}`
+        );
+      } else {
+        Toast.success(`渠道 ${ch.id} 已删除，模型管理里的配置保持不变`);
+      }
       State.invalidate('all');
       window.LDM.navigate();
     } catch (e) { Toast.error(e.message); }
+  }
+
+  // 删除渠道时如果还有模型/路由引用，让用户选择是否一起移除；
+  // 允许点空白处 / Esc 关闭，等同于取消。
+  function confirmDeleteChannelRefs(ch, refs) {
+    return new Promise((resolve) => {
+      const groups = new Map();
+      refs.forEach((r) => {
+        if (!groups.has(r.upstream)) groups.set(r.upstream, []);
+        groups.get(r.upstream).push(r);
+      });
+      const list = Array.from(groups.entries()).map(([upstream, items]) => `
+        <div class="mt-10">
+          <div class="mono strong">${esc(upstream)}</div>
+          <ul class="fs-12 muted" style="margin:4px 0 0 18px;padding:0">
+            ${items.map((r) => `<li>${r.type === 'custom_route'
+              ? `自定义模型 <code>${esc(r.model_id)}</code> 中的路由`
+              : `渠道模型 <code>${esc(r.model_id)}</code>`}</li>`).join('')}
+          </ul>
+        </div>`).join('');
+
+      openModal({
+        title: '删除渠道',
+        size: 'sm',
+        body: `<div style="font-size:13.5px;line-height:1.7;color:var(--text-2)">
+          确定删除渠道 <code>${esc(ch.id)}</code> 吗？模型管理里仍有以下引用：
+          ${list}
+          <div class="mt-12">选择「仅删除渠道」会保留这些模型；选择「删除并移除模型」会一并删除渠道模型并清理自定义模型里的相关路由。</div>
+          <div class="fs-12 muted mt-6">该操作不可撤销。</div>
+        </div>`,
+        footer: `<div class="spacer"></div>
+          <button class="btn" data-act="cancel">取消</button>
+          <button class="btn" data-act="keep">仅删除渠道</button>
+          <button class="btn btn--danger" data-act="remove">删除并移除模型</button>`,
+        onMount(mo) {
+          mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close('');
+          mo.foot.querySelector('[data-act=keep]').onclick = () => mo.close('keep');
+          mo.foot.querySelector('[data-act=remove]').onclick = () => mo.close('remove');
+        },
+        onClose(result) { resolve(result || ''); },
+      });
+    });
   }
 
   async function testChannel(ch, btn) {
@@ -532,7 +633,7 @@
       title: isNew ? '添加渠道' : `编辑渠道 · ${data.id}`,
       desc: isNew
         ? '填好接口地址和 API Key 就能直接从上游拉取模型列表；模型可以先不填，之后再补。'
-        : '修改渠道配置。这里维护的是上游原始模型名，改动会同步到已接入的模型。',
+        : '修改渠道配置。删除模型名不会自动改动模型管理，保存时会询问是否一并清理引用。',
       body, footer, size: 'lg',
       onMount(mo) {
         const $ = (sel) => mo.body.querySelector(sel);
@@ -663,20 +764,25 @@
             enabled: $('#f-enabled').checked,
             headers, remark: $('#f-remark').value.trim(),
           };
+          const disabling = payload.enabled === false && !(ch && !ch.enabled);
           const saveBtn = mo.foot.querySelector('[data-act=save]');
           saveBtn.disabled = true;
           saveBtn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';
           try {
             const res = await API.put('/api/channels/' + encodeURIComponent(id), payload);
             mo.close();
-            const removed = (res && res.removed_models) || [];
-            if (removed.length) {
-              Toast.warn(`已同步移除 ${removed.length} 个不再存在的模型：${removed.join('、')}`, '渠道已更新');
+            const refs = (res && res.refs) || [];
+            if (refs.length) {
+              const action = await confirmRemovedChannelRefs(id, refs);
+              if (action !== 'prune') {
+                Toast.success('渠道已保存，模型管理里的引用保持不变');
+              }
             } else if (models.length === 0) {
               Toast.success(`渠道 ${id} 已保存。它还没有可用模型，记得之后回来补上`, '渠道已保存');
             } else {
               Toast.success(`渠道 ${id} 已保存，共 ${models.length} 个可用模型`);
             }
+            if (disabling) showChannelDisabledNotice({ id, name: payload.name });
             State.invalidate('all');
             window.LDM.navigate();
           } catch (e) {
@@ -686,6 +792,68 @@
           }
         };
       },
+    });
+  }
+
+  // 渠道里删掉模型后，不直接改动模型管理；由用户确认是否清理仍被引用的条目。
+  // closable: false 保证点空白处 / Esc 都不会关掉，必须明确选择保留还是移除。
+  function confirmRemovedChannelRefs(channelID, refs) {
+    return new Promise((resolve) => {
+      const groups = new Map();
+      refs.forEach((r) => {
+        if (!groups.has(r.upstream)) groups.set(r.upstream, []);
+        groups.get(r.upstream).push(r);
+      });
+      const upstreams = Array.from(groups.keys());
+      const list = upstreams.map((upstream) => `
+        <div class="mt-10">
+          <div class="mono strong">${esc(upstream)}</div>
+          <ul class="fs-12 muted" style="margin:4px 0 0 18px;padding:0">
+            ${groups.get(upstream).map((r) => `<li>${r.type === 'custom_route'
+              ? `自定义模型 <code>${esc(r.model_id)}</code> 中的路由`
+              : `渠道模型 <code>${esc(r.model_id)}</code>`}</li>`).join('')}
+          </ul>
+        </div>`).join('');
+
+      openModal({
+        title: '渠道模型已被移除',
+        size: 'sm',
+        closable: false,
+        body: `<div style="font-size:13.5px;line-height:1.7;color:var(--text-2)">
+          渠道 <code>${esc(channelID)}</code> 的可用模型列表里已经移除了以下模型，但模型管理中仍有引用：
+          ${list}
+          <div class="mt-12">是否同时从模型管理里移除这些引用？</div>
+          <div class="fs-12 muted mt-6">选择「保留引用」不会改动任何模型配置，之后也可以在模型管理里手动删除。</div>
+        </div>`,
+        footer: `<div class="spacer"></div>
+          <button class="btn" data-act="keep">保留引用</button>
+          <button class="btn btn--danger" data-act="prune">同时移除</button>`,
+        onMount(mo) {
+          mo.foot.querySelector('[data-act=keep]').onclick = () => mo.close('keep');
+          const pruneBtn = mo.foot.querySelector('[data-act=prune]');
+          pruneBtn.onclick = async () => {
+            pruneBtn.disabled = true;
+            pruneBtn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>移除中';
+            try {
+              const res = await API.post(
+                `/api/channels/${encodeURIComponent(channelID)}/prune-refs`,
+                { upstreams }
+              );
+              const removed = (res && res.removed_models) || [];
+              const updated = (res && res.updated_models) || [];
+              Toast.success(
+                `已移除 ${removed.length} 个渠道模型${updated.length ? `，并清理 ${updated.length} 个自定义模型的路由` : ''}`
+              );
+              mo.close('prune');
+            } catch (e) {
+              Toast.error(e.message, '移除失败');
+              pruneBtn.disabled = false;
+              pruneBtn.textContent = '同时移除';
+            }
+          };
+        },
+        onClose(result) { resolve(result || 'keep'); },
+      });
     });
   }
 
@@ -803,7 +971,7 @@
           .map((p) => [p.id, `${p.name}（${providerCounts[p.id]}）`]),
       ];
 
-      // 状态计数：启用且渠道可用才算「已启用」，启用但渠道不可用单独归类
+      // 状态计数：启用且真正可用才算「可用」，其余启用中的归入「不可用」
       const statusCounts = { enabled: 0, disabled: 0, unavailable: 0 };
       models.forEach((m) => {
         if (!m.enabled) statusCounts.disabled += 1;
@@ -812,7 +980,7 @@
       });
       const statusOptions = [
         ['all', '全部状态'],
-        ['enabled', `已启用（${statusCounts.enabled}）`],
+        ['enabled', `可用（${statusCounts.enabled}）`],
         ['disabled', `已禁用（${statusCounts.disabled}）`],
         ['unavailable', `不可用（${statusCounts.unavailable}）`],
       ];
@@ -978,6 +1146,15 @@
             syncBar();
           });
           syncBar();
+        } else {
+          // 普通模式：点击整行打开详情抽屉；多选模式下整行点击用于切换选中，不打开抽屉。
+          host.querySelector('tbody').addEventListener('click', (e) => {
+            if (e.target.closest('button, a, input, label')) return;
+            const tr = e.target.closest('tr[data-rowid]');
+            if (!tr) return;
+            const m = models.find((x) => x.id === tr.dataset.rowid);
+            if (m) openModelDetail(m);
+          });
         }
 
         host.querySelectorAll('[data-mact]').forEach((btn) => {
@@ -1131,8 +1308,14 @@
 
   function modelRow(m, channels, providerByID) {
     const isCustom = m.type === 'custom';
-    const ready = m.channel_ready;
     const provider = providerByID[m.provider_id];
+    const statusHtml = (() => {
+      if (!m.enabled) return statusBadge(false, '', '已禁用');
+      if (m.status === 'channel_disabled') return badge('渠道已禁用', 'red');
+      if (m.status === 'channel_missing' || m.status === 'model_missing') return badge('渠道模型不存在', 'red');
+      if (m.status === 'ok') return statusBadge(true, '可用');
+      return badge('不可用', 'red');
+    })();
     let sourceHtml;
     if (isCustom) {
       if (m.routes && m.routes.length) {
@@ -1175,9 +1358,7 @@
         ${window.LDM.capBadges(m.effective_caps, { showNeg: true })}
         ${m.caps_source ? `<div class="muted fs-12" style="margin-top:4px">参数继承自 <code>${esc(m.caps_source)}</code></div>` : ''}
       </td>
-      <td>${m.enabled
-        ? (ready ? statusBadge(true, '已启用') : badge('不可用', 'red'))
-        : statusBadge(false, '', '已禁用')}</td>
+      <td>${statusHtml}</td>
       ${multi ? '' : `<td>
         <div class="row-actions">
           <button class="btn btn--sm btn--icon" data-mact="test" data-mid="${esc(m.id)}" title="测试模型" aria-label="测试模型">${icon('zap', 13)}</button>
@@ -1187,6 +1368,30 @@
         </div>
       </td>`}
     </tr>`;
+  }
+
+  // 模型管理里的条目复用模型广场的详情抽屉；统计信息从 /api/plaza 取。
+  async function openModelDetail(m) {
+    let item = null;
+    try {
+      const plaza = await API.get('/api/plaza');
+      item = (plaza || []).find((x) => x.id === m.id) || null;
+    } catch (e) { /* 取不到统计时退回模型管理里的数据 */ }
+    if (!item) {
+      item = {
+        ...m,
+        caps: m.effective_caps || m.caps || {},
+        available: m.enabled && m.channel_ready,
+        source: m.type === 'channel'
+          ? m.channel_id + (m.channel_name ? `（${m.channel_name}）` : '')
+          : (m.routes || []).map((r) => r.model_id).join(' → '),
+        requests_24h: 0,
+        errors_24h: 0,
+        success_rate: -1,
+      };
+    }
+    if (window.LDM.openModelDrawer) window.LDM.openModelDrawer(item);
+    else Toast.warn('详情面板暂不可用');
   }
 
   async function toggleModel(m) {
@@ -2158,8 +2363,10 @@
         const routeHost = mo.body.querySelector('#route-host');
         const capsHost = mo.body.querySelector('#caps-host');
         const paramSel = mo.body.querySelector('#cm-paramsrc');
-        // 渠道实时启用状态：路由条目上显示「渠道已禁用」徽章（异步加载后重渲染路由列表）
-        const channelReady = {};
+        // 渠道实时状态：路由条目上显示「渠道已禁用」或「渠道模型不存在」徽章
+        // （异步加载后重渲染路由列表；加载完成前不显示状态，避免误报）
+        const channelState = {};
+        let channelStateLoaded = false;
 
         // 把 routes 切成显示段：连续相同 group 的为一段，group=0 每条独立（组外/普通条目）
         const splitGroups = () => {
@@ -2734,6 +2941,14 @@
             segs.forEach((s, k) => { segNum[k] = ++num; });
           }
           const segOf = (i) => segs.findIndex((s) => s.includes(i));
+          const routeBadge = (r) => {
+            if (!channelStateLoaded) return '';
+            const c = channelState[r.channel_id];
+            if (!c) return badge('渠道模型不存在', 'red');
+            if (!c.enabled) return badge('渠道已禁用', 'red');
+            if (!c.models.has(r.channel_id + '/' + r.upstream)) return badge('渠道模型不存在', 'red');
+            return '';
+          };
           let html = `<div class="route-list ${flat ? 'is-flat' : ''}" id="rl">`;
           // 组内条目显示权重输入；组外（普通）条目不显示（权重无意义）
           const itemHtml = (i, inGroup, num) => {
@@ -2759,7 +2974,7 @@
               ${num ? `<span class="route-item__idx">${num}</span>` : ''}
               <span class="route-item__name">${esc(r.model_id)}</span>
               <span class="route-item__meta">
-                ${channelReady[r.channel_id] === false ? badge('渠道已禁用', 'red') : ''}
+                ${routeBadge(r)}
                 ${inGroup ? `<span class="route-item__weight" title="组内权重：按比例随机决定组内先试哪个，失败后按顺序顺延">
                   <input type="number" class="input route-w-input" data-w="${i}" min="0" max="1000" value="${r.weight || 0}">
                   <span class="muted fs-11">权</span>
@@ -2896,7 +3111,10 @@
         renderParamSource();
 
         State.loadChannels().then((chs) => {
-          (chs || []).forEach((c) => { channelReady[c.id] = c.enabled; });
+          (chs || []).forEach((c) => {
+            channelState[c.id] = { enabled: c.enabled, models: new Set(c.channel_models || []) };
+          });
+          channelStateLoaded = true;
           renderRoutes();
         }).catch(() => {});
 
