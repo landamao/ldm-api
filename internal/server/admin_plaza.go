@@ -27,6 +27,11 @@ type plazaItem struct {
 	ProviderColor string      `json:"provider_color,omitempty"`
 	Routes        []routeView `json:"routes,omitempty"`
 
+	// 自定义模型的路由调度配置，详情抽屉需要展示真实的分组/亲和/冷却信息
+	Affinity      bool `json:"affinity,omitempty"`
+	CooldownSec   int  `json:"cooldown_sec,omitempty"`
+	CooldownReset bool `json:"cooldown_reset,omitempty"`
+
 	Requests24h int64   `json:"requests_24h"`
 	Errors24h   int64   `json:"errors_24h"`
 	SuccessRate float64 `json:"success_rate"`
@@ -68,7 +73,8 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 		item := plazaItem{
 			ID: m.ID, Type: m.Type, DisplayName: m.DisplayName, Description: m.Description,
 			Tags: m.Tags, Caps: s.effectiveCapsOf(m, modelByID, 0), Available: m.Enabled,
-			ProviderID:  m.ProviderID,
+			ProviderID: m.ProviderID,
+			Affinity:   m.Affinity, CooldownSec: m.CooldownSec, CooldownReset: m.CooldownReset,
 			Requests24h: reqs[m.ID], Errors24h: errs[m.ID],
 		}
 		if p, ok := providerByID[m.ProviderID]; ok {
@@ -96,7 +102,11 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 		} else {
 			ready := len(m.Routes) > 0
 			for _, rt := range m.Routes {
-				rv := routeView{ModelID: rt.ChannelID + "/" + rt.Upstream, ChannelID: rt.ChannelID, Upstream: rt.Upstream}
+				rv := routeView{
+					ModelID: rt.ChannelID + "/" + rt.Upstream, ChannelID: rt.ChannelID,
+					Upstream: rt.Upstream, UpstreamModel: rt.Upstream,
+					Weight: rt.Weight, Group: rt.Group,
+				}
 				if c, ok := byID[rt.ChannelID]; ok {
 					rv.ChannelName = c.Name
 					rv.ChannelReady = c.Enabled

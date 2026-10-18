@@ -39,7 +39,7 @@
   // ======================================================================
   window.LDM.registerPage('channels', {
     title: '渠道管理',
-    desc: '配置上游服务商。填好接口地址和 API Key 就能拉取模型列表，模型可以先留空',
+    desc: '配置上游服务商',
     async render(root, actions) {
       const channels = await State.loadChannels(true);
 
@@ -463,11 +463,26 @@
 
       actions.innerHTML = `
         <button class="btn" id="btn-providers">${icon('box', 14)}提供商</button>
+        <button class="btn" id="btn-clear-cooldowns">${icon('refresh', 14)}清除冷却</button>
         <button class="btn" id="btn-add-custom">${icon('route', 14)}添加自定义模型</button>
         <button class="btn btn--primary" id="btn-add-model">${icon('plus', 15)}添加模型</button>`;
       actions.querySelector('#btn-add-model').onclick = () => openAddModelsDialog();
       actions.querySelector('#btn-add-custom').onclick = () => openCustomModelDialog(null);
       actions.querySelector('#btn-providers').onclick = () => openProvidersDialog();
+      actions.querySelector('#btn-clear-cooldowns').onclick = async () => {
+        const ok = await confirmDialog({
+          title: '清除所有冷却',
+          message: `将清空内存中所有路由的失败冷却状态，冷却中的条目会立即恢复可用。<br><br>
+            只影响当前进程的运行时状态，不会修改模型配置。`,
+          confirmText: '清除冷却',
+        });
+        if (!ok) return;
+        try {
+          const res = await API.post('/api/models/clear-cooldowns');
+          const n = res && res.cleared ? res.cleared : 0;
+          Toast.success(n ? `已清除 ${n} 条路由冷却` : '当前没有处于冷却中的路由');
+        } catch (e) { Toast.error(e.message); }
+      };
 
       const customCount = models.filter((m) => m.type === 'custom').length;
       const channelCount = models.filter((m) => m.type === 'channel').length;
@@ -490,7 +505,7 @@
               const ch = channels.find((c) => c.id === cid);
               const n = models.filter((m) => m.type === 'channel' && m.channel_id === cid).length;
               return `<div class="tab ${modelState.channelTab === cid ? 'is-active' : ''}" data-ctab="${esc(cid)}">
-                渠道 ${esc(cid)}${ch && ch.name ? ' · ' + esc(ch.name) : ''} <span class="tab__count">${n}</span></div>`;
+                渠道 ${esc(cid)}${ch && ch.name ? '（' + esc(ch.name) + '）' : ''} <span class="tab__count">${n}</span></div>`;
             }).join('')}
             <div class="tab ${modelState.channelTab === 'custom' ? 'is-active' : ''}" data-ctab="custom">自定义路由</div>
           </div>
@@ -1609,7 +1624,7 @@
   function openCustomModelDialog(existing) {
     const isNew = !existing;
     const m = existing || {
-      id: '', type: 'custom', routes: [], affinity: false, cooldown_sec: 0, cooldown_reset: false,
+      id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
       param_source: '', caps: {}, enabled: true, display_name: '', description: '', tags: [],
     };
     // 本地编辑态
@@ -1652,7 +1667,7 @@
             <span class="muted fs-12">秒</span>
             <label class="switch" style="margin-left:auto"><input type="checkbox" id="cm-cooldown-reset" ${m.cooldown_reset ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">全冷却时自动重置</span></label>
           </div>
-          <div class="field__hint" style="margin-top:2px">条目失败后在冷却时长内视为不可用直接跳过（0 = 默认 60 秒）。「自动重置」决定全部条目都在冷却中时的行为：关=直接返回不可用；开=清空所有冷却再路由一遍。</div>
+          <div class="field__hint" style="margin-top:2px">条目失败后在冷却时长内视为不可用直接跳过（0 = 默认 300 秒）。「自动重置」决定全部条目都在冷却中时的行为：关=直接返回不可用；开=清空所有冷却再路由一遍。</div>
         </div>
       </div>
 
@@ -2207,7 +2222,7 @@
               ? `<button class="btn btn--ghost btn--sm btn--icon" data-merge-down="${i}" title="与下面的条目/分组合并为一个组">${icon('link', 12)}</button>` : '';
             return `<div class="route-item ${inGroup ? 'is-grouped' : ''}" data-i="${i}">
               <span class="route-item__handle" title="拖动调整位置">${icon('grip', 14)}</span>
-              <span class="route-item__idx">${num}</span>
+              ${num ? `<span class="route-item__idx">${num}</span>` : ''}
               <span class="route-item__name">${esc(r.model_id)}</span>
               <span class="route-item__meta">
                 ${channelReady[r.channel_id] === false ? badge('渠道已禁用', 'red') : ''}

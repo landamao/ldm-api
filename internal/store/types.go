@@ -105,7 +105,7 @@ type Model struct {
 	Enabled     bool    `json:"enabled"`
 
 	// Affinity 开启后：某条路由本次请求成功，下一次请求优先从它开始。
-	// CooldownSec 是路由失败后的不可用冷却时长（秒），0 表示默认 60。
+	// CooldownSec 是路由失败后的不可用冷却时长（秒），0 表示默认 300。
 	// CooldownReset 控制「全部路由都在冷却中」时的行为：true 自动重置所有冷却再路由一遍，
 	// false 直接返回不可用。
 	Affinity      bool `json:"affinity,omitempty"`

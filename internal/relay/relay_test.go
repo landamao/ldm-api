@@ -326,6 +326,17 @@ func TestCooldownSkipsFailedRoute(t *testing.T) {
 	}
 }
 
+func TestClearAllCooldowns(t *testing.T) {
+	MarkFailure("CLR-A", "a", time.Minute)
+	MarkFailure("CLR-B", "b", time.Minute)
+	if n := ClearAllCooldowns(); n < 2 {
+		t.Fatalf("应至少清除 2 条冷却，得到 %d", n)
+	}
+	if n := ClearAllCooldowns(); n != 0 {
+		t.Fatalf("冷却应已清空，仍剩 %d 条", n)
+	}
+}
+
 func TestCooldownResetWhenAllCooling(t *testing.T) {
 	st := newTestStore(t)
 	seedChannels(t, st)
@@ -872,5 +883,130 @@ func TestNoRetryKeepsAttemptsEmpty(t *testing.T) {
 	}
 	if len(res.Attempts) != 0 {
 		t.Errorf("没有重试时不应记录尝试明细，得到 %+v", res.Attempts)
+	}
+}
+
+// 客户端主动断开（点「停止」）也按成功记账：应记录模型亲和，
+// 下次请求优先复用断开时正在使用的那条路由。
+func TestCanceledRequestRecordsAffinity(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	for _, c := range []store.Channel{
+		{ID: "cancel-a", Name: "主线路", Type: store.ChannelOpenAI, BaseURL: "http://127.0.0.1:1", Enabled: false, CreatedAt: now, UpdatedAt: now},
+		{ID: "cancel-b", Name: "备用线路", Type: store.ChannelOpenAI, BaseURL: "http://127.0.0.1:1", Enabled: true, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.SaveChannel(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "cancel/model", Type: store.ModelTypeCustom,
+		Routes: []store.Route{
+			{ChannelID: "cancel-a", Upstream: "a"},
+			{ChannelID: "cancel-b", Upstream: "b"},
+		},
+		Affinity: true, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 主线路先禁用，让请求落到备用线路；再模拟客户端在建连前断开。
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	body := []byte(`{"model":"cancel/model","messages":[{"role":"user","content":"hi"}]}`)
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: body,
+		JSON: map[string]any{"model": "cancel/model"},
+	}
+	res := New(st).Do(ctx, httptest.NewRecorder(), req)
+	if !res.Canceled {
+		t.Fatalf("应识别为客户端断开，得到 %+v", res)
+	}
+
+	// 恢复主线路：若断开被记为成功，亲和应把备用线路提到最前。
+	chA, err := st.GetChannel("cancel-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chA.Enabled = true
+	if err := st.SaveChannel(chA); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(st).Resolve("cancel/model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Routes) < 2 || got.Routes[0].Channel.ID != "cancel-b" {
+		t.Fatalf("客户端断开也应记录亲和，期望 cancel-b 在最前，得到 %+v", got.Routes)
+	}
+}
+
+// 上游在流式响应中途断开属于普通失败：即使已经写出部分响应，
+// 也要让该路由进入冷却，下一次请求应换渠道。
+func TestUpstreamStreamDisconnectMarksFailure(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				conn.Close()
+			}
+		}
+	}))
+	defer broken.Close()
+
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer good.Close()
+
+	for _, c := range []store.Channel{
+		{ID: "stream-bad", Name: "断流线路", Type: store.ChannelOpenAI, BaseURL: broken.URL, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "stream-good", Name: "正常线路", Type: store.ChannelOpenAI, BaseURL: good.URL, Enabled: true, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.SaveChannel(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "stream/model", Type: store.ModelTypeCustom,
+		Routes: []store.Route{
+			{ChannelID: "stream-bad", Upstream: "m"},
+			{ChannelID: "stream-good", Upstream: "m"},
+		},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model":"stream/model","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: body, Stream: true,
+		JSON: map[string]any{"model": "stream/model", "stream": true},
+	}
+	res := New(st).Do(context.Background(), httptest.NewRecorder(), req)
+	if res.Canceled {
+		t.Fatalf("上游断开不应记为客户端断开: %+v", res)
+	}
+	if res.Err == "" {
+		t.Fatalf("上游断流应记为失败: %+v", res)
+	}
+
+	got, err := New(st).Resolve("stream/model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Routes) != 1 || got.Routes[0].Channel.ID != "stream-good" {
+		t.Fatalf("断流的上游应进入冷却，期望只剩 stream-good，得到 %+v", got.Routes)
 	}
 }

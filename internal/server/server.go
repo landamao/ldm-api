@@ -71,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/models/batch", s.admin(s.batchAddModels))
 	mux.HandleFunc("POST /api/models/batch-delete", s.admin(s.batchDeleteModels))
 	mux.HandleFunc("POST /api/models/batch-provider", s.admin(s.batchSetModelProvider))
+	mux.HandleFunc("POST /api/models/clear-cooldowns", s.admin(s.clearModelCooldowns))
 	mux.HandleFunc("POST /api/models/test", s.admin(s.testModel))
 
 	// ---- 提供商 ----

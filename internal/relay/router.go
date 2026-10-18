@@ -10,7 +10,7 @@ import (
 // 路由调度：按配置顺序切分优先级组，组间顺序故障转移，组内按权重随机抽首选；
 // 支持模型亲和（上次成功者下次优先）与失败冷却（冷却期内跳过）。
 
-const defaultCooldownSec = 60
+const defaultCooldownSec = 300
 
 // routeKey 生成一条路由的全局唯一键。
 func routeKey(chID, upstream string) string { return chID + "/" + upstream }
@@ -52,6 +52,15 @@ func clearCooldowns(keys []string) {
 	for _, k := range keys {
 		delete(routeStates.cooldown, k)
 	}
+}
+
+// ClearAllCooldowns 清空内存中所有路由的失败冷却，返回被清除的条目数。
+func ClearAllCooldowns() int {
+	routeStates.Lock()
+	defer routeStates.Unlock()
+	n := len(routeStates.cooldown)
+	clear(routeStates.cooldown)
+	return n
 }
 
 // ClearModelRoutes 删除/重命名模型时清理它的亲和记录。

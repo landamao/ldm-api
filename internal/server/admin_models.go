@@ -193,6 +193,10 @@ type modelRequest struct {
 	CooldownReset bool          `json:"cooldown_reset"`
 }
 
+func (s *Server) clearModelCooldowns(w http.ResponseWriter, r *http.Request) {
+	writeOK(w, map[string]any{"cleared": relay.ClearAllCooldowns()})
+}
+
 func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	var req modelRequest
 	if err := readJSON(r, &req); err != nil {

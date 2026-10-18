@@ -255,8 +255,10 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 			Error:         attemptErrText(outcome.err),
 		})
 		// 客户端主动断开（例如在线对话里点了「停止」）：按「黄色 200、记成功」记账，
+		// 同样记录亲和并清掉冷却（点停止不代表上游有问题），
 		// 不再重试、不标记渠道失败，也不往已经关闭的连接里写错误响应。
 		if outcome.canceled {
+			MarkSuccess(modelID, route.Channel.ID, route.Upstream)
 			res.Canceled = true
 			res.StatusCode = http.StatusOK
 			res.Err = "客户端已断开连接"
@@ -288,9 +290,10 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 
 		lastErr = outcome.err.Error()
 		lastStatus = outcome.status
-		// 失败：进入冷却期（同渠道模型的所有引用共享）。重试与否取决于重试链，
-		// 但只要这次尝试真的发生了（没写出去过响应），就值得标记。
-		if !outcome.wrote {
+		// 失败：进入冷却期（同渠道模型的所有引用共享）。重试与否取决于重试链。
+		// 上游在响应中途断开时，即使已经写出部分响应也按普通失败标记；
+		// 其余已写出响应的失败（如 4xx 透传）是请求本身的问题，不冷却渠道。
+		if !outcome.wrote || outcome.upstreamBroken {
 			m := resolved.Model
 			cd := time.Duration(m.CooldownSec) * time.Second
 			if cd <= 0 {
@@ -336,6 +339,8 @@ type attemptOutcome struct {
 	reasoning int
 	// canceled 表示这次失败是客户端主动断开造成的，不是上游的问题。
 	canceled bool
+	// upstreamBroken 表示上游在响应中途断开，即使已经写出响应也要标记失败。
+	upstreamBroken bool
 }
 
 // retryHistory 只在真的发生过重试时保留尝试明细，单次请求不增加日志体积。
@@ -519,7 +524,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				}
 				return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 					err: errors.New(cleanNetErr(rerr)), retryable: false, wrote: true, estimated: est,
-					reasoning: st.ReasoningChars()}
+					reasoning: st.ReasoningChars(), upstreamBroken: true}
 			}
 			break
 		}

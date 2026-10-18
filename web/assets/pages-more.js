@@ -446,22 +446,50 @@
       ? `<span class="provider-tag">${providerIcon(m.provider_icon, 15)}${esc(m.provider_name)}</span>`
       : '<span class="muted">未设置</span>';
 
-    // 来源：自定义模型展示完整路由链，渠道模型展示所属渠道
+    // 来源：自定义模型展示路由模型列表，有分组时按组显示（与模型配置页一致）；
+    // 渠道模型展示所属渠道。
+    const routeItemHtml = (r, num, inGroup) => `
+      <div class="route-item ${inGroup ? 'is-grouped' : ''}">
+        ${num ? `<span class="route-item__idx">${num}</span>` : ''}
+        <span class="route-item__name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.model_id)}</span>
+        <span class="route-item__meta">
+          ${r.channel_name ? `<span class="muted fs-12" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.channel_name)}</span>` : ''}
+          ${r.channel_ready ? badge('可用', 'green') : badge('渠道已禁用', 'red')}
+        </span>
+      </div>`;
+    // 连续相同 group 的条目归为一组（group=0 视为普通条目），与模型配置页的分组规则一致
+    const routeSegments = (routes) => {
+      const segs = [];
+      routes.forEach((r, i) => {
+        const last = segs[segs.length - 1];
+        if (r.group && last && routes[last[0]].group === r.group) last.push(i);
+        else segs.push([i]);
+      });
+      return segs;
+    };
     let sourceHtml = '<span class="muted">—</span>';
     if (isCustom && m.routes && m.routes.length) {
-      sourceHtml = `<div class="route-list">${m.routes.map((r, i) => `
-        <div class="route-item">
-          <span class="route-item__idx">${i + 1}</span>
-          <span class="route-item__name">${esc(r.model_id)}</span>
-          <span class="route-item__meta">
-            ${r.channel_name ? `<span class="muted fs-12">${esc(r.channel_name)}</span>` : ''}
-            ${r.channel_ready ? badge('可用', 'green') : badge('渠道已禁用', 'red')}
-          </span>
-        </div>`).join('')}</div>`;
+      // 编号按单元（普通条目或整组）递增，组内成员不单独编号
+      let num = 0;
+      const units = routeSegments(m.routes).map((seg) => {
+        num++;
+        if (seg.length === 1) return routeItemHtml(m.routes[seg[0]], num, false);
+        const ws = seg.reduce((s, i) => s + Math.max(0, m.routes[i].weight || 0), 0);
+        const ratio = seg.map((i) => m.routes[i].weight || 0).join(' ∶ ');
+        return `<div class="route-group">
+          <div class="route-group__head">
+            <span class="route-item__idx">${num}</span>
+            <span class="route-group__tag">${icon('box', 12)}${seg.length}个模型</span>
+            <span class="muted fs-11" style="margin-left:auto">组内权重比 ${ws > 0 ? ratio : '均等（随机）'}</span>
+          </div>
+          ${seg.map((i) => routeItemHtml(m.routes[i], 0, true)).join('')}
+        </div>`;
+      });
+      sourceHtml = `<div class="route-list">${units.join('')}</div>`;
     } else if (isCustom) {
       sourceHtml = badge('未配置路由目标', 'red');
     } else {
-      sourceHtml = `<span class="code">${esc(m.channel_id || '')}</span>`
+      sourceHtml = `<span class="code">${esc(m.source || m.channel_id || '—')}</span>`
         + `<span class="muted fs-12"> → 上游模型 ${esc(m.upstream || '—')}</span>`;
     }
 
@@ -474,7 +502,6 @@
             <div class="model-card__title-row">
               <span style="font-size:17px;font-weight:700;font-family:var(--mono);word-break:break-all">${esc(m.id)}</span>
               ${badge(isCustom ? '自定义' : '渠道', isCustom ? 'pink' : 'blue')}
-              ${m.available ? badge('可用', 'green') : badge('不可用', 'red')}
             </div>
           </div>
           <button class="drawer__close" data-close aria-label="关闭">${icon('x', 17)}</button>
@@ -486,16 +513,16 @@
             <div class="section-title">基本信息</div>
             <dl class="kv">
               ${row('模型 ID', `<span class="mono">${esc(m.id)}</span>`)}
-              ${row('类型', isCustom ? '自定义模型（路由到多个渠道模型）' : '渠道模型（直接对应上游模型）')}
+              ${row('类型', isCustom ? '自定义模型' : '渠道模型')}
               ${row('提供商', providerHtml)}
-              ${row('来源', sourceHtml)}
+              ${row(isCustom ? '路由模型' : '来源', sourceHtml)}
               ${isCustom && m.routes && m.routes.length
                 ? row('路由调度', (() => {
                     const gs = new Set(m.routes.filter((r) => r.group).map((r) => r.group)).size;
                     const parts = [gs ? `${gs} 个优先级组 / ${m.routes.length} 条路由` : `${m.routes.length} 条顺序路由（无分组）`];
                     if (m.affinity) parts.push('模型亲和');
                     if (m.cooldown_sec > 0) parts.push(`冷却 ${m.cooldown_sec}s`);
-                    else parts.push('冷却 60s（默认）');
+                    else parts.push('冷却 300s（默认）');
                     if (m.cooldown_reset) parts.push('全冷却自动重置');
                     return esc(parts.join(' · '));
                   })())
@@ -571,7 +598,7 @@
 
   window.LDM.registerPage('chat', {
     title: '在线对话',
-    desc: '直接和任意已启用的模型对话，所有调用都会记入日志',
+    desc: '在线和可用模型对话',
     async render(root, actions) {
       const all = await State.loadModels(true);
       const usable = all.filter((m) => m.enabled && m.channel_ready);
@@ -682,7 +709,7 @@
         if (m.type === 'custom') {
           routeEl.textContent = '路由：' + (m.routes || []).map((r) => r.model_id).join(' → ');
         } else {
-          routeEl.textContent = '来源：' + (m.channel_id || '') + (m.channel_name ? ' · ' + m.channel_name : '');
+          routeEl.textContent = '来源：' + (m.channel_id || '') + (m.channel_name ? '（' + m.channel_name + '）' : '');
         }
       };
 
@@ -1163,7 +1190,7 @@
   // ======================================================================
   window.LDM.registerPage('tokens', {
     title: '令牌管理',
-    desc: '创建 API 密钥，一个密钥即可调用所有已启用的模型',
+    desc: '管理 API 密钥',
     async render(root, actions) {
       const tokens = await State.loadTokens(true);
 
@@ -1435,7 +1462,7 @@
             </select>
             <select class="select" id="f-channel" style="width:auto;min-width:130px">
               <option value="">全部渠道</option>
-              ${channels.map((c) => `<option value="${esc(c.id)}">${esc(c.id)}${c.name ? ' · ' + esc(c.name) : ''}</option>`).join('')}
+              ${channels.map((c) => `<option value="${esc(c.id)}">${esc(c.id)}${c.name ? '（' + esc(c.name) + '）' : ''}</option>`).join('')}
             </select>
             <select class="select" id="f-token" style="width:auto;min-width:130px">
               <option value="">全部密钥</option>
@@ -1462,6 +1489,9 @@
         </div>`;
 
       const q = (sel) => root.querySelector(sel);
+      const channelName = {};
+      channels.forEach((c) => { channelName[c.id] = c.name; });
+      const channelLabel = (id) => id + (channelName[id] ? `（${channelName[id]}）` : '');
       q('#f-model').value = logState.model;
       q('#f-channel').value = logState.channel;
       q('#f-status').value = logState.status;
@@ -1545,7 +1575,7 @@
           host.innerHTML = `<div class="table-wrap table-scroll" style="border:none;border-radius:0">
             <table class="tbl">
               <thead><tr>
-                <th>时间</th><th style="min-width:190px">模型</th><th>密钥</th>
+                <th>时间</th><th style="min-width:190px">模型</th><th style="min-width:140px">渠道</th><th>密钥</th>
                 <th class="right" style="min-width:96px">输入</th>
                 <th class="right" style="min-width:130px">输出</th>
                 <th class="right" style="min-width:106px">耗时</th>
@@ -1559,9 +1589,12 @@
                     ${l.stream ? '<span class="badge badge--gray">流式</span>' : ''}
                     ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
                   </div>
+                </td>
+                <td class="fs-12">
                   ${l.channel_id
-                    ? `<div class="muted fs-12 mono">→ ${esc(l.channel_id)}/${esc(l.upstream_model || '')}</div>`
-                    : '<div class="muted fs-12">未命中渠道</div>'}
+                    ? `${colorBadge(channelLabel(l.channel_id))}
+                       ${l.upstream_model ? `<div class="muted fs-12 mono" style="margin-top:2px">${esc(l.upstream_model)}</div>` : ''}`
+                    : '<span class="muted">未命中渠道</span>'}
                 </td>
                 <td class="fs-12">${colorBadge(l.token_name)}</td>
                 <td class="right num">${fmtInt(l.prompt_tokens)}
@@ -1653,7 +1686,7 @@
               <div class="field">
                 <label class="field__label">日志保留天数</label>
                 <input class="input" id="s-retention" type="number" min="0" value="${settings.log_retention_days || 0}" placeholder="0 表示永久保留">
-                <div class="field__hint">超过天数的调用日志与统计数据会被自动清理。</div>
+                <div class="field__hint">超过天数的调用日志与统计数据会被自动清理；0 表示永久保留。</div>
               </div>
               <button class="btn btn--primary mt-8" id="s-save">${icon('check', 14)}保存设置</button>
             </div>
