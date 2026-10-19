@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ldmapi/internal/relay"
 	"ldmapi/internal/store"
 	"ldmapi/internal/upstream"
 )
@@ -19,6 +20,30 @@ type channelView struct {
 	store.Channel
 	ChannelModels []string `json:"channel_models"` // 派生的渠道模型 ID
 	AddedCount    int      `json:"added_count"`    // 已加入模型设置的渠道模型数量
+	// KeyRows 是给两列表格使用的 Key 行：只返回掩码 Key 和备注，
+	// 前端编辑备注时不需要把掩码当成新 Key 提交回来。
+	KeyRows []keyRowView `json:"key_rows,omitempty"`
+}
+
+// keyRowView 是后台展示用的 Key 行。
+type keyRowView struct {
+	Index  int    `json:"index"`
+	Masked string `json:"masked"`
+	Note   string `json:"note,omitempty"`
+}
+
+// channelSaveView 是保存接口返回的渠道视图，与列表视图一样附带 Key 行。
+type channelSaveView struct {
+	store.Channel
+	KeyRows []keyRowView `json:"key_rows,omitempty"`
+}
+
+func keyRowViews(keys []store.ChannelKey) []keyRowView {
+	out := make([]keyRowView, 0, len(keys))
+	for i, item := range keys {
+		out = append(out, keyRowView{Index: i, Masked: maskKey(item.Key), Note: item.Note})
+	}
+	return out
 }
 
 func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +70,8 @@ func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		v.APIKey = maskKey(c.APIKey)
+		v.APIKeys = nil
+		v.KeyRows = keyRowViews(c.KeyList())
 		out = append(out, v)
 	}
 	writeOK(w, out)
@@ -60,20 +87,87 @@ func maskKey(k string) string {
 	return k[:4] + "****" + k[len(k)-4:]
 }
 
+// keyRowRequest 是两列表格提交的一行。
+// Index 指向已保存的 Key（从 0 开始）；新增行不带 Index。
+// Key 留空或仍是掩码时表示沿用 Index 指向的原值，前端改备注不会影响密钥；
+// Note 不传表示沿用原备注，传空字符串表示清空备注；
+// Remove 为 true 时删除该行对应的 Key。
+type keyRowRequest struct {
+	Index  *int    `json:"index"`
+	Key    string  `json:"key"`
+	Note   *string `json:"note"`
+	Remove bool    `json:"remove"`
+}
+
+// resolveSubmittedKeyRows 按行还原最终的 Key 列表。
+// 已保存的 Key 只会通过 Index 引用，绝不把掩码字符串当成新 Key 存下来。
+func resolveSubmittedKeyRows(rows []keyRowRequest, existing []store.ChannelKey) []store.ChannelKey {
+	used := make([]bool, len(existing))
+	out := make([]store.ChannelKey, 0, len(rows))
+	seen := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		key := strings.TrimSpace(row.Key)
+		note := ""
+		if row.Note != nil {
+			note = strings.TrimSpace(*row.Note)
+		}
+		idx := -1
+		if row.Index != nil {
+			idx = *row.Index
+		}
+		validIdx := idx >= 0 && idx < len(existing) && !used[idx]
+
+		if row.Remove {
+			if validIdx {
+				used[idx] = true
+			}
+			continue
+		}
+
+		// 留空或误传掩码：沿用已保存的原值。没有可引用的行时直接跳过，
+		// 避免把 sk-1****abcd 这种展示值写进配置。
+		if key == "" || strings.Contains(key, "****") {
+			if !validIdx {
+				continue
+			}
+			used[idx] = true
+			key = existing[idx].Key
+			if row.Note == nil {
+				note = existing[idx].Note
+			}
+		} else if validIdx {
+			// 用户主动改了这个位置的 Key，按新值保存。
+			used[idx] = true
+		}
+
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, store.ChannelKey{Key: key, Note: note})
+	}
+	return out
+}
+
 // 指针字段未出现在请求里时表示「不修改」，这样列表页的启停开关只提交
 // enabled 也不会把其余配置清掉；完整编辑表单则带全所有字段（含显式清空）。
 type channelRequest struct {
-	ID       string             `json:"id"`
-	Name     *string            `json:"name"`
-	Type     string             `json:"type"`
-	BaseURL  *string            `json:"base_url"`
-	APIKey   string             `json:"api_key"`
-	AppendV1 *bool              `json:"append_v1"`
-	Models   *[]string          `json:"models"`
-	Headers  *map[string]string `json:"headers"`
-	Enabled  *bool              `json:"enabled"`
-	Weight   *int               `json:"weight"`
-	Remark   *string            `json:"remark"`
+	ID               string             `json:"id"`
+	Name             *string            `json:"name"`
+	Type             string             `json:"type"`
+	BaseURL          *string            `json:"base_url"`
+	APIKey           string             `json:"api_key"`
+	KeyRows          *[]keyRowRequest   `json:"key_rows"`
+	KeyMode          *string            `json:"key_mode"`
+	KeyAffinity      *bool              `json:"key_affinity"`
+	KeyCooldownSec   *int               `json:"key_cooldown_sec"`
+	KeyCooldownReset *bool              `json:"key_cooldown_reset"`
+	AppendV1         *bool              `json:"append_v1"`
+	Models           *[]string          `json:"models"`
+	Headers          *map[string]string `json:"headers"`
+	Enabled          *bool              `json:"enabled"`
+	Weight           *int               `json:"weight"`
+	Remark           *string            `json:"remark"`
 }
 
 func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
@@ -139,9 +233,54 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 		v := true
 		ch.AppendV1 = &v
 	}
-	// 前端拿到的是掩码后的密钥，未改动时保持原值
-	if req.APIKey != "" && !strings.Contains(req.APIKey, "****") {
-		ch.APIKey = strings.TrimSpace(req.APIKey)
+	// key_rows 是两列表格提交的完整列表，备注和密钥分开；
+	// 已保存的 Key 只通过下标引用，改备注不会把掩码写回去。
+	if req.KeyRows != nil {
+		keys := resolveSubmittedKeyRows(*req.KeyRows, ch.KeyList())
+		ch.APIKeys = keys
+		if len(keys) > 0 {
+			ch.APIKey = keys[0].Key
+		} else {
+			ch.APIKey = ""
+		}
+	} else if req.APIKey != "" && !strings.Contains(req.APIKey, "****") {
+		// v1.7.0 及更早版本的单 Key 字段，继续接受。
+		key := strings.TrimSpace(req.APIKey)
+		ch.APIKey = key
+		if key == "" {
+			ch.APIKeys = nil
+		} else {
+			ch.APIKeys = []store.ChannelKey{{Key: key}}
+		}
+	}
+	if req.KeyMode != nil {
+		mode := strings.TrimSpace(*req.KeyMode)
+		if mode == "" {
+			mode = store.KeyModeSequential
+		}
+		if mode != store.KeyModeSequential && mode != store.KeyModeRandom {
+			writeErr(w, http.StatusBadRequest, "不支持的 Key 调度方式："+mode)
+			return
+		}
+		ch.KeyMode = mode
+	} else if isNew {
+		ch.KeyMode = store.KeyModeSequential
+	}
+	if req.KeyAffinity != nil {
+		ch.KeyAffinity = *req.KeyAffinity
+	}
+	if req.KeyCooldownSec != nil {
+		v := *req.KeyCooldownSec
+		if v < 0 {
+			v = 0
+		}
+		if v > 86400 {
+			v = 86400
+		}
+		ch.KeyCooldownSec = v
+	}
+	if req.KeyCooldownReset != nil {
+		ch.KeyCooldownReset = *req.KeyCooldownReset
 	}
 	if req.Models != nil {
 		models, err := normalizeModelNames(*req.Models)
@@ -169,6 +308,8 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 编辑后清掉已删除 Key 的冷却与亲和记录，避免以后加回来时旧状态复活。
+	relay.PruneChannelKeys(ch.ID, ch.Keys())
 
 	// 渠道里删掉模型名后，不再直接改动模型管理里的配置：
 	// 把「已从渠道移除、但仍被模型引用」的条目录出来，交给前端确认是否一起清理。
@@ -181,8 +322,10 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 保存接口和列表接口保持一致，不回传明文上游密钥。
-	view := ch
+	view := channelSaveView{Channel: ch}
 	view.APIKey = maskKey(ch.APIKey)
+	view.APIKeys = nil
+	view.KeyRows = keyRowViews(ch.KeyList())
 	writeOK(w, map[string]any{
 		"channel":           view,
 		"removed_upstreams": gone,
@@ -444,6 +587,7 @@ func (s *Server) deleteChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	relay.ClearChannelKeyState(id)
 	writeOK(w, map[string]any{
 		"success":        true,
 		"removed_models": removed,
@@ -514,8 +658,43 @@ type probeResult struct {
 	Models  []string `json:"models,omitempty"`
 }
 
-// probeChannel 用最轻量的方式验证渠道是否可用。
+// probeChannel 逐个尝试渠道的 Key，任意一个可用即返回成功。
+// 多 Key 渠道里单个 Key 失效不应把整条渠道判成不可用。
 func (s *Server) probeChannel(ch store.Channel) probeResult {
+	keys := ch.Keys()
+	if len(keys) == 1 && keys[0] == "" {
+		return s.probeChannelOnce(ch)
+	}
+	start := time.Now()
+	tried := 0
+	var last probeResult
+	for i, key := range keys {
+		// Key 很多且全部超时时，避免管理端请求无限拖长：整体最多探测 1 分钟。
+		if tried > 0 && time.Since(start) > time.Minute {
+			break
+		}
+		tried++
+		res := s.probeChannelOnce(ch.WithKey(key))
+		if res.OK {
+			if len(keys) > 1 {
+				res.Message = fmt.Sprintf("%s（第 %d/%d 个 Key 可用）", res.Message, i+1, len(keys))
+			}
+			return res
+		}
+		last = res
+	}
+	if len(keys) > 1 {
+		if tried < len(keys) {
+			last.Message = fmt.Sprintf("已尝试 %d/%d 个 Key 均不可用：%s", tried, len(keys), last.Message)
+		} else {
+			last.Message = fmt.Sprintf("全部 %d 个 Key 均不可用：%s", len(keys), last.Message)
+		}
+	}
+	return last
+}
+
+// probeChannelOnce 用最轻量的方式验证单个 Key 是否可用。
+func (s *Server) probeChannelOnce(ch store.Channel) probeResult {
 	start := time.Now()
 	base := upstream.NormalizeBase(ch.BaseURL)
 	if base == "" {
@@ -640,11 +819,18 @@ func (s *Server) discoverChannelModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 表单里可能填了多个 Key；获取模型列表只用第一个。
+	firstKey := ""
+	if lines := strings.FieldsFunc(req.APIKey, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}); len(lines) > 0 {
+		firstKey = strings.TrimSpace(lines[0])
+	}
 	ch := store.Channel{
 		ID:       strings.TrimSpace(req.ID),
 		Type:     strings.TrimSpace(req.Type),
 		BaseURL:  strings.TrimSpace(req.BaseURL),
-		APIKey:   strings.TrimSpace(req.APIKey),
+		APIKey:   firstKey,
 		AppendV1: req.AppendV1,
 	}
 	if ch.Type == "" {
@@ -657,7 +843,7 @@ func (s *Server) discoverChannelModels(w http.ResponseWriter, r *http.Request) {
 	// 密钥留空、或者填的是列表页展示的掩码值时，回退到已保存的渠道配置
 	if ch.APIKey == "" || strings.Contains(ch.APIKey, "****") {
 		if saved, err := s.store.GetChannel(ch.ID); err == nil {
-			ch.APIKey = saved.APIKey
+			ch.APIKey = saved.Keys()[0]
 			if ch.BaseURL == "" {
 				ch.BaseURL = saved.BaseURL
 			}
@@ -677,7 +863,7 @@ func (s *Server) discoverChannelModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := s.probeChannel(ch)
+	res := s.probeChannelOnce(ch)
 	if !res.OK {
 		writeErr(w, http.StatusBadGateway, res.Message)
 		return

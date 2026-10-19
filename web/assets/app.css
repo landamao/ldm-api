@@ -577,6 +577,30 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
   box-shadow: inset 0 -1px 0 var(--border-line);
 }
 
+/* 渠道管理：与模型管理一致，筛选栏和表头固定，只滚动表格 */
+.channels-card {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.channels-card #channel-table {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.channels-card #channel-table > .table-wrap {
+  flex: 1;
+  min-height: 220px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.channels-card #channel-table > .table-wrap thead th {
+  z-index: 3;
+  box-shadow: inset 0 -1px 0 var(--border-line);
+}
+
 .empty {
   padding: 48px 20px;
   text-align: center;
@@ -618,6 +642,11 @@ html[data-theme="dark"] .badge--tag {
   border-color: hsl(var(--tag-h) 45% 38%);
   color: hsl(var(--tag-h) 85% 74%);
 }
+/* 紧凑徽章：用于日志里的 Key，尽量少占宽度和高度 */
+.badge--xs {
+  height: 17px; padding: 0 6px; gap: 3px;
+  font-size: 10.5px; font-weight: 600;
+}
 .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge--click { appearance: none; font-family: inherit; cursor: pointer; }
 .badge--click:hover { filter: brightness(.96); }
@@ -629,6 +658,8 @@ html[data-theme="dark"] .badge--tag {
   cursor: help;
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .18));
 }
+.affinity-star--sm { right: -4px; top: -4px; }
+.affinity-star--sm svg { width: 10px; height: 10px; }
 
 .badge-group { display: flex; gap: 5px; flex-wrap: wrap; }
 
@@ -814,6 +845,30 @@ html[data-theme="dark"] .ldm-select[aria-expanded="true"] { background-color: rg
 /* 用文本遮罩隐藏密钥：这样浏览器不会把它当密码框，也就不会自动填充或提示保存。
    -webkit-text-security 在 Chrome / Edge / Safari 生效；Firefox 不支持时会明文显示。 */
 .key-masked { -webkit-text-security: disc; }
+/* 两列 Key 表格：密钥 60%，备注 40%，最后一列放删除按钮。
+   序号叠在密钥输入框内部的左侧，不再单独占一列，输入框保持与上方标签左对齐。 */
+.key-rows { display: flex; flex-direction: column; gap: 8px; }
+.key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.key-row--head { padding: 0 2px; font-size: 12px; color: var(--text-3); }
+.key-wrap { position: relative; display: flex; min-width: 0; }
+.key-wrap .input { width: 100%; padding-left: 34px; }
+.key-row__index {
+  position: absolute;
+  left: 10px; top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.key-row .input { height: 32px; }
 .input-group .input { flex: 1; }
 
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

@@ -302,6 +302,121 @@ func TestSaveChannelResponseMasksAPIKey(t *testing.T) {
 	}
 }
 
+// 两列 Key 表格：只改备注时前端不提交 Key（只带下标），后端必须保持原 Key；
+// 即使误传了掩码，也按下标还原，绝不会把掩码当成新 Key 存下来。
+func TestSaveChannelKeyRowsTwoColumns(t *testing.T) {
+	s, st := newTestServer(t, "channel-keys")
+
+	call := func(payload string) (channelView, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/channels/c", strings.NewReader(payload))
+		req.SetPathValue("id", "c")
+		rec := httptest.NewRecorder()
+		s.saveChannel(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+		}
+		var out struct {
+			Channel channelView `json:"channel"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Channel, rec.Body.String()
+	}
+	stored := func() []store.ChannelKey {
+		t.Helper()
+		ch, err := st.GetChannel("c")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ch.KeyList()
+	}
+	checkStored := func(want ...store.ChannelKey) {
+		t.Helper()
+		got := stored()
+		if len(got) != len(want) {
+			t.Fatalf("Key 数量错误，得到 %+v，期望 %+v", got, want)
+		}
+		for i := range want {
+			if got[i].Key != want[i].Key || got[i].Note != want[i].Note {
+				t.Fatalf("第 %d 个 Key 错误，得到 %+v，期望 %+v", i, got[i], want[i])
+			}
+		}
+	}
+
+	// 新建：两列分别提交 Key 和备注。
+	view, rawBody := call(`{"id":"c","name":"渠道","type":"openai","base_url":"https://example.com",
+		"key_rows":[
+			{"key":"sk-main-12345678","note":"主账号"},
+			{"key":"sk-backup-12345678","note":""}
+		],
+		"key_mode":"random","key_affinity":true,"key_cooldown_sec":60,"key_cooldown_reset":true,
+		"models":["m"],"enabled":true}`)
+	if strings.Contains(rawBody, "sk-main-12345678") || strings.Contains(rawBody, "sk-backup-12345678") {
+		t.Fatal("响应不应包含明文上游密钥")
+	}
+	if view.APIKey != "sk-m****5678" {
+		t.Errorf("api_key 应脱敏，得到 %q", view.APIKey)
+	}
+	if len(view.KeyRows) != 2 ||
+		view.KeyRows[0].Index != 0 || view.KeyRows[0].Masked != "sk-m****5678" || view.KeyRows[0].Note != "主账号" ||
+		view.KeyRows[1].Index != 1 || view.KeyRows[1].Masked != "sk-b****5678" || view.KeyRows[1].Note != "" {
+		t.Fatalf("key_rows 脱敏结果错误: %+v", view.KeyRows)
+	}
+	checkStored(
+		store.ChannelKey{Key: "sk-main-12345678", Note: "主账号"},
+		store.ChannelKey{Key: "sk-backup-12345678"},
+	)
+	ch, _ := st.GetChannel("c")
+	if ch.APIKey != "sk-main-12345678" || ch.KeyMode != store.KeyModeRandom || !ch.KeyAffinity || ch.KeyCooldownSec != 60 || !ch.KeyCooldownReset {
+		t.Errorf("Key 配置保存错误: %+v", ch)
+	}
+
+	// 只改备注：请求里没有 key 字段，Key 必须保持不变。
+	view, _ = call(`{"key_rows":[
+		{"index":0,"note":"主账号（改）"},
+		{"index":1,"note":"备用"}
+	],"key_mode":"sequential"}`)
+	checkStored(
+		store.ChannelKey{Key: "sk-main-12345678", Note: "主账号（改）"},
+		store.ChannelKey{Key: "sk-backup-12345678", Note: "备用"},
+	)
+	if len(view.KeyRows) != 2 || view.KeyRows[0].Note != "主账号（改）" || view.KeyRows[1].Note != "备用" {
+		t.Errorf("响应里的备注未更新: %+v", view.KeyRows)
+	}
+	ch, _ = st.GetChannel("c")
+	if ch.KeyMode != store.KeyModeSequential || !ch.KeyAffinity || ch.KeyCooldownSec != 60 || !ch.KeyCooldownReset {
+		t.Errorf("未提交的调度字段不应被覆盖: %+v", ch)
+	}
+
+	// 防御：即使前端误把掩码当成 Key 提交，也按下标还原，不能存下 "sk-m****5678"。
+	call(`{"key_rows":[{"index":0,"key":"sk-m****5678","note":"主账号（改）"},{"index":1}]}`)
+	checkStored(
+		store.ChannelKey{Key: "sk-main-12345678", Note: "主账号（改）"},
+		store.ChannelKey{Key: "sk-backup-12345678", Note: "备用"},
+	)
+
+	// 主动替换某个位置的 Key：带下标 + 新明文 Key。
+	call(`{"key_rows":[{"index":0,"key":"sk-new-1234567890","note":"新主账号"},{"index":1}]}`)
+	checkStored(
+		store.ChannelKey{Key: "sk-new-1234567890", Note: "新主账号"},
+		store.ChannelKey{Key: "sk-backup-12345678", Note: "备用"},
+	)
+
+	// 删除一行：不提交该下标即删除对应 Key。
+	call(`{"key_rows":[{"index":1,"note":"备用"}]}`)
+	checkStored(store.ChannelKey{Key: "sk-backup-12345678", Note: "备用"})
+	ch, _ = st.GetChannel("c")
+	if ch.APIKey != "sk-backup-12345678" {
+		t.Errorf("api_key 应同步为剩余的第一个 Key，得到 %q", ch.APIKey)
+	}
+
+	// remove=true 也用于显式删除。
+	call(`{"key_rows":[{"index":0,"remove":true}]}`)
+	checkStored()
+}
+
 // 密码错误时应按配置的延迟返回。
 func TestLoginWrongPasswordDelays(t *testing.T) {
 	s, _ := newTestServer(t, "login-delay")
@@ -1967,10 +2082,13 @@ func TestRecordPersistsAttempts(t *testing.T) {
 	res := &relay.Result{
 		ModelID: "hist/model", ChannelID: "B", UpstreamModel: "m",
 		StatusCode: http.StatusOK, Retries: 1, Affinity: true,
+		KeyIndex: 2, KeyMasked: "sk-b****2222", KeyNote: "备用账号", KeyAffinity: true,
 		Attempts: []store.LogAttempt{
 			{ChannelID: "A", ChannelName: "主线路", UpstreamModel: "m",
+				KeyIndex: 1, KeyMasked: "sk-a****1111", KeyNote: "主账号", KeyAffinity: true,
 				StatusCode: http.StatusInternalServerError, LatencyMs: 12, Error: "渠道「A」返回 500: boom"},
 			{ChannelID: "B", ChannelName: "备用线路", UpstreamModel: "m",
+				KeyIndex: 2, KeyMasked: "sk-b****2222", KeyNote: "备用账号",
 				StatusCode: http.StatusOK, LatencyMs: 8},
 		},
 	}
@@ -1988,15 +2106,25 @@ func TestRecordPersistsAttempts(t *testing.T) {
 		t.Fatalf("重试信息未持久化: %+v", got)
 	}
 	if got.Attempts[0].ChannelName != "主线路" || got.Attempts[0].StatusCode != 500 ||
-		!strings.Contains(got.Attempts[0].Error, "boom") {
+		!strings.Contains(got.Attempts[0].Error, "boom") ||
+		got.Attempts[0].KeyNote != "主账号" || got.Attempts[0].KeyMasked != "sk-a****1111" {
 		t.Errorf("第一次尝试明细错误: %+v", got.Attempts[0])
 	}
 	if got.Attempts[1].ChannelID != "B" || got.Attempts[1].StatusCode != 200 ||
-		got.Attempts[1].Error != "" {
+		got.Attempts[1].Error != "" || got.Attempts[1].KeyNote != "备用账号" {
 		t.Errorf("第二次尝试明细错误: %+v", got.Attempts[1])
+	}
+	if got.KeyNote != "备用账号" || got.KeyMasked != "sk-b****2222" {
+		t.Errorf("最终 Key 备注未持久化: %+v", got)
 	}
 	if !got.Affinity {
 		t.Error("亲和标记未持久化")
+	}
+	if !got.KeyAffinity {
+		t.Error("Key 亲和标记未持久化")
+	}
+	if !got.Attempts[0].KeyAffinity {
+		t.Error("尝试明细里的 Key 亲和标记未持久化")
 	}
 }
 

@@ -58,6 +58,12 @@ type Route struct {
 	CfgIndex int // 在模型配置里的下标，用于定位亲和记录
 }
 
+// withKey 返回使用指定上游 Key 的路由副本。
+func (rt Route) withKey(key string) Route {
+	rt.Channel = rt.Channel.WithKey(key)
+	return rt
+}
+
 // Resolved 是一次路由解析的完整结果。
 type Resolved struct {
 	Model   store.Model
@@ -169,11 +175,15 @@ type Result struct {
 	ChannelID     string
 	ChannelName   string
 	UpstreamModel string
-	StatusCode    int
-	Usage         upstream.Usage
-	LatencyMs     int64
-	FirstByteMs   int64
-	Retries       int
+	// KeyIndex/KeyMasked/KeyNote 是最终尝试使用的上游 Key；单 Key 渠道为空。
+	KeyIndex    int
+	KeyMasked   string
+	KeyNote     string
+	StatusCode  int
+	Usage       upstream.Usage
+	LatencyMs   int64
+	FirstByteMs int64
+	Retries     int
 	// Err 是内部失败原因（可能包含渠道、上游地址等细节），只写日志。
 	Err string
 	// ClientErr 是实际返回给调用方的错误文案。网关自身原因对外会收敛成笼统提示，
@@ -191,6 +201,8 @@ type Result struct {
 	Attempts []store.LogAttempt
 	// Affinity 表示本次请求命中了模型亲和（上次成功的路由被优先尝试），用于日志标记。
 	Affinity bool
+	// KeyAffinity 表示最终尝试使用的 Key 命中了 Key 亲和（上次成功的 Key 被优先尝试）。
+	KeyAffinity bool
 	// Canceled 表示客户端主动断开（例如在线对话里点了「停止」），
 	// 这种请求不计入渠道失败与成功率统计。
 	Canceled bool
@@ -263,81 +275,135 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	var lastStatus int
 	var lastRaw []byte // 上游最后一次失败响应体，用于原样透传
 	var lastRawHdr http.Header
+	var skipReason string // 路由因 Key 全部冷却被跳过时的原因
 	wrote := false
 	var attempts []store.LogAttempt
-	for i, route := range resolved.Routes {
-		res.Retries = i
-		res.ChannelID = route.Channel.ID
-		res.ChannelName = route.Channel.Name
-		res.UpstreamModel = route.Upstream
+	attemptsMade := 0
 
-		attemptStarted := time.Now()
-		outcome := r.attempt(ctx, w, req, resolved, route, i == len(resolved.Routes)-1)
-		lastRaw, lastRawHdr = outcome.upstreamRaw, outcome.upstreamHdr
-		attempts = append(attempts, store.LogAttempt{
-			ChannelID:     route.Channel.ID,
-			ChannelName:   route.Channel.Name,
-			UpstreamModel: route.Upstream,
-			StatusCode:    outcome.status,
-			LatencyMs:     time.Since(attemptStarted).Milliseconds(),
-			Error:         attemptErrText(outcome.err),
-		})
-		// 客户端主动断开（例如在线对话里点了「停止」）：按「黄色 200、记成功」记账，
-		// 同样记录亲和并清掉冷却（点停止不代表上游有问题），
-		// 不再重试、不标记渠道失败，也不往已经关闭的连接里写错误响应。
-		if outcome.canceled {
-			MarkSuccess(modelID, route.Channel.ID, route.Upstream)
-			res.Canceled = true
-			res.StatusCode = http.StatusOK
-			res.Err = "客户端已断开连接"
-			res.Usage = outcome.usage
-			res.UsageEstimate = outcome.estimated
-			res.FirstByteMs = outcome.firstByte
-			res.ReasoningChars = outcome.reasoning
-			res.ReasoningTokens = outcome.usage.ReasoningTokens
-			res.CachedTokens = outcome.usage.CachedTokens
-			res.LatencyMs = time.Since(start).Milliseconds()
-			res.Attempts = retryHistory(attempts)
-			return res
+outer:
+	for ri, route := range resolved.Routes {
+		keys, reason := PlanKeys(route.Channel)
+		if len(keys) == 0 {
+			skipReason = reason
+			// 路由已经命中，只是所有 Key 都在冷却：日志仍要保留渠道信息，
+			// 否则后台会把这类请求显示成「未命中渠道」。
+			if res.ChannelID == "" {
+				res.ChannelID = route.Channel.ID
+				res.ChannelName = route.Channel.Name
+				res.UpstreamModel = route.Upstream
+			}
+			continue
 		}
-		wrote = wrote || outcome.wrote
-		if outcome.err == nil {
-			// 成功：记录亲和（下次优先从它开始），并清掉该条目的冷却
-			MarkSuccess(modelID, route.Channel.ID, route.Upstream)
-			res.StatusCode = outcome.status
-			res.Usage = outcome.usage
-			res.UsageEstimate = outcome.estimated
-			res.FirstByteMs = outcome.firstByte
-			res.ReasoningChars = outcome.reasoning
-			res.ReasoningTokens = outcome.usage.ReasoningTokens
-			res.CachedTokens = outcome.usage.CachedTokens
-			res.LatencyMs = time.Since(start).Milliseconds()
-			res.Attempts = retryHistory(attempts)
-			return res
-		}
+		multiKey := len(route.Channel.Keys()) > 1
+		for ki, kc := range keys {
+			hasMoreKeys := ki < len(keys)-1
+			// isLast 表示整条重试链（包括后续路由）的最后一次尝试，
+			// 只有它需要把上游原始错误留给 Do 原样返回。
+			isLast := ri == len(resolved.Routes)-1 && !hasMoreKeys
 
-		lastErr = outcome.err.Error()
-		lastStatus = outcome.status
-		// 失败：进入冷却期（同渠道模型的所有引用共享）。重试与否取决于重试链。
-		// 上游在响应中途断开时，即使已经写出部分响应也按普通失败标记；
-		// 其余已写出响应的失败（如 4xx 透传）是请求本身的问题，不冷却渠道。
-		if !outcome.wrote || outcome.upstreamBroken {
-			MarkFailure(route.Channel.ID, route.Upstream)
-		}
-		if !outcome.retryable {
-			break
-		}
-		// 已经写出去的响应无法撤回，只能终止
-		if outcome.wrote {
-			break
+			res.Retries = attemptsMade
+			attemptsMade++
+			res.ChannelID = route.Channel.ID
+			res.ChannelName = route.Channel.Name
+			res.UpstreamModel = route.Upstream
+			if multiKey {
+				res.KeyIndex = kc.index
+				res.KeyMasked = kc.masked
+				res.KeyNote = kc.note
+				res.KeyAffinity = kc.affinity
+			} else {
+				res.KeyIndex = 0
+				res.KeyMasked = ""
+				res.KeyNote = ""
+				res.KeyAffinity = false
+			}
+
+			attemptStarted := time.Now()
+			outcome := r.attempt(ctx, w, req, resolved, route.withKey(kc.key), isLast, hasMoreKeys)
+			lastRaw, lastRawHdr = outcome.upstreamRaw, outcome.upstreamHdr
+			entry := store.LogAttempt{
+				ChannelID:     route.Channel.ID,
+				ChannelName:   route.Channel.Name,
+				UpstreamModel: route.Upstream,
+				StatusCode:    outcome.status,
+				LatencyMs:     time.Since(attemptStarted).Milliseconds(),
+				Error:         attemptErrText(outcome.err),
+			}
+			if multiKey {
+				entry.KeyIndex = kc.index
+				entry.KeyMasked = kc.masked
+				entry.KeyNote = kc.note
+				entry.KeyAffinity = kc.affinity
+			}
+			attempts = append(attempts, entry)
+			// 客户端主动断开（例如在线对话里点了「停止」）：按「黄色 200、记成功」记账，
+			// 同样记录亲和并清掉冷却（点停止不代表上游有问题），
+			// 不再重试、不标记渠道失败，也不往已经关闭的连接里写错误响应。
+			if outcome.canceled {
+				MarkSuccess(modelID, route.Channel.ID, route.Upstream)
+				MarkKeySuccess(route.Channel.ID, kc.key)
+				res.Canceled = true
+				res.StatusCode = http.StatusOK
+				res.Err = "客户端已断开连接"
+				res.Usage = outcome.usage
+				res.UsageEstimate = outcome.estimated
+				res.FirstByteMs = outcome.firstByte
+				res.ReasoningChars = outcome.reasoning
+				res.ReasoningTokens = outcome.usage.ReasoningTokens
+				res.CachedTokens = outcome.usage.CachedTokens
+				res.LatencyMs = time.Since(start).Milliseconds()
+				res.Attempts = retryHistory(attempts)
+				return res
+			}
+			wrote = wrote || outcome.wrote
+			if outcome.err == nil {
+				// 成功：记录亲和（下次优先从它开始），并清掉该条目的冷却
+				MarkSuccess(modelID, route.Channel.ID, route.Upstream)
+				MarkKeySuccess(route.Channel.ID, kc.key)
+				res.StatusCode = outcome.status
+				res.Usage = outcome.usage
+				res.UsageEstimate = outcome.estimated
+				res.FirstByteMs = outcome.firstByte
+				res.ReasoningChars = outcome.reasoning
+				res.ReasoningTokens = outcome.usage.ReasoningTokens
+				res.CachedTokens = outcome.usage.CachedTokens
+				res.LatencyMs = time.Since(start).Milliseconds()
+				res.Attempts = retryHistory(attempts)
+				return res
+			}
+
+			lastErr = outcome.err.Error()
+			lastStatus = outcome.status
+			// 失败的 Key 进入冷却（按渠道 + Key 隔离）；路由本身要等这条路由的
+			// 所有 Key 都失败后才冷却，避免一个坏 Key 把整条渠道拖下水。
+			if outcome.keyFailed {
+				MarkKeyFailure(route.Channel.ID, kc.key)
+			}
+			if !hasMoreKeys && (!outcome.wrote || outcome.upstreamBroken) {
+				MarkFailure(route.Channel.ID, route.Upstream)
+			}
+			if !outcome.retryable {
+				break outer
+			}
+			// 已经写出去的响应无法撤回，只能终止
+			if outcome.wrote {
+				break outer
+			}
 		}
 	}
 
 	res.LatencyMs = time.Since(start).Milliseconds()
+	if lastErr == "" {
+		lastErr = skipReason
+	}
 	res.Err = lastErr
 	res.Attempts = retryHistory(attempts)
 	if lastStatus == 0 {
-		lastStatus = http.StatusBadGateway
+		if skipReason != "" {
+			lastStatus = http.StatusServiceUnavailable
+		} else {
+			lastStatus = http.StatusBadGateway
+		}
 	}
 	res.StatusCode = lastStatus
 	if !res.UsageEstimate {
@@ -377,6 +443,9 @@ type attemptOutcome struct {
 	reasoning int
 	// canceled 表示这次失败是客户端主动断开造成的，不是上游的问题。
 	canceled bool
+	// keyFailed 表示这次失败应该记到当前上游 Key 头上（认证、限流、超时、网络等），
+	// 请求本身有问题的 4xx 不会冷却 Key。
+	keyFailed bool
 	// upstreamRaw/upstreamHdr 是上游错误响应，在最后一次尝试或 4xx 直接透传时保留，
 	// 用于把上游原始错误原样返回给调用方，并记录调用方实际收到的内容。
 	upstreamRaw []byte
@@ -400,8 +469,16 @@ func attemptErrText(err error) string {
 	return truncate(err.Error(), 500)
 }
 
+// keyFailureStatus 判断上游状态码是否应该归因到当前 Key。
+// 认证/权限、限流、超时和服务端错误会冷却 Key；请求本身有问题的 4xx 不会。
+func keyFailureStatus(code int) bool {
+	return code == http.StatusUnauthorized || code == http.StatusForbidden ||
+		code == http.StatusRequestTimeout || code == http.StatusTooManyRequests ||
+		code >= 500
+}
+
 func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request,
-	resolved *Resolved, route Route, isLast bool) attemptOutcome {
+	resolved *Resolved, route Route, isLast, hasMoreKeys bool) attemptOutcome {
 
 	prov := upstream.Get(route.Channel.Type)
 	timeout := resolved.Model.Timeout
@@ -469,10 +546,10 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		}
 		// 定时器到点由本端取消，不能按「客户端断开」处理
 		if timedOut.Load() {
-			return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway}
+			return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway, keyFailed: true}
 		}
 		msg := "上游请求失败: " + cleanNetErr(err)
-		return attemptOutcome{err: errors.New(msg), retryable: true, status: http.StatusBadGateway}
+		return attemptOutcome{err: errors.New(msg), retryable: true, status: http.StatusBadGateway, keyFailed: true}
 	}
 	defer resp.Body.Close()
 
@@ -481,13 +558,19 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		msg := fmt.Sprintf("渠道「%s」返回 %d: %s", route.Channel.ID, resp.StatusCode, truncate(string(raw), 600))
 		// 4xx 里只有限流和超时值得换渠道重试
 		retryable := resp.StatusCode == 429 || resp.StatusCode >= 500
+		keyFailed := keyFailureStatus(resp.StatusCode)
+		// 401/403 往往是当前 Key 失效、无权限或额度问题：还有其它 Key 时
+		// 先换 Key 重试，不要把上游错误直接抛给调用方。
+		if (resp.StatusCode == 401 || resp.StatusCode == 403) && hasMoreKeys {
+			return attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: true, keyFailed: true}
+		}
 		if !retryable {
 			// 客户端错误：把上游原始响应透传，方便调用方定位
 			writeUpstreamRaw(w, resp, raw)
 			return attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: false, wrote: true,
-				upstreamRaw: raw, upstreamHdr: resp.Header}
+				upstreamRaw: raw, upstreamHdr: resp.Header, keyFailed: keyFailed}
 		}
-		out := attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: !isLast}
+		out := attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: !isLast, keyFailed: keyFailed}
 		if isLast {
 			// 已经是最后一条路由：上游原始错误留给 Do 原样返回给调用方
 			out.upstreamRaw, out.upstreamHdr = raw, resp.Header
@@ -504,9 +587,9 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				return attemptOutcome{err: errors.New("客户端已断开连接"), canceled: true, firstByte: firstByte}
 			}
 			if timedOut.Load() {
-				return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway, firstByte: firstByte}
+				return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway, firstByte: firstByte, keyFailed: true}
 			}
-			return attemptOutcome{err: fmt.Errorf("读取上游响应失败: %w", err), retryable: true, status: http.StatusBadGateway, firstByte: firstByte}
+			return attemptOutcome{err: fmt.Errorf("读取上游响应失败: %w", err), retryable: true, status: http.StatusBadGateway, firstByte: firstByte, keyFailed: true}
 		}
 		decoded, usage, derr := prov.Decode(raw, modelOf(req))
 		if derr != nil && decoded == nil {
@@ -603,11 +686,11 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				if timedOut.Load() {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						err: errors.New("上游响应超时"), retryable: false, wrote: true, estimated: est,
-						reasoning: st.ReasoningChars(), upstreamBroken: true}
+						reasoning: st.ReasoningChars(), upstreamBroken: true, keyFailed: true}
 				}
 				return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 					err: errors.New(cleanNetErr(rerr)), retryable: false, wrote: true, estimated: est,
-					reasoning: st.ReasoningChars(), upstreamBroken: true}
+					reasoning: st.ReasoningChars(), upstreamBroken: true, keyFailed: true}
 			}
 			break
 		}

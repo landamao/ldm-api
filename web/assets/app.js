@@ -928,7 +928,7 @@
   // 名称徽章：色相由字符串哈希决定，同一个模型/密钥在任何地方都是同一种颜色。
   // 这样日志翻页、换筛选条件后颜色不会乱跳，扫一眼就能把同一来源的行串起来。
   // 用 FNV-1a 而不是简单求和：ldm-flash / ldm-free 这类只差后缀的名字才能落到不同颜色。
-  function colorBadge(text) {
+  function colorBadge(text, extraClass) {
     if (!text) return '<span class="muted">—</span>';
     let hash = 0x811c9dc5;
     for (let i = 0; i < text.length; i++) {
@@ -936,7 +936,7 @@
       hash = Math.imul(hash, 0x01000193) >>> 0;
     }
     const hue = hash % 360;
-    return `<span class="badge badge--tag" style="--tag-h:${hue}" title="${esc(text)}">${esc(text)}</span>`;
+    return `<span class="badge badge--tag${extraClass ? ' ' + extraClass : ''}" style="--tag-h:${hue}" title="${esc(text)}">${esc(text)}</span>`;
   }
 
   function statusBadge(enabled, onText, offText) {

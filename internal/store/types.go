@@ -1,5 +1,7 @@
 package store
 
+import "strings"
+
 // Caps 描述一个模型的能力参数，仅用于模型广场 / 模型列表的展示。
 // 所有字段都是可空的：nil 表示“未声明”，网关不会据此校验或改写请求，
 // 实际能力完全由上游决定。
@@ -43,14 +45,43 @@ const (
 	ChannelGemini    = "gemini"
 )
 
+// 渠道多 Key 路由模式
+const (
+	// KeyModeSequential 按配置顺序尝试：未开启亲和时始终从第一个可用 Key 开始；
+	// 开启亲和后从上次成功 Key 的位置开始顺延。
+	KeyModeSequential = "sequential"
+	// KeyModeRandom 每次请求把可用 Key 完整洗牌后依次尝试。
+	KeyModeRandom = "random"
+)
+
+// ChannelKey 一条上游 Key 及其备注。
+type ChannelKey struct {
+	Key  string `json:"key"`
+	Note string `json:"note,omitempty"`
+}
+
 // Channel 一个上游渠道。
 type Channel struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Type    string   `json:"type"`
-	BaseURL string   `json:"base_url"`
-	APIKey  string   `json:"api_key"`
-	Models  []string `json:"models"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	BaseURL string `json:"base_url"`
+	// APIKey 是 v1.7.0 及更早版本使用的单 Key 字段，仅用于读取已发布版本的旧数据。
+	// 新数据使用 APIKeys；保存时会把第一个 Key 同步到这里，避免降级后读到过期配置。
+	APIKey string   `json:"api_key,omitempty"`
+	Models []string `json:"models"`
+	// APIKeys 是渠道的多 Key 列表，Key 和备注分开保存。
+	APIKeys []ChannelKey `json:"api_keys,omitempty"`
+	// KeyMode 是多个 Key 之间的调度方式：sequential（顺序）或 random（随机）。
+	// 空值按顺序处理。
+	KeyMode string `json:"key_mode,omitempty"`
+	// KeyAffinity 开启后，上次成功使用的 Key 优先尝试：
+	// 顺序模式从它的位置开始顺延，随机模式先试它、其余洗牌。
+	KeyAffinity bool `json:"key_affinity,omitempty"`
+	// KeyCooldownSec 是 Key 失败后的冷却时长（秒），0 表示默认 300。
+	KeyCooldownSec int `json:"key_cooldown_sec,omitempty"`
+	// KeyCooldownReset 控制全部 Key 都在冷却中时是否自动清空冷却再调度一遍。
+	KeyCooldownReset bool `json:"key_cooldown_reset,omitempty"`
 	// AppendV1 控制是否在接口地址后补全 /v1。nil 表示旧数据，按默认开启处理。
 	// 关闭后按 BaseURL 原样拼接，适合火山方舟（/api/v3）这类非 v1 前缀的服务。
 	AppendV1  *bool             `json:"append_v1,omitempty"`
@@ -65,6 +96,57 @@ type Channel struct {
 // ShouldAppendV1 返回是否自动补全 /v1；旧数据未设置时默认开启。
 func (c Channel) ShouldAppendV1() bool {
 	return c.AppendV1 == nil || *c.AppendV1
+}
+
+// KeyList 返回去重后的 Key 和备注列表，保持配置顺序。
+// 新数据读 APIKeys；只有已发布版本的单 APIKey 时按一条无备注的 Key 处理。
+func (c Channel) KeyList() []ChannelKey {
+	out := make([]ChannelKey, 0, len(c.APIKeys)+1)
+	seen := make(map[string]bool, len(c.APIKeys)+1)
+	for _, item := range c.APIKeys {
+		key := strings.TrimSpace(item.Key)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ChannelKey{Key: key, Note: strings.TrimSpace(item.Note)})
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if key := strings.TrimSpace(c.APIKey); key != "" {
+		return []ChannelKey{{Key: key}}
+	}
+	return nil
+}
+
+// Keys 返回渠道配置的全部非空 Key。一个 Key 都没有时返回空字符串占位，
+// 保持原有的「不带认证头」行为。
+func (c Channel) Keys() []string {
+	list := c.KeyList()
+	if len(list) == 0 {
+		return []string{""}
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		out = append(out, item.Key)
+	}
+	return out
+}
+
+// KeyModeOrDefault 返回生效的 Key 调度方式。
+func (c Channel) KeyModeOrDefault() string {
+	if c.KeyMode == KeyModeRandom {
+		return KeyModeRandom
+	}
+	return KeyModeSequential
+}
+
+// WithKey 返回只使用指定 Key 的渠道副本，供上游认证使用。
+func (c Channel) WithKey(key string) Channel {
+	c.APIKey = key
+	c.APIKeys = nil
+	return c
 }
 
 // 模型类型
@@ -153,28 +235,42 @@ type LogAttempt struct {
 	ChannelID     string `json:"channel_id"`
 	ChannelName   string `json:"channel_name,omitempty"`
 	UpstreamModel string `json:"upstream_model"`
-	StatusCode    int    `json:"status_code"`
-	LatencyMs     int64  `json:"latency_ms"`
-	Error         string `json:"error,omitempty"`
+	// KeyIndex/KeyMasked 表示本次尝试使用的上游 Key（从 1 开始，掩码展示）。
+	// KeyNote 是 Key 的备注，用于在分层重试历史里区分同一渠道的多个 Key。
+	// 单 Key 渠道不记录，避免给旧日志增加无意义字段。
+	KeyIndex  int    `json:"key_index,omitempty"`
+	KeyMasked string `json:"key_masked,omitempty"`
+	KeyNote   string `json:"key_note,omitempty"`
+	// KeyAffinity 表示这次尝试的 Key 是上次成功的 Key、因 Key 亲和被优先尝试。
+	KeyAffinity bool   `json:"key_affinity,omitempty"`
+	StatusCode  int    `json:"status_code"`
+	LatencyMs   int64  `json:"latency_ms"`
+	Error       string `json:"error,omitempty"`
 }
 
 // Log 一次请求日志。
 type Log struct {
-	ID               string `json:"id"`
-	Time             int64  `json:"time"`
-	TokenID          string `json:"token_id"`
-	TokenName        string `json:"token_name"`
-	ModelID          string `json:"model_id"`
-	ChannelID        string `json:"channel_id"`
-	ChannelName      string `json:"channel_name,omitempty"`
-	UpstreamModel    string `json:"upstream_model"`
-	Endpoint         string `json:"endpoint"`
-	PromptTokens     int    `json:"prompt_tokens"`
-	CompletionTokens int    `json:"completion_tokens"`
-	TotalTokens      int    `json:"total_tokens"`
-	LatencyMs        int64  `json:"latency_ms"`
-	FirstByteMs      int64  `json:"first_byte_ms"`
-	StatusCode       int    `json:"status_code"`
+	ID            string `json:"id"`
+	Time          int64  `json:"time"`
+	TokenID       string `json:"token_id"`
+	TokenName     string `json:"token_name"`
+	ModelID       string `json:"model_id"`
+	ChannelID     string `json:"channel_id"`
+	ChannelName   string `json:"channel_name,omitempty"`
+	UpstreamModel string `json:"upstream_model"`
+	Endpoint      string `json:"endpoint"`
+	// KeyIndex/KeyMasked/KeyNote 是最终尝试使用的上游 Key；单 Key 渠道为空。
+	KeyIndex  int    `json:"key_index,omitempty"`
+	KeyMasked string `json:"key_masked,omitempty"`
+	KeyNote   string `json:"key_note,omitempty"`
+	// KeyAffinity 表示最终尝试使用的 Key 命中了 Key 亲和。
+	KeyAffinity      bool  `json:"key_affinity,omitempty"`
+	PromptTokens     int   `json:"prompt_tokens"`
+	CompletionTokens int   `json:"completion_tokens"`
+	TotalTokens      int   `json:"total_tokens"`
+	LatencyMs        int64 `json:"latency_ms"`
+	FirstByteMs      int64 `json:"first_byte_ms"`
+	StatusCode       int   `json:"status_code"`
 	// Error 是内部失败原因，可能包含渠道、上游地址等细节，只用于后台排查。
 	Error string `json:"error,omitempty"`
 	// ClientError 是实际返回给调用方的错误内容。网关对外会收敛成笼统提示，

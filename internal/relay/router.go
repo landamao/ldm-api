@@ -8,7 +8,7 @@ import (
 	"ldmapi/internal/store"
 )
 
-// 路由调度：按配置顺序切分优先级组，组间顺序故障转移，组内按权重随机抽首选；
+// 路由调度：按配置顺序切分优先级组，组间顺序故障转移，组内按权重完整洗牌；
 // 支持模型亲和（上次成功者下次优先）与失败冷却（冷却期内跳过）。
 // 冷却状态按「渠道ID/上游模型」全局共享，但时长取当前请求模型的 CooldownSec，
 // 修改配置后对已存在的冷却立即生效。
@@ -80,12 +80,17 @@ func clearCooldowns(keys []string) {
 	}
 }
 
-// ClearAllCooldowns 清空内存中所有路由的失败冷却，返回被清除的条目数。
+// ClearAllCooldowns 清空内存中所有路由与 Key 的失败冷却，返回被清除的条目数。
 func ClearAllCooldowns() int {
 	routeStates.Lock()
-	defer routeStates.Unlock()
 	n := len(routeStates.failedAt)
 	clear(routeStates.failedAt)
+	routeStates.Unlock()
+
+	keyStates.Lock()
+	n += len(keyStates.failedAt)
+	clear(keyStates.failedAt)
+	keyStates.Unlock()
 	return n
 }
 
@@ -112,11 +117,10 @@ func ClearCooldownsForModel(m store.Model) int {
 	return n
 }
 
-// ClearCooldownsForChannel 清掉某个渠道下所有上游模型的冷却，返回清除条数。
+// ClearCooldownsForChannel 清掉某个渠道下所有上游模型与 Key 的冷却，返回清除条数。
 func ClearCooldownsForChannel(channelID string) int {
 	prefix := channelID + "/"
 	routeStates.Lock()
-	defer routeStates.Unlock()
 	n := 0
 	for k := range routeStates.failedAt {
 		if strings.HasPrefix(k, prefix) {
@@ -124,7 +128,8 @@ func ClearCooldownsForChannel(channelID string) int {
 			n++
 		}
 	}
-	return n
+	routeStates.Unlock()
+	return n + clearKeyCooldownsForChannel(channelID)
 }
 
 // ClearModelRoutes 删除/重命名模型时清理它的亲和记录。
@@ -176,6 +181,16 @@ func pickByWeight(n int, weight func(i int) int) int {
 	return n - 1
 }
 
+// shuffleByWeight 按权重做完整随机排序：每次从剩余条目里按权重抽出下一个。
+// 权重全部非正时退化为等概率洗牌。
+func shuffleByWeight(list []planCandidate) {
+	for i := 0; i < len(list)-1; i++ {
+		rest := list[i:]
+		j := pickByWeight(len(rest), func(k int) int { return rest[k].rt.Weight })
+		rest[0], rest[j] = rest[j], rest[0]
+	}
+}
+
 // planCandidate 是一次调度里的一个候选项。
 type planCandidate struct {
 	cfgIdx  int           // 在 m.Routes 里的下标
@@ -187,13 +202,13 @@ type planCandidate struct {
 // PlanRoute 生成一次请求的尝试链。
 // channels 是已确认存在的渠道表；enabled 判断渠道是否启用。
 // 全部条目都在冷却中且未开重置时返回 nil（调用方给出「不可用」原因）。
-// 第二个返回值表示本次是否命中了模型亲和（上次成功的条目被提到链首），用于日志标记。
+// 第二个返回值表示本次是否命中了模型亲和（上次成功的条目排在链首），用于日志标记。
 //
 // 规则：
 //  1. 剔除渠道禁用、渠道已移除该模型与冷却中的条目；全被冷却时按 CooldownReset 重置所有冷却再来一遍。
 //  2. 按配置顺序把连续同 Group 的条目切成优先级组（Group 为 0 的条目每条自成一组），
-//     组间按顺序故障转移；组内按权重加权随机抽出首选，其余保持配置顺序在组内顺延。
-//  3. 开启亲和且上次成功的条目可用时，把它提到整条链的最前面（无论它属于哪个组）。
+//     组间按顺序故障转移；组内按权重完整洗牌后依次尝试。
+//  3. 开启亲和且上次成功的条目可用时，从它在链里的位置开始环形顺延（无论它属于哪个组）。
 func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(string) bool) ([]planCandidate, bool) {
 	if len(m.Routes) == 0 {
 		return nil, false
@@ -255,21 +270,17 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 		}
 	}
 
-	// 组内加权随机抽首选，其余作为顺延
+	// 组内按权重完整洗牌，组间仍按配置顺序故障转移。
 	chain := make([]planCandidate, 0, len(live))
 	for _, g := range groups {
 		ms := g.members
-		if len(ms) == 1 {
-			chain = append(chain, ms[0])
-			continue
+		if len(ms) > 1 {
+			shuffleByWeight(ms)
 		}
-		first := pickByWeight(len(ms), func(i int) int { return ms[i].rt.Weight })
-		for i := 0; i < len(ms); i++ {
-			chain = append(chain, ms[(first+i)%len(ms)])
-		}
+		chain = append(chain, ms...)
 	}
 
-	// 亲和：上次成功的条目提到链首
+	// 亲和：从上次成功的条目位置开始环形顺延，链上其余条目的相对顺序不变。
 	affinityHit := false
 	if m.Affinity {
 		routeStates.Lock()
@@ -278,7 +289,10 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 		if last != "" {
 			for i, c := range chain {
 				if routeKey(c.rt.ChannelID, c.rt.Upstream) == last {
-					chain = append([]planCandidate{c}, append(chain[:i:i], chain[i+1:]...)...)
+					rotated := make([]planCandidate, 0, len(chain))
+					rotated = append(rotated, chain[i:]...)
+					rotated = append(rotated, chain[:i]...)
+					chain = rotated
 					affinityHit = true
 					break
 				}

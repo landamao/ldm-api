@@ -55,15 +55,17 @@
     try { localStorage.setItem(CHANNEL_DISABLED_HINT_KEY, '1'); } catch (e) { /* 存储不可用时仅本次隐藏 */ }
   }
 
-  // 渠道被禁用时只做提示，不改变任何配置。
+  // 渠道被禁用时只做提示，不改变任何配置。传入数组表示批量禁用。
   function showChannelDisabledNotice(ch) {
     if (channelDisabledHintDismissed()) return;
-    const name = ch.name && ch.name !== ch.id ? `（${ch.name}）` : '';
+    const label = Array.isArray(ch)
+      ? `选中的 <b>${ch.length}</b> 个渠道`
+      : `渠道 <code>${esc(ch.id)}</code>${ch.name && ch.name !== ch.id ? `（${esc(ch.name)}）` : ''}`;
     openModal({
       title: '渠道已禁用',
       size: 'sm',
       body: `<div style="font-size:13.5px;line-height:1.7;color:var(--text-2)">
-        渠道 <code>${esc(ch.id)}</code>${esc(name)} 已禁用。<br><br>
+        ${label} 已禁用。<br><br>
         请注意，如果有自定义模型还在引用该渠道的模型，使用该模型时将自动跳过请求这些模型，日志也不会有跳过记录。
       </div>`,
       footer: `<div class="spacer"></div>
@@ -91,6 +93,68 @@
   // ======================================================================
   // 渠道管理
   // ======================================================================
+  const channelListState = {
+    type: 'all',     // all | openai | anthropic | gemini
+    status: 'all',   // all | enabled | disabled
+    usage: 'all',    // all | partial | linked | empty
+    keyword: '',
+    modelKeyword: '',
+    multi: false,
+    selected: new Set(),
+  };
+
+  // 接入情况：有模型但没全部加入模型管理 / 已全部加入 / 还没有模型
+  function channelUsage(c) {
+    const total = (c.models || []).length;
+    const added = c.added_count || 0;
+    if (!total) return 'empty';
+    if (added >= total) return 'linked';
+    return 'partial';
+  }
+
+  function channelRow(c) {
+    const names = c.models || [];          // 渠道里填写的上游模型名
+    const keyRows = c.key_rows || [];
+    const keyCount = keyRows.length;
+    const keyTip = `${c.key_mode === 'random' ? '随机' : '顺序'}${c.key_affinity ? ' + 亲和' : ''}`
+      + (keyCount ? `\n${keyRows.map((r, i) => `#${i + 1}${r.note ? ` ${r.note}` : ''}`).join('\n')}` : '');
+    const multi = channelListState.multi;
+    return `<tr class="${multi ? 'is-selectable' : ''}" data-rowid="${esc(c.id)}">
+      ${multi ? `<td><input type="checkbox" data-csel data-cid="${esc(c.id)}" aria-label="选择 ${esc(c.id)}"></td>` : ''}
+      <td>
+        <div class="flex-center gap-8">
+          <span class="code" style="font-weight:650">${esc(c.id)}</span>
+          ${c.enabled ? '' : badge('已禁用', 'gray')}
+        </div>
+        ${c.name ? `<div class="muted fs-12" style="margin-top:2px">${esc(c.name)}</div>` : ''}
+      </td>
+      <td>${badge(typeLabel(c.type), typeTone(c.type))}${keyCount > 1
+        ? ` <span class="badge badge--gray" title="${esc(keyTip)}">${keyCount} Keys</span>`
+        : ''}</td>
+      <td><span class="muted fs-12 truncate" style="display:block;max-width:220px" title="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
+      <td class="num">${names.length}</td>
+      <td class="num">
+        <span class="strong">${c.added_count || 0}</span>
+        <span class="muted">/ ${names.length}</span>
+      </td>
+      <td>
+        <div class="badge-group">
+          ${names.slice(0, 4).map((m) => `<span class="badge mono">${esc(m)}</span>`).join('')}
+          ${names.length > 4 ? `<span class="badge badge--gray">+${names.length - 4}</span>` : ''}
+          ${names.length === 0 ? '<span class="muted fs-12">未配置模型</span>' : ''}
+        </div>
+      </td>
+      ${multi ? '' : `<td>
+        <div class="row-actions">
+          <button class="btn btn--sm btn--icon" data-act="test" data-id="${esc(c.id)}" title="测试连通性" aria-label="测试连通性">${icon('zap', 13)}</button>
+          <button class="btn btn--sm btn--icon" data-act="toggle" data-id="${esc(c.id)}" title="${c.enabled ? '禁用' : '启用'}" aria-label="${c.enabled ? '禁用渠道' : '启用渠道'}">${c.enabled ? icon('pause', 13) : icon('play', 13)}</button>
+          <button class="btn btn--sm btn--icon" data-act="edit" data-id="${esc(c.id)}" title="编辑" aria-label="编辑渠道">${icon('edit', 13)}</button>
+          <button class="btn btn--sm btn--icon btn--danger" data-act="del" data-id="${esc(c.id)}" title="删除" aria-label="删除渠道">${icon('trash', 13)}</button>
+        </div>
+      </td>`}
+    </tr>`;
+  }
+
   window.LDM.registerPage('channels', {
     title: '渠道管理',
     desc: '配置上游服务商',
@@ -99,11 +163,28 @@
 
       actions.innerHTML = `
         <button class="btn" id="btn-refresh">${icon('refresh', 14)}刷新</button>
+        <button class="btn" id="btn-clear-cooldowns">${icon('refresh', 14)}清除冷却</button>
         <button class="btn btn--primary" id="btn-add-channel">${icon('plus', 15)}添加渠道</button>`;
       actions.querySelector('#btn-refresh').onclick = () => window.LDM.navigate();
       actions.querySelector('#btn-add-channel').onclick = () => openChannelEditor(null);
+      actions.querySelector('#btn-clear-cooldowns').onclick = async () => {
+        const ok = await confirmDialog({
+          title: '清除所有冷却',
+          message: `将清空内存中所有路由的失败冷却状态，冷却中的条目会立即恢复可用。<br><br>
+            只影响当前进程的运行时状态，不会修改任何配置。`,
+          confirmText: '清除冷却',
+        });
+        if (!ok) return;
+        try {
+          const res = await API.post('/api/models/clear-cooldowns');
+          const n = res && res.cleared ? res.cleared : 0;
+          Toast.success(n ? `已清除 ${n} 条路由冷却` : '当前没有处于冷却中的路由');
+        } catch (e) { Toast.error(e.message); }
+      };
 
       if (!channels.length) {
+        channelListState.multi = false;
+        channelListState.selected.clear();
         root.innerHTML = `<div class="card">${emptyState(
           '还没有配置任何渠道',
           '添加第一个上游渠道，填入 Base URL 与 API Key，就能把它的模型接入网关。',
@@ -114,65 +195,218 @@
         return;
       }
 
-      const rows = channels.map((c) => {
-        const names = c.models || [];          // 渠道里填写的上游模型名
-        return `<tr>
-          <td>
-            <div class="flex-center gap-8">
-              <span class="code" style="font-weight:650">${esc(c.id)}</span>
-              ${c.enabled ? '' : badge('已禁用', 'gray')}
-            </div>
-            ${c.name ? `<div class="muted fs-12" style="margin-top:2px">${esc(c.name)}</div>` : ''}
-          </td>
-          <td>${badge(typeLabel(c.type), typeTone(c.type))}</td>
-          <td><span class="muted fs-12 truncate" style="display:block;max-width:220px" title="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
-          <td class="num">${names.length}</td>
-          <td class="num">
-            <span class="strong">${c.added_count || 0}</span>
-            <span class="muted">/ ${names.length}</span>
-          </td>
-          <td>
-            <div class="badge-group">
-              ${names.slice(0, 4).map((m) => `<span class="badge mono">${esc(m)}</span>`).join('')}
-              ${names.length > 4 ? `<span class="badge badge--gray">+${names.length - 4}</span>` : ''}
-              ${names.length === 0 ? '<span class="muted fs-12">未配置模型</span>' : ''}
-            </div>
-          </td>
-          <td>
-            <div class="row-actions">
-              <button class="btn btn--sm btn--icon" data-act="test" data-id="${esc(c.id)}" title="测试连通性" aria-label="测试连通性">${icon('zap', 13)}</button>
-              <button class="btn btn--sm btn--icon" data-act="toggle" data-id="${esc(c.id)}" title="${c.enabled ? '禁用' : '启用'}" aria-label="${c.enabled ? '禁用渠道' : '启用渠道'}">${c.enabled ? icon('pause', 13) : icon('play', 13)}</button>
-              <button class="btn btn--sm btn--icon" data-act="edit" data-id="${esc(c.id)}" title="编辑" aria-label="编辑渠道">${icon('edit', 13)}</button>
-              <button class="btn btn--sm btn--icon btn--danger" data-act="del" data-id="${esc(c.id)}" title="删除" aria-label="删除渠道">${icon('trash', 13)}</button>
-            </div>
-          </td>
-        </tr>`;
-      }).join('');
+      // 多选模式退出后清理残留选择；渠道被删后也把失效 ID 移出选中集
+      if (!channelListState.multi) channelListState.selected.clear();
+      const alive = new Set(channels.map((c) => c.id));
+      [...channelListState.selected].forEach((id) => {
+        if (!alive.has(id)) channelListState.selected.delete(id);
+      });
 
-      root.innerHTML = `<div class="table-wrap">
-        <table class="tbl">
-          <thead><tr>
-            <th style="min-width:150px">渠道 ID</th>
-            <th>类型</th>
-            <th>接口地址</th>
-            <th class="right">模型数</th>
-            <th class="right">已接入</th>
-            <th style="min-width:230px">可用模型</th>
-            <th style="width:150px"></th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      ${channelHintDismissed() ? '' : `<div class="alert alert--pink mt-16" id="channel-hint">
-        ${icon('info', 15)}<div>
-          <span class="strong">这里填的是上游真实的模型名。</span>
-          接入到「模型管理」之后，它们会各自获得一个带渠道前缀的 ID，例如渠道
-          <code>${esc(channels[0] ? channels[0].id : 'A')}</code> 的模型 <code>a</code> 对应
-          <code>${esc(channels[0] ? channels[0].id : 'A')}/a</code>，调用时使用那个 ID。
-          渠道模型必须先在「模型管理」中手动添加，才会对外开放。
-        </div>
-        <button class="alert__close" id="btn-dismiss-hint" title="关闭提示" aria-label="关闭提示">${icon('x', 14)}</button>
-      </div>`}`;
+      // 筛选区和表头固定，只让表格内容滚动
+      root.classList.add('content__inner--fill');
+
+      const typeCounts = {};
+      channels.forEach((c) => {
+        const t = c.type || 'openai';
+        typeCounts[t] = (typeCounts[t] || 0) + 1;
+      });
+      const statusCounts = { enabled: 0, disabled: 0 };
+      channels.forEach((c) => { statusCounts[c.enabled ? 'enabled' : 'disabled'] += 1; });
+      const usageCounts = { partial: 0, linked: 0, empty: 0 };
+      channels.forEach((c) => { usageCounts[channelUsage(c)] += 1; });
+
+      const typeOptions = [
+        ['all', `全部类型（${channels.length}）`],
+        ...CHANNEL_TYPES.map((t) => [t.value, `${t.label}（${typeCounts[t.value] || 0}）`]),
+      ];
+      const statusOptions = [
+        ['all', '全部状态'],
+        ['enabled', `已启用（${statusCounts.enabled}）`],
+        ['disabled', `已禁用（${statusCounts.disabled}）`],
+      ];
+      const usageOptions = [
+        ['all', '全部接入情况'],
+        ['partial', `有未接入模型（${usageCounts.partial}）`],
+        ['linked', `全部已接入（${usageCounts.linked}）`],
+        ['empty', `未配置模型（${usageCounts.empty}）`],
+      ];
+
+      const filterSelect = (id, label, key, opts, width) => `
+        <select class="select" id="${id}" aria-label="${label}" style="width:${width}">
+          ${opts.map(([v, text]) => `<option value="${esc(v)}"${channelListState[key] === v ? ' selected' : ''}>${esc(text)}</option>`).join('')}
+        </select>`;
+
+      root.innerHTML = `
+        <div class="card channels-card" style="overflow:visible">
+          <div class="toolbar" style="border-bottom:none;padding-bottom:5px">
+            ${filterSelect('ch-filter-type', '渠道类型', 'type', typeOptions, '170px')}
+            ${filterSelect('ch-filter-status', '启用状态', 'status', statusOptions, '145px')}
+            ${filterSelect('ch-filter-usage', '接入情况', 'usage', usageOptions, '175px')}
+          </div>
+          <div class="toolbar" style="padding-top:5px;gap:8px">
+            <div class="search" style="flex:0 1 220px;min-width:200px">
+              <span class="search__icon">${icon('search', 15)}</span>
+              <input class="input" id="channel-search" placeholder="搜索渠道 ID、名称或地址…" value="${esc(channelListState.keyword)}">
+            </div>
+            <div class="search" style="flex:0 1 170px;min-width:160px">
+              <span class="search__icon">${icon('search', 15)}</span>
+              <input class="input" id="channel-model-search" placeholder="搜索模型名…" value="${esc(channelListState.modelKeyword)}">
+            </div>
+            <div class="toolbar__spacer"></div>
+            <span class="muted fs-12" id="channel-filter-count" ${channelListState.multi ? 'style="display:none"' : ''}></span>
+            <button class="btn btn--sm" id="ch-multi" style="${channelListState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
+            <span class="muted fs-12" id="channel-multi-count" style="${channelListState.multi ? '' : 'display:none'}">已选 ${channelListState.selected.size} 个</span>
+            <button class="btn btn--sm" id="ch-enable" style="${channelListState.multi ? '' : 'display:none'}">${icon('play', 13)}启用</button>
+            <button class="btn btn--sm" id="ch-disable" style="${channelListState.multi ? '' : 'display:none'}">${icon('pause', 13)}禁用</button>
+            <button class="btn btn--sm" id="ch-test" style="${channelListState.multi ? '' : 'display:none'}">${icon('zap', 13)}测试</button>
+            <button class="btn btn--sm" id="ch-cooldown" style="${channelListState.multi ? '' : 'display:none'}">${icon('refresh', 13)}清除冷却</button>
+            <button class="btn btn--sm btn--danger" id="ch-del" style="${channelListState.multi ? '' : 'display:none'}">${icon('trash', 13)}删除</button>
+            <button class="btn btn--sm btn--ghost" id="ch-exit" style="${channelListState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
+          </div>
+          <div id="channel-table"></div>
+          ${channelHintDismissed() ? '' : `<div class="alert alert--pink mt-16" id="channel-hint" style="margin:0 14px 14px">
+            ${icon('info', 15)}<div>
+              <span class="strong">这里填的是上游真实的模型名。</span>
+              接入到「模型管理」之后，它们会各自获得一个带渠道前缀的 ID，例如渠道
+              <code>${esc(channels[0].id)}</code> 的模型 <code>a</code> 对应
+              <code>${esc(channels[0].id)}/a</code>，调用时使用那个 ID。
+              渠道模型必须先在「模型管理」中手动添加，才会对外开放。
+            </div>
+            <button class="alert__close" id="btn-dismiss-hint" title="关闭提示" aria-label="关闭提示">${icon('x', 14)}</button>
+          </div>`}
+        </div>`;
+
+      const renderTable = () => {
+        const kw = channelListState.keyword.trim().toLowerCase();
+        const modelKw = channelListState.modelKeyword.trim().toLowerCase();
+        const list = channels.filter((c) => {
+          if (channelListState.type !== 'all' && (c.type || 'openai') !== channelListState.type) return false;
+          if (channelListState.status === 'enabled' && !c.enabled) return false;
+          if (channelListState.status === 'disabled' && c.enabled) return false;
+          if (channelListState.usage !== 'all' && channelUsage(c) !== channelListState.usage) return false;
+          if (kw) {
+            const hay = [
+              c.id, c.name || '', c.base_url || '', c.remark || '',
+              typeLabel(c.type),
+            ].join(' ').toLowerCase();
+            if (!hay.includes(kw)) return false;
+          }
+          if (modelKw) {
+            const hit = (c.models || []).some((m) => m.toLowerCase().includes(modelKw));
+            if (!hit) return false;
+          }
+          return true;
+        });
+
+        const host = root.querySelector('#channel-table');
+        root.querySelector('#channel-filter-count').textContent = `共 ${list.length} 个渠道`;
+
+        if (!list.length) {
+          host.innerHTML = emptyState(
+            '没有符合条件的渠道',
+            '试试调整筛选条件或清空搜索关键词。',
+            '',
+            'server'
+          );
+          return;
+        }
+
+        host.innerHTML = `<div class="table-wrap" style="border:none;border-radius:0">
+          <table class="tbl">
+            <thead><tr>
+              ${channelListState.multi ? '<th style="width:34px"><input type="checkbox" id="ch-checkall" aria-label="全选"></th>' : ''}
+              <th style="min-width:150px">渠道 ID</th>
+              <th>类型</th>
+              <th>接口地址</th>
+              <th class="right">模型数</th>
+              <th class="right">已接入</th>
+              <th style="min-width:230px">可用模型</th>
+              ${channelListState.multi ? '' : '<th style="width:150px"></th>'}
+            </tr></thead>
+            <tbody>${list.map(channelRow).join('')}</tbody>
+          </table>
+        </div>`;
+
+        // 多选模式：行勾选 / 表头全选 / 点击整行切换选中
+        if (channelListState.multi) {
+          const syncBar = () => {
+            root.querySelector('#channel-multi-count').textContent = `已选 ${channelListState.selected.size} 个`;
+            const boxes = host.querySelectorAll('input[data-csel]');
+            const checked = [...boxes].filter((i) => i.checked);
+            const checkall = host.querySelector('#ch-checkall');
+            if (checkall) {
+              checkall.checked = boxes.length > 0 && checked.length === boxes.length;
+              checkall.indeterminate = checked.length > 0 && checked.length < boxes.length;
+            }
+          };
+          host.querySelectorAll('input[data-csel]').forEach((cb) => {
+            cb.checked = channelListState.selected.has(cb.dataset.cid);
+            cb.closest('tr').classList.toggle('is-selected', cb.checked);
+            cb.addEventListener('change', () => {
+              if (cb.checked) channelListState.selected.add(cb.dataset.cid);
+              else channelListState.selected.delete(cb.dataset.cid);
+              cb.closest('tr').classList.toggle('is-selected', cb.checked);
+              syncBar();
+            });
+          });
+          // 点击整行切换选中；行内按钮和复选框自身不触发（避免双切）
+          host.querySelector('tbody').addEventListener('click', (e) => {
+            if (e.target.closest('button, a, input, .badge')) return;
+            const tr = e.target.closest('tr[data-rowid]');
+            if (!tr) return;
+            const cid = tr.dataset.rowid;
+            if (channelListState.selected.has(cid)) channelListState.selected.delete(cid);
+            else channelListState.selected.add(cid);
+            const cb = tr.querySelector('input[data-csel]');
+            if (cb) cb.checked = channelListState.selected.has(cid);
+            tr.classList.toggle('is-selected', channelListState.selected.has(cid));
+            syncBar();
+          });
+          const checkall = host.querySelector('#ch-checkall');
+          if (checkall) checkall.addEventListener('change', () => {
+            host.querySelectorAll('input[data-csel]').forEach((cb) => {
+              cb.checked = checkall.checked;
+              cb.closest('tr').classList.toggle('is-selected', checkall.checked);
+              if (checkall.checked) channelListState.selected.add(cb.dataset.cid);
+              else channelListState.selected.delete(cb.dataset.cid);
+            });
+            syncBar();
+          });
+          syncBar();
+        }
+
+        host.querySelectorAll('[data-act]').forEach((btn) => {
+          btn.onclick = async () => {
+            const id = btn.dataset.id;
+            const ch = channels.find((x) => x.id === id) || State.channels.find((x) => x.id === id);
+            if (!ch) return;
+            if (btn.dataset.act === 'edit') openChannelEditor(ch);
+            else if (btn.dataset.act === 'del') await removeChannel(ch);
+            else if (btn.dataset.act === 'toggle') await toggleChannel(ch);
+            else if (btn.dataset.act === 'test') await testChannel(ch, btn);
+          };
+        });
+      };
+
+      // 下拉筛选：原生 select 由 Select 组件自动增强，直接监听 change 即可
+      [['ch-filter-type', 'type'], ['ch-filter-status', 'status'], ['ch-filter-usage', 'usage']]
+        .forEach(([id, key]) => {
+          const el = root.querySelector('#' + id);
+          el.addEventListener('change', () => {
+            channelListState[key] = el.value;
+            renderTable();
+          });
+        });
+      const searchEl = root.querySelector('#channel-search');
+      searchEl.addEventListener('input', debounce(() => {
+        channelListState.keyword = searchEl.value;
+        renderTable();
+      }, 180));
+      const modelSearchEl = root.querySelector('#channel-model-search');
+      modelSearchEl.addEventListener('input', debounce(() => {
+        channelListState.modelKeyword = modelSearchEl.value;
+        renderTable();
+      }, 180));
 
       const dismissBtn = root.querySelector('#btn-dismiss-hint');
       if (dismissBtn) {
@@ -189,17 +423,146 @@
         };
       }
 
-      root.querySelectorAll('[data-act]').forEach((btn) => {
-        btn.onclick = async () => {
-          const id = btn.dataset.id;
-          const ch = State.channels.find((x) => x.id === id);
-          if (!ch) return;
-          if (btn.dataset.act === 'edit') openChannelEditor(ch);
-          else if (btn.dataset.act === 'del') await removeChannel(ch);
-          else if (btn.dataset.act === 'toggle') await toggleChannel(ch);
-          else if (btn.dataset.act === 'test') await testChannel(ch, btn);
+      // ---------- 多选模式 ----------
+      const applyMulti = () => {
+        const set = (id, show) => {
+          const el = root.querySelector('#' + id);
+          if (el) el.style.display = show ? '' : 'none';
         };
-      });
+        set('channel-filter-count', !channelListState.multi);
+        set('ch-multi', !channelListState.multi);
+        set('channel-multi-count', channelListState.multi);
+        set('ch-enable', channelListState.multi);
+        set('ch-disable', channelListState.multi);
+        set('ch-test', channelListState.multi);
+        set('ch-cooldown', channelListState.multi);
+        set('ch-del', channelListState.multi);
+        set('ch-exit', channelListState.multi);
+        renderTable();
+      };
+      root.querySelector('#ch-multi').onclick = () => {
+        channelListState.multi = true;
+        applyMulti();
+      };
+      root.querySelector('#ch-exit').onclick = () => {
+        channelListState.multi = false;
+        channelListState.selected.clear();
+        applyMulti();
+      };
+
+      const getSelectedChannels = () =>
+        channels.filter((c) => channelListState.selected.has(c.id));
+
+      // 批量操作后刷新数据，已删除渠道的选择会被清掉；多选模式保持
+      const refreshAfterBatch = async () => {
+        State.invalidate('channels');
+        State.invalidate('models');
+        await State.loadChannels(true);
+        const live = new Set(State.channels.map((c) => c.id));
+        [...channelListState.selected]
+          .filter((id) => !live.has(id))
+          .forEach((id) => channelListState.selected.delete(id));
+        window.LDM.navigate();
+      };
+
+      const batchToggle = async (enabled) => {
+        const sel = getSelectedChannels().filter((c) => c.enabled !== enabled);
+        if (!sel.length) {
+          Toast.info(enabled ? '选中的渠道都已启用' : '选中的渠道都已禁用');
+          return;
+        }
+        try {
+          for (const c of sel) {
+            await API.put('/api/channels/' + encodeURIComponent(c.id), { id: c.id, enabled });
+          }
+          Toast.success(`已${enabled ? '启用' : '禁用'} ${sel.length} 个渠道`);
+          await refreshAfterBatch();
+          if (!enabled) showChannelDisabledNotice(sel);
+        } catch (e) { Toast.error(e.message); }
+      };
+      root.querySelector('#ch-enable').onclick = () => batchToggle(true);
+      root.querySelector('#ch-disable').onclick = () => batchToggle(false);
+
+      root.querySelector('#ch-test').onclick = async () => {
+        const sel = getSelectedChannels();
+        if (!sel.length) { Toast.info('请先勾选渠道'); return; }
+        const btn = root.querySelector('#ch-test');
+        const old = btn.innerHTML;
+        btn.disabled = true;
+        let ok = 0;
+        let fail = 0;
+        for (let i = 0; i < sel.length; i++) {
+          btn.innerHTML = `<span class="spinner" style="width:12px;height:12px"></span>${i + 1}/${sel.length}`;
+          const c = sel[i];
+          const res = await testChannelQuiet(c);
+          if (res.ok) {
+            ok += 1;
+            Toast.success(`${c.id}：${res.message}（${res.latency}ms）`, '渠道可用');
+          } else {
+            fail += 1;
+            Toast.error(`${c.id}：${res.message}`, '渠道不可用');
+          }
+        }
+        btn.disabled = false;
+        btn.innerHTML = old;
+        if (!fail) Toast.success(`${ok} 个渠道全部正常`, '测试完成');
+        else if (!ok) Toast.error(`${fail} 个渠道均不可用`, '测试完成');
+        else Toast.warn(`${ok} 个正常，${fail} 个不可用`, '测试完成');
+      };
+
+      root.querySelector('#ch-cooldown').onclick = async () => {
+        const sel = getSelectedChannels();
+        if (!sel.length) { Toast.info('请先勾选渠道'); return; }
+        try {
+          let cleared = 0;
+          for (const c of sel) {
+            const res = await API.post('/api/models/clear-cooldowns?channel_id=' + encodeURIComponent(c.id));
+            cleared += (res && res.cleared) || 0;
+          }
+          if (cleared) Toast.success(`已清除 ${cleared} 条冷却`);
+          else Toast.info('选中的渠道没有处于冷却中的路由');
+        } catch (e) { Toast.error(e.message); }
+      };
+
+      root.querySelector('#ch-del').onclick = async () => {
+        const sel = getSelectedChannels();
+        if (!sel.length) { Toast.info('请先勾选渠道'); return; }
+        const refsById = {};
+        try {
+          const results = await Promise.all(sel.map(async (c) => {
+            const res = await API.get(`/api/channels/${encodeURIComponent(c.id)}/refs`);
+            return [c.id, (res && res.refs) || []];
+          }));
+          results.forEach(([id, refs]) => { refsById[id] = refs; });
+        } catch (e) {
+          Toast.error(e.message, '读取渠道引用失败');
+          return;
+        }
+        const action = await confirmDeleteChannels(sel, refsById);
+        if (!action) return;
+        let removed = 0;
+        let updated = 0;
+        const failed = [];
+        for (const c of sel) {
+          try {
+            const query = action === 'remove' ? '?remove_refs=1' : '';
+            const res = await API.del('/api/channels/' + encodeURIComponent(c.id) + query);
+            removed += ((res && res.removed_models) || []).length;
+            updated += ((res && res.updated_models) || []).length;
+          } catch (e) { failed.push(c.id); }
+        }
+        const done = sel.length - failed.length;
+        if (done) {
+          const extra = action === 'remove'
+            ? (removed ? `，移除 ${removed} 个渠道模型` : '') + (updated ? `，清理 ${updated} 个自定义模型路由` : '')
+            : '，模型管理里的配置保持不变';
+          Toast.success(`已删除 ${done} 个渠道${extra}`);
+        }
+        if (failed.length) Toast.error(`${failed.length} 个渠道删除失败：${failed.join('、')}`, '部分删除失败');
+        await refreshAfterBatch();
+      };
+
+      renderTable();
     },
   });
 
@@ -300,6 +663,65 @@
         onClose(result) { resolve(result || ''); },
       });
     });
+  }
+
+  // 批量删除渠道：先查引用，有引用时让用户选择是否一并移除模型。
+  // 无引用时复用普通的确认框，返回值 keep / remove / ''（取消）。
+  function confirmDeleteChannels(chs, refsById) {
+    return new Promise((resolve) => {
+      const withRefs = chs.filter((ch) => (refsById[ch.id] || []).length);
+      if (!withRefs.length) {
+        confirmDialog({
+          title: '删除选中渠道',
+          message: `确定删除选中的 <b>${chs.length}</b> 个渠道吗？<br><br>模型管理里没有引用它们的模型。<br><br>该操作不可撤销。`,
+          confirmText: `删除（${chs.length}）`,
+          danger: true,
+        }).then((ok) => resolve(ok ? 'keep' : ''));
+        return;
+      }
+
+      const totalRefs = withRefs.reduce((n, ch) => n + refsById[ch.id].length, 0);
+      const list = withRefs.map((ch) => {
+        const n = refsById[ch.id].length;
+        return `<li><code>${esc(ch.id)}</code> 有 ${n} 处引用</li>`;
+      }).join('');
+
+      openModal({
+        title: '删除选中渠道',
+        size: 'sm',
+        body: `<div style="font-size:13.5px;line-height:1.7;color:var(--text-2)">
+          确定删除选中的 <b>${chs.length}</b> 个渠道吗？其中 <b>${withRefs.length}</b> 个渠道仍有
+          ${totalRefs} 处模型引用：
+          <ul class="fs-12 muted" style="margin:6px 0 0 18px;padding:0">${list}</ul>
+          <div class="mt-12">选择「仅删除渠道」会保留这些模型；选择「删除并移除模型」会一并删除渠道模型并清理自定义模型里的相关路由。</div>
+          <div class="fs-12 muted mt-6">该操作不可撤销。</div>
+        </div>`,
+        footer: `<div class="spacer"></div>
+          <button class="btn" data-act="cancel">取消</button>
+          <button class="btn" data-act="keep">仅删除渠道</button>
+          <button class="btn btn--danger" data-act="remove">删除并移除模型</button>`,
+        onMount(mo) {
+          mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close('');
+          mo.foot.querySelector('[data-act=keep]').onclick = () => mo.close('keep');
+          mo.foot.querySelector('[data-act=remove]').onclick = () => mo.close('remove');
+        },
+        onClose(result) { resolve(result || ''); },
+      });
+    });
+  }
+
+  // 批量测试逐个弹结果，最后统一汇总。
+  async function testChannelQuiet(ch) {
+    try {
+      const res = await API.post(`/api/channels/${encodeURIComponent(ch.id)}/test`);
+      return {
+        ok: !!(res && res.ok),
+        message: (res && res.message) || '',
+        latency: (res && res.latency_ms) || 0,
+      };
+    } catch (e) {
+      return { ok: false, message: e.message || '测试失败', latency: 0 };
+    }
   }
 
   async function testChannel(ch, btn) {
@@ -557,9 +979,11 @@
   function openChannelEditor(ch) {
     const isNew = !ch;
     const data = ch || {
-      id: '', name: '', type: 'openai', base_url: '', api_key: '', append_v1: true,
+      id: '', name: '', type: 'openai', base_url: '', api_key: '', key_rows: [], append_v1: true,
+      key_mode: 'sequential', key_affinity: false, key_cooldown_sec: 300, key_cooldown_reset: false,
       models: [], enabled: true, remark: '', headers: {},
     };
+    const initialKeyRows = data.key_rows || [];
 
     const body = `
       <div class="form-row">
@@ -596,14 +1020,51 @@
       </div>
 
       <div class="field">
-        <label class="field__label">API Key<span class="req">*</span></label>
-        <div class="input-group">
-          <input class="input mono key-masked" id="f-key" type="text" value="${esc(data.api_key || '')}"
-                 placeholder="sk-..." autocomplete="off" autocapitalize="off" spellcheck="false"
-                 name="ldm-upstream-credential" data-1p-ignore data-lpignore="true">
-          <button class="btn btn--icon" id="btn-eye" type="button" title="显示/隐藏">${icon('eye', 15)}</button>
+        <div class="flex-center gap-8" style="margin-bottom:6px">
+          <label class="field__label" style="margin-bottom:0">API Key<span class="req">*</span></label>
+          <button class="btn btn--sm btn--icon ml-auto" id="btn-eye" type="button" title="显示/隐藏" aria-label="显示或隐藏密钥">${icon('eye', 15)}</button>
         </div>
-        <div class="field__hint">密钥仅保存在本地数据文件中。</div>
+        <div class="key-rows" id="f-key-rows">
+          <div class="key-row key-row--head">
+            <span>密钥</span><span>备注</span><span></span>
+          </div>
+        </div>
+        <button class="btn btn--sm mt-8" id="btn-add-key" type="button">${icon('plus', 13)}添加 Key</button>
+        <div class="field__hint">
+          已保存的密钥以掩码显示。
+          <b>只改备注不会重新提交密钥</b>；清空某一行的密钥或删除整行，即删除对应的 Key。
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field__label">Key 调度</label>
+        <div class="flex-center gap-12" style="flex-wrap:wrap">
+          <select class="select" id="f-key-mode" style="width:110px">
+            <option value="sequential"${(data.key_mode || 'sequential') === 'sequential' ? ' selected' : ''}>顺序</option>
+            <option value="random"${data.key_mode === 'random' ? ' selected' : ''}>随机</option>
+          </select>
+          <label class="switch" style="white-space:nowrap">
+            <input type="checkbox" id="f-key-affinity" ${data.key_affinity ? 'checked' : ''}>
+            <span class="switch__track"></span>
+            <span class="switch__label">Key 亲和</span>
+          </label>
+          <label class="switch" style="white-space:nowrap">
+            <input type="checkbox" id="f-key-reset" ${data.key_cooldown_reset ? 'checked' : ''}>
+            <span class="switch__track"></span>
+            <span class="switch__label">全部冷却时重置</span>
+          </label>
+          <span class="muted fs-12">失败冷却</span>
+          <input class="input" id="f-key-cooldown" type="number" min="0" max="86400"
+                 value="${esc(String(data.key_cooldown_sec || 0))}" style="width:92px;height:30px;font-size:12.5px">
+          <span class="muted fs-12">秒</span>
+        </div>
+        <div class="field__hint">
+          <b>顺序</b>：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。
+          <b>随机</b>：每次请求完整打乱可用 Key 后再依次尝试。
+          <b>Key 亲和</b>：上次成功的 Key 优先：顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。
+          <b>失败冷却</b>：Key 失败后在设定时间内跳过（0 = 默认 300 秒）。
+          <b>全部冷却时重置</b>：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。
+        </div>
       </div>
 
       <div class="field">
@@ -658,8 +1119,118 @@
         const typeEl = $('#f-type');
         const baseEl = $('#f-base');
         const modelsEl = $('#f-models');
-        const keyEl = $('#f-key');
+        const keyRowsEl = $('#f-key-rows');
         const preview = $('#model-preview');
+
+        // 两列 Key 表格：密钥一列、备注一列。已保存的 Key 只在用户主动改 Key
+        // 时才提交新值，只改备注时请求里只有下标和备注。
+        let keysVisible = false;
+
+        function applyKeyMask() {
+          keyRowsEl.querySelectorAll('.key-field').forEach((el) => {
+            el.classList.toggle('key-masked', !keysVisible);
+          });
+        }
+
+        function appendKeyRow(row) {
+          const div = document.createElement('div');
+          div.className = 'key-row';
+          div.setAttribute('data-key-row', '');
+          if (row && row.index !== undefined && row.index !== null) {
+            div.dataset.index = String(row.index);
+            div.dataset.masked = row.masked || '';
+          }
+          const idx = document.createElement('span');
+          idx.className = 'key-row__index';
+
+          const key = document.createElement('input');
+          key.className = 'input mono key-field' + (keysVisible ? '' : ' key-masked');
+          key.value = (row && row.masked) || '';
+          key.placeholder = 'sk-...';
+          key.autocomplete = 'off';
+          key.spellcheck = false;
+          key.name = 'ldm-upstream-credential';
+          key.setAttribute('data-1p-ignore', '');
+          key.setAttribute('data-lpignore', 'true');
+
+          const keyWrap = document.createElement('div');
+          keyWrap.className = 'key-wrap';
+          keyWrap.append(idx, key);
+
+          const note = document.createElement('input');
+          note.className = 'input key-note';
+          note.value = (row && row.note) || '';
+          note.placeholder = '备注（可选）';
+
+          const del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'btn btn--sm btn--icon btn--danger';
+          del.title = '删除该 Key';
+          del.setAttribute('aria-label', '删除该 Key');
+          del.innerHTML = icon('trash', 13);
+          del.dataset.keyDel = '1';
+
+          div.append(keyWrap, note, del);
+          keyRowsEl.appendChild(div);
+          renumberKeyRows();
+        }
+
+        // Key 序号按当前行顺序实时重排：删除中间行后，后面的 # 会跟着前移。
+        function renumberKeyRows() {
+          keyRowsEl.querySelectorAll('[data-key-row]').forEach((el, i) => {
+            const label = el.querySelector('.key-row__index');
+            if (label) label.textContent = `#${i + 1}`;
+          });
+        }
+
+        function renderKeyRows() {
+          keyRowsEl.querySelectorAll('[data-key-row]').forEach((el) => el.remove());
+          if (initialKeyRows.length) {
+            initialKeyRows.forEach((row) => appendKeyRow(row));
+          } else {
+            appendKeyRow({});
+          }
+        }
+
+        function collectKeyRows() {
+          const rows = [];
+          keyRowsEl.querySelectorAll('[data-key-row]').forEach((el) => {
+            const key = (el.querySelector('.key-field').value || '').trim();
+            const note = (el.querySelector('.key-note').value || '').trim();
+            const idx = el.dataset.index;
+            if (idx === undefined) {
+              if (key) rows.push({ key, note });
+              return;
+            }
+            const index = Number(idx);
+            if (!key) {
+              rows.push({ index, remove: true });
+            } else if (key === el.dataset.masked) {
+              // 密钥未被改动：只提交备注，不把掩码传回后端。
+              rows.push({ index, note });
+            } else {
+              rows.push({ index, key, note });
+            }
+          });
+          return rows;
+        }
+
+        renderKeyRows();
+        keyRowsEl.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-key-del]');
+          if (!btn) return;
+          const row = btn.closest('[data-key-row]');
+          if (row) row.remove();
+          renumberKeyRows();
+          // 全部删完后保留一个空行，方便直接补新 Key。
+          if (!keyRowsEl.querySelector('[data-key-row]')) appendKeyRow({});
+        });
+        $('#btn-add-key').onclick = () => {
+          appendKeyRow({});
+          const rows = keyRowsEl.querySelectorAll('[data-key-row]');
+          const last = rows[rows.length - 1];
+          if (last) last.querySelector('.key-field').focus();
+        };
 
         const updateTypeHint = () => {
           const t = CHANNEL_TYPES.find((x) => x.value === typeEl.value);
@@ -676,10 +1247,12 @@
         updateTypeHint();
         typeEl.onchange = updateTypeHint;
 
-        // 不是 password 类型，所以靠 CSS 遮罩来隐藏；点眼睛只是切换遮罩
+        // 不是 password 类型，所以靠 CSS 遮罩来隐藏；点眼睛只切换密钥列
         $('#btn-eye').onclick = () => {
-          keyEl.classList.toggle('key-masked');
-          keyEl.focus();
+          keysVisible = !keysVisible;
+          applyKeyMask();
+          const first = keyRowsEl.querySelector('.key-field');
+          if (first) first.focus();
         };
 
         const renderPreview = () => {
@@ -710,7 +1283,9 @@
         const discoverBtn = mo.body.querySelector('#btn-discover');
         discoverBtn.onclick = async () => {
           const base = baseEl.value.trim();
-          const key = keyEl.value.trim();
+          const keyInputs = [...keyRowsEl.querySelectorAll('.key-field')];
+          const keyInput = keyInputs.find((el) => el.value.trim());
+          const key = keyInput ? keyInput.value.trim() : '';
           if (!base) {
             Toast.warn('请先填写接口地址');
             baseEl.focus();
@@ -718,7 +1293,7 @@
           }
           if (!key) {
             Toast.warn('请先填写 API Key');
-            keyEl.focus();
+            if (keyInputs[0]) keyInputs[0].focus();
             return;
           }
           discoverBtn.disabled = true;
@@ -767,8 +1342,13 @@
           if (!base.includes('://')) { Toast.warn('接口地址需要带上 https:// 或 http://'); baseEl.focus(); return; }
           // 模型列表允许为空：可以先建好渠道，之后再回来补模型
           const models = parseModels(modelsEl.value);
-          const key = keyEl.value.trim();
-          if (!key && isNew) { Toast.warn('请填写 API Key'); keyEl.focus(); return; }
+          const keys = collectKeyRows();
+          if (isNew && !keys.some((r) => !r.remove)) {
+            Toast.warn('请填写 API Key');
+            const first = keyRowsEl.querySelector('.key-field');
+            if (first) first.focus();
+            return;
+          }
           let headers = {};
           const headersRaw = $('#f-headers').value.trim();
           if (headersRaw) {
@@ -776,7 +1356,11 @@
           }
           const payload = {
             id, name: $('#f-name').value.trim(), type: typeEl.value,
-            base_url: base, api_key: key, append_v1: $('#f-append-v1').checked, models,
+            base_url: base, key_rows: keys, append_v1: $('#f-append-v1').checked, models,
+            key_mode: $('#f-key-mode').value,
+            key_affinity: $('#f-key-affinity').checked,
+            key_cooldown_sec: Math.max(0, Math.min(86400, Math.round(Number($('#f-key-cooldown').value) || 0))),
+            key_cooldown_reset: $('#f-key-reset').checked,
             enabled: $('#f-enabled').checked,
             headers, remark: $('#f-remark').value.trim(),
           };
@@ -2468,7 +3052,7 @@
     };
 
     // 目标路由模型的长说明收进问号：悬停看摘要，点击看完整规则
-    const routeHelpText = '普通条目按从上到下的顺序依次尝试；「合并」相邻条目成组后，组内先按权重比例随机选一个开始（权重全部相等时等概率），失败后按配置顺序继续试组内其余条目，全部失败再到后面的条目。按住左侧手柄拖动调整单条位置，按住组头左侧握把拖动调整整组位置；拖出弹窗只会收起当前条目所在的分组（拖回不会自动展开，松手后恢复），不影响其他分组。组外条目用「合并」按钮，组内条目用「分开」按钮。';
+    const routeHelpText = '普通条目按从上到下的顺序依次尝试；「合并」相邻条目成组后，组内每次按权重随机排序再依次尝试（权重越高越可能靠前，权重全部相等时等概率），全部失败再到后面的条目。按住左侧手柄拖动调整单条位置，按住组头左侧握把拖动调整整组位置；拖出弹窗只会收起当前条目所在的分组（拖回不会自动展开，松手后恢复），不影响其他分组。组外条目用「合并」按钮，组内条目用「分开」按钮。';
 
     const body = `
       <div class="field">
@@ -2497,7 +3081,7 @@
             <button class="btn btn--sm" data-act="copy-json">${icon('copy', 13)}复制 JSON</button>
             <button class="btn btn--sm" data-act="paste-json">${icon('paste', 13)}粘贴 JSON</button>
           </div>
-          <div class="field__hint">可直接复制粘贴复用。channel_id + upstream 定位渠道模型；相同 group 且相邻的条目自动成组；weight 决定组内第一个尝试的条目（按比例随机，全部相等时等概率），失败后按组内配置顺序顺延。</div>
+          <div class="field__hint">可直接复制粘贴复用。channel_id + upstream 定位渠道模型；相同 group 且相邻的条目自动成组；weight 决定组内尝试顺序（按权重随机排序，权重越高越可能靠前，全部相等时等概率）。</div>
         </div>
       </div>
 
@@ -3157,7 +3741,7 @@
               <span class="route-item__name">${esc(r.model_id)}</span>
               <span class="route-item__meta">
                 ${routeBadge(r)}
-                ${inGroup ? `<span class="route-item__weight" title="组内权重：按比例随机决定组内先试哪个，失败后按顺序顺延">
+                ${inGroup ? `<span class="route-item__weight" title="组内权重：按权重随机决定组内尝试顺序，权重越高越可能靠前">
                   <input type="number" class="input route-w-input" data-w="${i}" min="0" max="1000" value="${r.weight || 0}">
                   <span class="muted fs-11">权</span>
                 </span>` : ''}
@@ -3298,7 +3882,7 @@
             size: 'sm',
             body: `<div class="fs-13" style="line-height:1.8">
               <div style="margin-bottom:8px"><b>尝试顺序</b>：普通条目按从上到下的顺序依次尝试。</div>
-              <div style="margin-bottom:8px"><b>合并分组</b>：相邻条目「合并」成组后，组内先按权重比例随机选一个开始（权重全部相等时等概率）；失败后按配置顺序继续试组内其余条目，全部失败再到后面的条目。</div>
+              <div style="margin-bottom:8px"><b>合并分组</b>：相邻条目「合并」成组后，组内每次按权重随机排序再依次尝试（权重越高越可能靠前，权重全部相等时等概率），全部失败再到后面的条目。</div>
               <div style="margin-bottom:8px"><b>拖拽排序</b>：按住左侧手柄拖动调整单条位置；按住组头左侧握把拖动调整整组位置。</div>
               <div style="margin-bottom:8px"><b>拖出弹窗</b>：只会收起当前条目所在的分组（拖回不会自动展开，松手后恢复），不影响其他分组。</div>
               <div><b>合并 / 分开</b>：组外条目用「合并」按钮，组内条目用「分开」按钮。</div>

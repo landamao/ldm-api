@@ -29,6 +29,7 @@
   const affinityTitle = (l) => l.retries
     ? '模型亲和命中：优先尝试上次成功的路由，失败后已切换'
     : '模型亲和命中：本次直接复用了上次成功的路由';
+  const KEY_AFFINITY_TITLE = 'Key 亲和命中：优先使用了上次成功的 Key';
 
   // 错误详情弹窗：顶部概要只放请求模型、渠道模型、渠道和状态码，
   // 下面分成「错误详情」和「内部原因」两个独立块。错误详情是调用方实际
@@ -2910,39 +2911,109 @@
         load();
       };
 
-      // 重试历史：每次尝试的渠道、状态码、耗时与错误，全部来自日志里的 attempts。
+      // 重试历史分两层：先按渠道聚合（模型 → 渠道），渠道内试过多个 Key 时
+      // 再下钻（渠道 → Key）。Key 备注在调度时随日志落库，不反查当前配置。
+      function keyLabel(a) {
+        if (!a.key_masked) return '—';
+        const idx = `#${a.key_index || 1}`;
+        return a.key_note ? `${idx} ${a.key_note}` : `${idx}（无备注）`;
+      }
+
+      function attemptBadge(a) {
+        const ok = a.status_code > 0 && a.status_code < 400 && !a.error;
+        const softFail = a.status_code > 0 && a.status_code < 400 && !!a.error;
+        return ok ? badge('成功', 'green') : softFail ? badge(String(a.status_code), 'amber') : badge(String(a.status_code || '失败'), 'red');
+      }
+
+      function showKeyRetryHistory(l, group) {
+        const rows = group.attempts.map((a, i) => `<tr>
+            <td class="muted num">${i + 1}</td>
+            <td class="mono" style="white-space:nowrap">${esc(a.upstream_model || '—')}</td>
+            <td style="white-space:nowrap">${a.key_masked
+              ? `<span style="position:relative;display:inline-block">${colorBadge(keyLabel(a), 'badge--xs')}${a.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
+              : '<span class="muted">—</span>'}</td>
+            <td>${attemptBadge(a)}</td>
+            <td class="right num">${esc(fmtDuration(a.latency_ms))}</td>
+            <td class="fs-12" style="white-space:pre-wrap;word-break:break-word;min-width:320px">${a.error ? esc(a.error) : '<span class="muted">—</span>'}</td>
+          </tr>`).join('');
+        openModal({
+          title: 'Key 重试信息',
+          desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 渠道 <span class="mono">${esc(group.label)}</span> · 共 ${group.attempts.length} 次尝试`,
+          size: 'xl',
+          top: true,
+          body: `<div class="table-wrap" style="border:none;border-radius:0">
+            <table class="tbl">
+              <thead><tr>
+                <th style="width:40px">#</th><th>上游模型</th><th>Key</th>
+                <th>状态码</th><th class="right">耗时</th><th style="width:52%">错误信息</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`,
+          footer: `<div class="spacer"></div><button class="btn" data-close>关闭</button>`,
+        });
+      }
+
       function showRetryHistory(l) {
         const attempts = l.attempts || [];
-        const rows = attempts.map((a, i) => {
-          const ok = a.status_code > 0 && a.status_code < 400 && !a.error;
-          const softFail = a.status_code > 0 && a.status_code < 400 && !!a.error;
-          const channel = a.channel_name
-            ? `${a.channel_id}（${a.channel_name}）`
-            : (a.channel_id || '—');
+        // 按渠道聚合，保持第一次出现的顺序。同一渠道可能因为自定义路由
+        // 出现多次，这里合并成一行，再按不同 Key 的数量决定是否下钻。
+        const groups = [];
+        const byChannel = new Map();
+        attempts.forEach((a) => {
+          const id = a.channel_id || '';
+          let g = byChannel.get(id);
+          if (!g) {
+            g = {
+              label: id ? `${id}${a.channel_name ? '（' + a.channel_name + '）' : ''}` : '—',
+              upstreams: [],
+              attempts: [],
+              keyIds: new Set(),
+            };
+            byChannel.set(id, g);
+            groups.push(g);
+          }
+          g.attempts.push(a);
+          if (a.upstream_model && !g.upstreams.includes(a.upstream_model)) g.upstreams.push(a.upstream_model);
+          if (a.key_masked) g.keyIds.add(`${a.key_index || 1}|${a.key_masked}`);
+        });
+        const rows = groups.map((g, i) => {
+          const last = g.attempts[g.attempts.length - 1];
+          const totalMs = g.attempts.reduce((n, a) => n + (a.latency_ms || 0), 0);
+          const canDrill = g.keyIds.size > 1;
           return `<tr>
             <td class="muted num">${i + 1}</td>
-            <td class="mono" style="white-space:nowrap">${esc(channel)}</td>
-            <td class="mono">${esc(a.upstream_model || '—')}</td>
-            <td>${ok ? badge('成功', 'green') : softFail ? badge(String(a.status_code), 'amber') : badge(String(a.status_code || '失败'), 'red')}</td>
-            <td class="right num">${esc(fmtDuration(a.latency_ms))}</td>
-            <td class="fs-12" style="white-space:pre-wrap;word-break:break-word;max-width:340px">${a.error ? esc(a.error) : '<span class="muted">—</span>'}</td>
+            <td class="mono" style="white-space:nowrap">${esc(g.label)}</td>
+            <td class="mono fs-12" style="white-space:nowrap">${esc(g.upstreams.join(', ') || '—')}</td>
+            <td class="num">${g.attempts.length}</td>
+            <td>${attemptBadge(last)}</td>
+            <td class="right num">${esc(fmtDuration(totalMs))}</td>
+            <td class="fs-12" style="white-space:pre-wrap;word-break:break-word;min-width:300px">${last.error ? esc(last.error) : '<span class="muted">—</span>'}</td>
+            <td>${canDrill
+              ? `<button type="button" class="badge badge--amber badge--click" data-key-retry="${i}" title="查看该渠道的 Key 重试明细">${icon('refresh', 11)}Key 重试 ${g.attempts.length - 1}</button>`
+              : '<span class="muted">—</span>'}</td>
           </tr>`;
         }).join('');
         const finalOK = logOK(l);
         openModal({
-          title: '重试历史',
-          desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 共 ${attempts.length} 次尝试 · ${finalOK ? '最终成功' : '最终失败'}`,
-          size: 'lg',
+          title: '渠道重试信息',
+          desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 共 ${groups.length} 个渠道 · ${finalOK ? '最终成功' : '最终失败'}`,
+          size: 'xl',
           body: attempts.length ? `<div class="table-wrap" style="border:none;border-radius:0">
             <table class="tbl">
               <thead><tr>
                 <th style="width:40px">#</th><th style="min-width:160px">渠道</th><th>上游模型</th>
-                <th>状态码</th><th class="right">耗时</th><th>错误信息</th>
+                <th class="right">尝试</th><th>最终状态</th><th class="right">耗时</th><th style="width:40%">最后错误</th><th>Key 重试</th>
               </tr></thead>
               <tbody>${rows}</tbody>
             </table>
           </div>` : emptyState('没有尝试明细', '这条日志产生于旧版本，没有记录每次重试的明细。', '', 'refresh'),
           footer: `<div class="spacer"></div><button class="btn" data-close>关闭</button>`,
+          onMount(mo) {
+            mo.body.querySelectorAll('[data-key-retry]').forEach((btn) => {
+              btn.onclick = () => showKeyRetryHistory(l, groups[Number(btn.dataset.keyRetry)]);
+            });
+          },
         });
       }
 
@@ -2983,13 +3054,14 @@
                     ${l.affinity ? `<span class="affinity-star" title="${affinityTitle(l)}">${AFFINITY_STAR}</span>` : ''}
                   </span>
                   ${l.stream ? '<span class="badge badge--gray">流式</span>' : ''}
-                  ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
+                  ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看渠道重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
                 </div>
               </td>
               <td class="fs-12">
                 ${l.channel_id
                   ? `${colorBadge(channelLabel(l.channel_id))}
-                     ${l.upstream_model ? `<div class="muted fs-12 mono" style="margin-top:2px">${esc(l.upstream_model)}</div>` : ''}`
+                     ${l.upstream_model ? `<div class="muted fs-12 mono" style="margin-top:2px">${esc(l.upstream_model)}</div>` : ''}
+                     ${l.key_masked ? `<div style="margin-top:2px"><span style="position:relative;display:inline-block">${colorBadge(keyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span></div>` : ''}`
                   : '<span class="muted">未命中渠道</span>'}
               </td>
               <td class="fs-12">${colorBadge(l.token_name)}</td>

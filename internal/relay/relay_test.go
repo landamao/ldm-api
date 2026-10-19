@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -411,6 +413,109 @@ func TestAffinityMovesLastSuccessToFront(t *testing.T) {
 	}
 	if res.Affinity {
 		t.Error("未开启亲和的模型不应标记 Affinity")
+	}
+}
+
+// 组内按权重完整洗牌：3 个等权重条目应出现全部 6 种顺序，
+// 而不是只在配置顺序上循环挪动起点（那样只有 3 种）。
+func TestWeightedGroupShufflesWholeOrder(t *testing.T) {
+	st := newTestStore(t)
+	seedChannels(t, st)
+	now := time.Now().UnixMilli()
+	_ = st.SaveModel(store.Model{
+		ID: "SHUF", Type: store.ModelTypeCustom,
+		Routes: []store.Route{
+			{ChannelID: "A", Upstream: "a", Group: 1},
+			{ChannelID: "A", Upstream: "b", Group: 1},
+			{ChannelID: "A", Upstream: "c", Group: 1},
+		},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	})
+	r := New(st)
+	seen := map[string]bool{}
+	for i := 0; i < 600; i++ {
+		res, err := r.Resolve("SHUF")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Routes) != 3 {
+			t.Fatalf("路由数量错误: %d", len(res.Routes))
+		}
+		var b strings.Builder
+		for _, rt := range res.Routes {
+			b.WriteString(rt.Upstream)
+		}
+		seen[b.String()] = true
+	}
+	if len(seen) != 6 {
+		t.Fatalf("完整洗牌应出现 6 种顺序，实际 %d 种: %v", len(seen), seen)
+	}
+}
+
+// 完整洗牌仍要尊重权重：权重 9:1 时重条目应约占 90% 排在最前。
+func TestWeightedGroupShufflePrefersHeavier(t *testing.T) {
+	st := newTestStore(t)
+	seedChannels(t, st)
+	now := time.Now().UnixMilli()
+	_ = st.SaveModel(store.Model{
+		ID: "WS", Type: store.ModelTypeCustom,
+		Routes: []store.Route{
+			{ChannelID: "A", Upstream: "a", Group: 1, Weight: 9},
+			{ChannelID: "A", Upstream: "b", Group: 1, Weight: 1},
+		},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	})
+	r := New(st)
+	const rounds = 400
+	heavy := 0
+	for i := 0; i < rounds; i++ {
+		res, err := r.Resolve("WS")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Routes[0].Upstream == "a" {
+			heavy++
+		}
+	}
+	if heavy < 320 || heavy > 388 {
+		t.Fatalf("权重 9:1 时重条目应约占 90%%，实际 %d/%d", heavy, rounds)
+	}
+}
+
+// 亲和从上次成功条目的位置开始环形顺延，而不是把它单独搬到链首。
+func TestAffinityStartsAtPosition(t *testing.T) {
+	st := newTestStore(t)
+	seedChannels(t, st)
+	now := time.Now().UnixMilli()
+	_ = st.SaveModel(store.Model{
+		ID: "AF2", Type: store.ModelTypeCustom,
+		Routes: []store.Route{
+			{ChannelID: "A", Upstream: "a"},
+			{ChannelID: "B", Upstream: "d"},
+			{ChannelID: "B", Upstream: "a"},
+		},
+		Affinity: true, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	})
+	defer ClearModelRoutes("AF2")
+	r := New(st)
+	// 上次成功走 B/d（配置里的第 2 条）
+	MarkSuccess("AF2", "B", "d")
+	want := []string{"B/d", "B/a", "A/a"}
+	for i := 0; i < 5; i++ {
+		res, err := r.Resolve("AF2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, rt := range res.Routes {
+			got = append(got, rt.Channel.ID+"/"+rt.Upstream)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("亲和应从第 2 条开始环形顺延，期望 %v，得到 %v", want, got)
+		}
+		if !res.Affinity {
+			t.Fatal("命中亲和时 Resolve 应标记 Affinity")
+		}
 	}
 }
 
@@ -1615,5 +1720,527 @@ func TestNonStreamTimeoutCoversWholeRequest(t *testing.T) {
 	}
 	if res.StatusCode != http.StatusBadGateway {
 		t.Fatalf("状态码应为 502，得到 %d", res.StatusCode)
+	}
+}
+
+// 多渠道 Key：前两个 Key 返回 401 时应继续换 Key，直到第三个成功。
+func TestMultiKeyRetriesWithinChannel(t *testing.T) {
+	ClearChannelKeyState("mk")
+	defer ClearChannelKeyState("mk")
+
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		seen = append(seen, key)
+		mu.Unlock()
+		if key != "good-key-00003" {
+			w.WriteHeader(http.StatusUnauthorized)
+			io.WriteString(w, `{"error":{"message":"invalid key"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	ch := store.Channel{
+		ID: "mk", Type: store.ChannelOpenAI, BaseURL: srv.URL,
+		APIKeys: []store.ChannelKey{
+			{Key: "bad-key-000001", Note: "失效账号"},
+			{Key: "bad-key-000002"},
+			{Key: "good-key-00003", Note: "可用账号"},
+		},
+		KeyMode: store.KeyModeSequential, KeyAffinity: true, KeyCooldownSec: 300,
+		Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.SaveChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "mk/m", Type: store.ModelTypeChannel, ChannelID: "mk", Upstream: "m",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model":"mk/m","messages":[{"role":"user","content":"hi"}]}`)
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: body,
+		JSON: map[string]any{"model": "mk/m"},
+	}
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("第三个 Key 应成功，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	want := []string{"bad-key-000001", "bad-key-000002", "good-key-00003"}
+	if len(seen) != len(want) {
+		t.Fatalf("上游收到的 Key 次数错误: %v", seen)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Errorf("第 %d 次应使用 %q，得到 %q", i+1, want[i], seen[i])
+		}
+	}
+	if len(res.Attempts) != 3 {
+		t.Fatalf("应记录 3 次 Key 尝试，得到 %d", len(res.Attempts))
+	}
+	for i, a := range res.Attempts {
+		if a.KeyIndex != i+1 || a.KeyMasked == "" {
+			t.Errorf("第 %d 次尝试的 Key 信息错误: %+v", i+1, a)
+		}
+	}
+	if res.Attempts[0].KeyNote != "失效账号" {
+		t.Errorf("第一次尝试应记录 Key 备注，得到 %q", res.Attempts[0].KeyNote)
+	}
+	if res.Attempts[1].KeyNote != "" {
+		t.Errorf("无备注的 Key 不应凭空产生备注，得到 %q", res.Attempts[1].KeyNote)
+	}
+	if res.KeyIndex != 3 || res.KeyMasked != "good****0003" || res.KeyNote != "可用账号" {
+		t.Errorf("最终 Key 信息错误: #%d %q %q", res.KeyIndex, res.KeyMasked, res.KeyNote)
+	}
+
+	// 失败的两个 Key 进入冷却，下次只调度可用的那个。
+	keys, reason := PlanKeys(ch)
+	if reason != "" || len(keys) != 1 || keys[0].key != "good-key-00003" {
+		t.Fatalf("失败 Key 应被冷却跳过，得到 %+v（%s）", keys, reason)
+	}
+}
+
+// Key 全部冷却时开启自动重置：清空冷却后按原调度规则返回全部 Key。
+func TestPlanKeysCooldownReset(t *testing.T) {
+	const chID = "plan-reset"
+	ClearChannelKeyState(chID)
+	defer ClearChannelKeyState(chID)
+
+	ch := store.Channel{
+		ID: chID,
+		APIKeys: []store.ChannelKey{
+			{Key: "k1-12345678", Note: "一号"},
+			{Key: "k2-12345678", Note: "二号"},
+		},
+		KeyMode: store.KeyModeSequential,
+	}
+	MarkKeyFailure(chID, "k1-12345678")
+	MarkKeyFailure(chID, "k2-12345678")
+	if keys, reason := PlanKeys(ch); len(keys) != 0 || reason == "" {
+		t.Fatalf("未开启自动重置时全部冷却应不可用，得到 %+v（%q）", keys, reason)
+	}
+
+	ch.KeyCooldownReset = true
+	keys, reason := PlanKeys(ch)
+	if reason != "" || len(keys) != 2 || keys[0].index != 1 || keys[1].index != 2 {
+		t.Fatalf("开启自动重置后应清空冷却并返回全部 Key，得到 %v（%q）", candidateIndexes(keys), reason)
+	}
+	if keys[0].note != "一号" || keys[1].note != "二号" {
+		t.Fatalf("Key 备注未带入调度，得到 %+v", keys)
+	}
+
+	// 冷却已被清空：即使关掉开关，下一次调度也应正常可用。
+	ch.KeyCooldownReset = false
+	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 2 {
+		t.Fatalf("自动重置应真正清掉冷却状态，得到 %v（%q）", candidateIndexes(keys), reason)
+	}
+}
+
+// 全部 Key 冷却时请求不会打到上游，但日志仍要保留已经命中的渠道。
+func TestAllKeysCoolingKeepsChannelInfo(t *testing.T) {
+	const chID = "cool-all"
+	ClearChannelKeyState(chID)
+	defer ClearChannelKeyState(chID)
+
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: chID, Name: "冷却线路", Type: store.ChannelOpenAI,
+		BaseURL:        "http://127.0.0.1:1",
+		APIKeys:        []store.ChannelKey{{Key: "k1-12345678"}, {Key: "k2-12345678"}},
+		KeyCooldownSec: 300, Models: []string{"m"},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: chID + "/m", Type: store.ModelTypeChannel, ChannelID: chID, Upstream: "m",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	MarkKeyFailure(chID, "k1-12345678")
+	MarkKeyFailure(chID, "k2-12345678")
+
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: []byte(`{"model":"` + chID + `/m","messages":[]}`),
+		JSON: map[string]any{"model": chID + "/m"},
+	}
+	res := New(st).Do(context.Background(), httptest.NewRecorder(), req)
+	if res.Err != "所有 Key 都在失败冷却中" {
+		t.Fatalf("错误原因不正确: %+v", res)
+	}
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("状态码应为 503，得到 %d", res.StatusCode)
+	}
+	if res.ChannelID != chID || res.ChannelName != "冷却线路" || res.UpstreamModel != "m" {
+		t.Fatalf("全部 Key 冷却时仍应记录命中的渠道: %+v", res)
+	}
+	if res.KeyMasked != "" || res.Retries != 0 {
+		t.Fatalf("没有实际尝试时不应记录 Key 或重试次数: %+v", res)
+	}
+}
+
+// Key 调度：冷却跳过、亲和从成功位置顺延、全部冷却时返回不可用原因。
+func TestPlanKeysCooldownAffinityAndRandom(t *testing.T) {
+	const chID = "plan-keys"
+	ClearChannelKeyState(chID)
+	defer ClearChannelKeyState(chID)
+
+	ch := store.Channel{
+		ID: chID,
+		APIKeys: []store.ChannelKey{
+			{Key: "key-one-12345678"}, {Key: "key-two-12345678"}, {Key: "key-three-12345678"},
+		},
+		KeyMode:     store.KeyModeSequential,
+		KeyAffinity: true,
+	}
+	MarkKeyFailure(chID, "key-one-12345678")
+	keys, reason := PlanKeys(ch)
+	if reason != "" || len(keys) != 2 || keys[0].key != "key-two-12345678" {
+		t.Fatalf("顺序模式应跳过冷却中的 Key，得到 %+v（%s）", keys, reason)
+	}
+
+	MarkKeySuccess(chID, "key-three-12345678")
+	keys, _ = PlanKeys(ch)
+	if len(keys) != 2 || keys[0].key != "key-three-12345678" {
+		t.Fatalf("亲和应从上次成功的 Key 位置开始，得到 %+v", keys)
+	}
+
+	ch.KeyAffinity = false
+	ch.KeyMode = store.KeyModeRandom
+	keys, _ = PlanKeys(ch)
+	if len(keys) != 2 {
+		t.Fatalf("随机模式仍应包含全部可用 Key，得到 %+v", keys)
+	}
+	got := map[string]bool{keys[0].key: true, keys[1].key: true}
+	if !got["key-two-12345678"] || !got["key-three-12345678"] {
+		t.Fatalf("随机模式的候选集合错误: %+v", keys)
+	}
+
+	MarkKeyFailure(chID, "key-two-12345678")
+	MarkKeyFailure(chID, "key-three-12345678")
+	if keys, reason := PlanKeys(ch); len(keys) != 0 || reason == "" {
+		t.Fatalf("全部 Key 冷却时应返回不可用原因，得到 %+v（%q）", keys, reason)
+	}
+}
+
+func candidateIndexes(keys []keyCandidate) []int {
+	out := make([]int, len(keys))
+	for i, k := range keys {
+		out[i] = k.index
+	}
+	return out
+}
+
+// Key 调度：顺序 + 亲和从上次成功 Key 的配置位置开始，按原有顺序环形顺延，
+// 而不是把它搬到首位后让其余 Key 从第一个重来。
+func TestPlanKeysSequentialAffinityStartsAtPosition(t *testing.T) {
+	const chID = "plan-seq-affinity"
+	ClearChannelKeyState(chID)
+	defer ClearChannelKeyState(chID)
+
+	ch := store.Channel{
+		ID: chID,
+		APIKeys: []store.ChannelKey{
+			{Key: "k1-12345678"}, {Key: "k2-12345678"}, {Key: "k3-12345678"}, {Key: "k4-12345678"},
+		},
+		KeyMode:     store.KeyModeSequential,
+		KeyAffinity: true,
+	}
+
+	MarkKeySuccess(chID, "k2-12345678")
+	plan := mustPlan(t, ch)
+	if got := candidateIndexes(plan); !slices.Equal(got, []int{2, 3, 4, 1}) {
+		t.Fatalf("亲和键在第 2 位时应得到 2,3,4,1，实际 %v", got)
+	}
+	if !plan[0].affinity {
+		t.Fatal("亲和键应标记 affinity")
+	}
+	for _, k := range plan[1:] {
+		if k.affinity {
+			t.Fatalf("非亲和键不应标记 affinity: %v", candidateIndexes(plan))
+		}
+	}
+
+	MarkKeySuccess(chID, "k4-12345678")
+	plan = mustPlan(t, ch)
+	if got := candidateIndexes(plan); !slices.Equal(got, []int{4, 1, 2, 3}) {
+		t.Fatalf("亲和键在第 4 位时应得到 4,1,2,3，实际 %v", got)
+	}
+	if !plan[0].affinity || plan[0].index != 4 {
+		t.Fatalf("首位应是标记 affinity 的 4 号 Key: %+v", plan)
+	}
+
+	// 冷却中的 Key 直接跳过，其余 Key 仍保持配置顺序。
+	MarkKeyFailure(chID, "k1-12345678")
+	plan = mustPlan(t, ch)
+	if got := candidateIndexes(plan); !slices.Equal(got, []int{4, 2, 3}) {
+		t.Fatalf("跳过冷却 Key 后应得到 4,2,3，实际 %v", got)
+	}
+	if !plan[0].affinity {
+		t.Fatal("冷却跳过其它 Key 后，亲和键仍应标记 affinity")
+	}
+
+	// 亲和键自身冷却时无法定位，退回从第一个可用 Key 开始。
+	MarkKeyFailure(chID, "k4-12345678")
+	plan = mustPlan(t, ch)
+	if got := candidateIndexes(plan); !slices.Equal(got, []int{2, 3}) {
+		t.Fatalf("亲和键冷却时应得到 2,3，实际 %v", got)
+	}
+	for _, k := range plan {
+		if k.affinity {
+			t.Fatalf("亲和键不在可用列表里时不应标记 affinity: %v", candidateIndexes(plan))
+		}
+	}
+
+	// 关闭亲和后恢复纯配置顺序。
+	ch.KeyAffinity = false
+	if got := candidateIndexes(mustPlan(t, ch)); !slices.Equal(got, []int{2, 3}) {
+		t.Fatalf("关闭亲和后应得到 2,3，实际 %v", got)
+	}
+	plan = mustPlan(t, ch)
+	for _, k := range plan {
+		if k.affinity {
+			t.Fatalf("关闭亲和后不应标记 affinity: %v", candidateIndexes(plan))
+		}
+	}
+}
+
+// Key 调度：随机模式每次完整洗牌，4 个 Key 的 24 种排列都会出现，
+// 而不是只在配置顺序上循环挪动起点（那样只有 4 种）。
+func TestPlanKeysRandomShufflesWholeChain(t *testing.T) {
+	const chID = "plan-random-shuffle"
+	ClearChannelKeyState(chID)
+	defer ClearChannelKeyState(chID)
+
+	ch := store.Channel{
+		ID: chID,
+		APIKeys: []store.ChannelKey{
+			{Key: "k1-12345678"}, {Key: "k2-12345678"}, {Key: "k3-12345678"}, {Key: "k4-12345678"},
+		},
+		KeyMode: store.KeyModeRandom,
+	}
+
+	const rounds = 5000
+	chains := map[string]bool{}
+	first := map[int]int{}
+	for i := 0; i < rounds; i++ {
+		keys, reason := PlanKeys(ch)
+		if reason != "" || len(keys) != 4 {
+			t.Fatalf("随机模式应返回全部 4 个 Key，得到 %v（%s）", candidateIndexes(keys), reason)
+		}
+		chains[fmt.Sprint(candidateIndexes(keys))] = true
+		first[keys[0].index]++
+	}
+	if len(chains) != 24 {
+		t.Fatalf("完整洗牌应出现 24 种排列，实际 %d 种: %v", len(chains), chains)
+	}
+	for i := 1; i <= 4; i++ {
+		if first[i] < rounds/4*8/10 || first[i] > rounds/4*12/10 {
+			t.Errorf("首个 Key 分布不均: %v", first)
+		}
+	}
+}
+
+// Key 调度：随机 + 亲和时亲和键固定首位，其余 Key 完整洗牌。
+func TestPlanKeysRandomAffinityPinsFirstKey(t *testing.T) {
+	const chID = "plan-random-affinity"
+	ClearChannelKeyState(chID)
+	defer ClearChannelKeyState(chID)
+
+	ch := store.Channel{
+		ID: chID,
+		APIKeys: []store.ChannelKey{
+			{Key: "k1-12345678"}, {Key: "k2-12345678"}, {Key: "k3-12345678"}, {Key: "k4-12345678"},
+		},
+		KeyMode:     store.KeyModeRandom,
+		KeyAffinity: true,
+	}
+	MarkKeySuccess(chID, "k2-12345678")
+
+	rest := map[string]bool{}
+	for i := 0; i < 2000; i++ {
+		keys, _ := PlanKeys(ch)
+		if keys[0].index != 2 {
+			t.Fatalf("亲和键应固定在首位，得到 %v", candidateIndexes(keys))
+		}
+		if !keys[0].affinity {
+			t.Fatal("首位的亲和键应标记 affinity")
+		}
+		for _, k := range keys[1:] {
+			if k.affinity {
+				t.Fatalf("其余 Key 不应标记 affinity: %v", candidateIndexes(keys))
+			}
+		}
+		rest[fmt.Sprint(candidateIndexes(keys[1:]))] = true
+	}
+	if len(rest) != 6 {
+		t.Fatalf("其余 3 个 Key 应完整洗牌（6 种排列），实际 %d 种: %v", len(rest), rest)
+	}
+
+	// 亲和键冷却后无法再定位，其余 Key 正常洗牌。
+	MarkKeyFailure(chID, "k2-12345678")
+	for i := 0; i < 50; i++ {
+		keys, reason := PlanKeys(ch)
+		if reason != "" || len(keys) != 3 {
+			t.Fatalf("冷却 Key 应被跳过，得到 %v（%s）", candidateIndexes(keys), reason)
+		}
+		for _, k := range keys {
+			if k.index == 2 {
+				t.Fatalf("冷却中的亲和键不应出现，得到 %v", candidateIndexes(keys))
+			}
+		}
+	}
+}
+
+func mustPlan(t *testing.T, ch store.Channel) []keyCandidate {
+	t.Helper()
+	keys, reason := PlanKeys(ch)
+	if reason != "" {
+		t.Fatalf("PlanKeys 不应返回不可用原因: %s", reason)
+	}
+	return keys
+}
+
+// 多 Key 渠道的备注只用于展示，不能进入认证头。
+func TestKeyNoteNotSentUpstream(t *testing.T) {
+	ClearChannelKeyState("note")
+	defer ClearChannelKeyState("note")
+
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: "note", Type: store.ChannelOpenAI, BaseURL: srv.URL,
+		APIKeys: []store.ChannelKey{{Key: "sk-note-key-12345678", Note: "主账号"}},
+		Models:  []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "note/m", Type: store.ModelTypeChannel, ChannelID: "note", Upstream: "m",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model":"note/m","messages":[{"role":"user","content":"hi"}]}`)
+	req := &Request{Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: body, JSON: map[string]any{"model": "note/m"}}
+	rec := httptest.NewRecorder()
+	New(st).Do(context.Background(), rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("请求应成功，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if got != "Bearer sk-note-key-12345678" {
+		t.Errorf("认证头不应包含备注，得到 %q", got)
+	}
+}
+
+// Key 亲和命中要落到日志字段：亲和 Key 成功时最终日志标记 KeyAffinity；
+// 亲和 Key 失败并换到其它 Key 后，最终标记跟着最终 Key 走，
+// 而失败的那次尝试仍在重试明细里保留 KeyAffinity，方便还原调度过程。
+func TestKeyAffinityRecordedInResult(t *testing.T) {
+	const chID = "relay-key-affinity"
+	ClearChannelKeyState(chID)
+	defer ClearChannelKeyState(chID)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer sk-first-12345678" {
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, `{"error":{"message":"boom"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: chID, Type: store.ChannelOpenAI, BaseURL: srv.URL,
+		APIKeys: []store.ChannelKey{
+			{Key: "sk-first-12345678", Note: "主账号"},
+			{Key: "sk-second-12345678", Note: "备用账号"},
+		},
+		KeyMode: store.KeyModeSequential, KeyAffinity: true,
+		Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: chID + "/m", Type: store.ModelTypeChannel, ChannelID: chID, Upstream: "m",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model":"` + chID + `/m","messages":[{"role":"user","content":"hi"}]}`)
+	do := func() *Result {
+		t.Helper()
+		req := &Request{Path: "/v1/chat/completions", Method: http.MethodPost,
+			Header: http.Header{}, Body: body, JSON: map[string]any{"model": chID + "/m"}}
+		rec := httptest.NewRecorder()
+		res := New(st).Do(context.Background(), rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("请求应成功，实际 %d: %s", rec.Code, rec.Body.String())
+		}
+		return res
+	}
+
+	// 上次成功的是第一个 Key；它这次失败，换到第二个 Key。
+	MarkKeySuccess(chID, "sk-first-12345678")
+	res := do()
+	if res.Retries != 1 || len(res.Attempts) != 2 {
+		t.Fatalf("应记录 2 次尝试，得到 retries=%d attempts=%d", res.Retries, len(res.Attempts))
+	}
+	if !res.Attempts[0].KeyAffinity {
+		t.Error("亲和 Key 的失败尝试应标记 KeyAffinity")
+	}
+	if res.Attempts[1].KeyAffinity {
+		t.Error("换用的非亲和 Key 不应标记 KeyAffinity")
+	}
+	if res.KeyAffinity {
+		t.Error("最终使用的是非亲和 Key，顶层不应标记 KeyAffinity")
+	}
+	if res.KeyNote != "备用账号" {
+		t.Errorf("最终 Key 应是备用账号，得到 %q", res.KeyNote)
+	}
+
+	// 换成第二个 Key 亲和，且它这次成功：顶层应标记 KeyAffinity。
+	ClearChannelKeyState(chID)
+	MarkKeySuccess(chID, "sk-second-12345678")
+	res = do()
+	if len(res.Attempts) != 0 {
+		t.Fatalf("没有重试时不应记录尝试明细，得到 %d 条", len(res.Attempts))
+	}
+	if !res.KeyAffinity {
+		t.Error("亲和 Key 成功时应标记 KeyAffinity")
+	}
+	if res.KeyNote != "备用账号" {
+		t.Errorf("最终 Key 应是备用账号，得到 %q", res.KeyNote)
 	}
 }
