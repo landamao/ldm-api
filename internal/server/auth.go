@@ -188,6 +188,9 @@ func (s *Server) findToken(authHeader, xAPIKey string) (store.Token, error) {
 	return s.store.FindTokenByKey(key)
 }
 
+// errTokenQuota 标记额度不足，调用方据此返回额度提示；其余校验失败一律按密钥无效处理。
+var errTokenQuota = errors.New("该 API 密钥额度不足")
+
 func tokenValid(t store.Token) error {
 	if !t.Enabled {
 		return errors.New("该 API 密钥已被禁用")
@@ -196,7 +199,7 @@ func tokenValid(t store.Token) error {
 		return errors.New("该 API 密钥已过期")
 	}
 	if t.QuotaLimit > 0 && t.UsedQuota >= t.QuotaLimit {
-		return fmt.Errorf("该 API 密钥额度已用尽（%s / %s）", humanTokens(t.UsedQuota), humanTokens(t.QuotaLimit))
+		return fmt.Errorf("%w（%s / %s）", errTokenQuota, humanTokens(t.UsedQuota), humanTokens(t.QuotaLimit))
 	}
 	return nil
 }

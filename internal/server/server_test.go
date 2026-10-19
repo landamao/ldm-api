@@ -62,6 +62,98 @@ func TestTokenValidRules(t *testing.T) {
 	}
 }
 
+// 禁用、过期与未知密钥对外表现一致；额度不足单独提示。
+func TestTokenErrorResponses(t *testing.T) {
+	s, st := newTestServer(t, "token-uniform")
+	key, err := s.EnsureDefaultToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key == "" {
+		t.Fatal("首次启动应生成默认密钥")
+	}
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+
+	call := func(k string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, gw.URL+"/v1/models", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+k)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	checkInvalid := func(name, k, wantBody string) {
+		t.Helper()
+		code, body := call(k)
+		if code != http.StatusUnauthorized {
+			t.Errorf("%s: 应返回 401，得到 %d（%s）", name, code, body)
+		}
+		if !strings.Contains(body, `"code":"invalid_api_key"`) {
+			t.Errorf("%s: 应返回 invalid_api_key，得到 %s", name, body)
+		}
+		for _, leaked := range []string{"禁用", "过期"} {
+			if strings.Contains(body, leaked) {
+				t.Errorf("%s: 响应泄露了密钥状态「%s」: %s", name, leaked, body)
+			}
+		}
+		if wantBody != "" && body != wantBody {
+			t.Errorf("%s: 响应应与未知密钥完全一致，得到 %s", name, body)
+		}
+	}
+
+	_, unknownBody := call("sk-ldm-does-not-exist")
+	checkInvalid("未知密钥", "sk-ldm-does-not-exist", "")
+
+	tok, err := st.FindTokenByKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := func() {
+		tok.Enabled = true
+		tok.ExpiresAt = 0
+		tok.QuotaLimit = 0
+		tok.UsedQuota = 0
+		if err := st.SaveToken(tok); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tok.Enabled = false
+	if err := st.SaveToken(tok); err != nil {
+		t.Fatal(err)
+	}
+	checkInvalid("已禁用", key, unknownBody)
+
+	restore()
+	tok.ExpiresAt = time.Now().Add(-time.Hour).UnixMilli()
+	if err := st.SaveToken(tok); err != nil {
+		t.Fatal(err)
+	}
+	checkInvalid("已过期", key, unknownBody)
+
+	restore()
+	tok.QuotaLimit = 100
+	tok.UsedQuota = 100
+	if err := st.SaveToken(tok); err != nil {
+		t.Fatal(err)
+	}
+	code, body := call(key)
+	if code != http.StatusForbidden {
+		t.Errorf("额度不足: 应返回 403，得到 %d（%s）", code, body)
+	}
+	if !strings.Contains(body, "额度不足") || !strings.Contains(body, `"code":"insufficient_quota"`) {
+		t.Errorf("额度不足: 应返回额度提示，得到 %s", body)
+	}
+}
+
 func TestTokenAllowsModel(t *testing.T) {
 	all := store.Token{}
 	if !tokenAllowsModel(all, "任意模型") {

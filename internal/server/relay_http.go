@@ -18,22 +18,19 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	token, err := s.findToken(r.Header.Get("Authorization"), r.Header.Get("x-api-key"))
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"error": map[string]any{"message": "无效的 API 密钥", "type": "invalid_api_key", "code": "invalid_api_key"},
-			})
-			return
-		}
 		// 存储层异常不把原始错误回给调用方，避免暴露内部细节。
-		writeJSON(w, http.StatusUnauthorized, map[string]any{
-			"error": map[string]any{"message": "无效的 API 密钥", "type": "invalid_api_key", "code": "invalid_api_key"},
-		})
+		writeInvalidKey(w)
 		return
 	}
 	if err := tokenValid(token); err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]any{
-			"error": map[string]any{"message": err.Error(), "type": "permission_error", "code": "insufficient_quota"},
-		})
+		if errors.Is(err, errTokenQuota) {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error": map[string]any{"message": err.Error(), "type": "permission_error", "code": "insufficient_quota"},
+			})
+			return
+		}
+		// 其余情况一律按「密钥无效」返回，不区分禁用、过期。
+		writeInvalidKey(w)
 		return
 	}
 
@@ -96,6 +93,13 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	res := s.relay.Do(r.Context(), w, req)
 	res.LatencyMs = time.Since(started).Milliseconds()
 	s.record(token, req, res)
+}
+
+// writeInvalidKey 统一返回密钥无效。禁用、过期在对外响应上不做区分。
+func writeInvalidKey(w http.ResponseWriter) {
+	writeJSON(w, http.StatusUnauthorized, map[string]any{
+		"error": map[string]any{"message": "无效的 API 密钥", "type": "invalid_api_key", "code": "invalid_api_key"},
+	})
 }
 
 // serveModelList 返回当前可调用的模型列表。
