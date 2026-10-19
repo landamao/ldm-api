@@ -401,41 +401,6 @@ func TestCooldownExpiredRecovers(t *testing.T) {
 	}
 }
 
-func TestEffectiveCapsInheritance(t *testing.T) {
-	st := newTestStore(t)
-	seedChannels(t, st)
-	now := time.Now().UnixMilli()
-	tool := true
-	ctxLen := 200000
-	_ = st.SaveModel(store.Model{
-		ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a",
-		Caps:    store.Caps{ContextLength: &ctxLen, ToolCalling: &tool},
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
-	})
-	_ = st.SaveModel(store.Model{
-		ID: "LDM", Type: store.ModelTypeCustom,
-		Routes:      []store.Route{{ChannelID: "A", Upstream: "a"}},
-		ParamSource: "A/a",
-		Caps:        store.Caps{Vision: &tool},
-		Enabled:     true, CreatedAt: now, UpdatedAt: now,
-	})
-
-	r := New(st)
-	res, err := r.Resolve("LDM")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Caps.ContextLength == nil || *res.Caps.ContextLength != 200000 {
-		t.Errorf("应继承 A/a 的上下文长度，得到 %v", res.Caps.ContextLength)
-	}
-	if res.Caps.ToolCalling == nil || !*res.Caps.ToolCalling {
-		t.Error("应继承 A/a 的工具调用能力")
-	}
-	if res.Caps.Vision != nil {
-		t.Error("继承时应完全使用来源模型的参数，而不是混合自身配置")
-	}
-}
-
 func TestUpdateChannelModelsRemovesStaleEntries(t *testing.T) {
 	st := newTestStore(t)
 	seedChannels(t, st)
@@ -1165,6 +1130,12 @@ func TestClientErrorsHideInternals(t *testing.T) {
 		if !strings.Contains(res.Err, "secret-chan") {
 			t.Errorf("日志应保留内部原因，得到 %q", res.Err)
 		}
+		if !strings.Contains(res.ClientErr, "当前没有可用渠道") {
+			t.Errorf("日志应记录对外返回，得到 %q", res.ClientErr)
+		}
+		if strings.Contains(res.ClientErr, "secret-chan") || strings.Contains(res.ClientErr, "禁用") {
+			t.Errorf("对外返回文案不应包含内部原因，得到 %q", res.ClientErr)
+		}
 	})
 
 	t.Run("上游报错", func(t *testing.T) {
@@ -1186,8 +1157,38 @@ func TestClientErrorsHideInternals(t *testing.T) {
 		if strings.Contains(body, "secret-chan") {
 			t.Errorf("对外文案泄露了渠道信息: %s", body)
 		}
-		if !strings.Contains(res.Err, "secret-chan") || !strings.Contains(res.Err, "secret-upstream-detail") {
-			t.Errorf("日志应保留渠道与上游错误，得到 %q", res.Err)
+		if res.Err != "" {
+			t.Errorf("上游原始错误已透传，内部原因不应重复，得到 %q", res.Err)
+		}
+		if !strings.Contains(res.ClientErr, "secret-upstream-detail") {
+			t.Errorf("日志应记录调用方实际收到的内容，得到 %q", res.ClientErr)
+		}
+		if res.ChannelName != "内部线路" {
+			t.Errorf("日志应记录渠道名称，得到 %q", res.ChannelName)
+		}
+	})
+
+	t.Run("上游限流", func(t *testing.T) {
+		ClearAllCooldowns()
+		st := newTestStore(t)
+		limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"error":{"message":"rate limited","code":429}}`)
+		}))
+		defer limited.Close()
+		seedCustom(t, st, true, limited.URL)
+
+		rec := httptest.NewRecorder()
+		res := New(st).Do(context.Background(), rec, reqFor("smart"))
+		body := rec.Body.String()
+		if !strings.Contains(body, "rate limited") {
+			t.Errorf("应透传上游 429 响应: %s", body)
+		}
+		if !strings.Contains(res.ClientErr, "rate limited") {
+			t.Errorf("日志应记录上游 429 的实际返回，得到 %q", res.ClientErr)
+		}
+		if res.Err != "" {
+			t.Errorf("上游原始错误已透传，内部原因不应重复，得到 %q", res.Err)
 		}
 	})
 
@@ -1215,4 +1216,58 @@ func TestClientErrorsHideInternals(t *testing.T) {
 			t.Errorf("对外文案不正确: %s", rec.Body.String())
 		}
 	})
+}
+
+// API 密钥只能调用模型相关端点，文件/微调/批处理等账号级接口必须被拒绝。
+func TestIsAllowedEndpoint(t *testing.T) {
+	allowed := []struct{ method, path string }{
+		{http.MethodGet, "/v1/models"},
+		{http.MethodGet, "/v1/models/"},
+		{http.MethodHead, "/v1/models"},
+		{http.MethodPost, "/v1/chat/completions"},
+		{http.MethodPost, "/v1/chat/completions/"},
+		{http.MethodPost, "/v1/completions"},
+		{http.MethodPost, "/v1/messages"},
+		{http.MethodPost, "/v1/responses"},
+		{http.MethodPost, "/v1/responses/compact"},
+		{http.MethodPost, "/v1/embeddings"},
+		{http.MethodPost, "/v1/images/generations"},
+		{http.MethodPost, "/v1/images/edits"},
+		{http.MethodPost, "/v1/audio/transcriptions"},
+		{http.MethodPost, "/v1/audio/translations"},
+		{http.MethodPost, "/v1/audio/speech"},
+		{http.MethodPost, "/v1/rerank"},
+		{http.MethodPost, "/v1/moderations"},
+		{http.MethodPost, "/v1/engines/gemini-pro/embeddings"},
+	}
+	for _, c := range allowed {
+		if !IsAllowedEndpoint(c.method, c.path) {
+			t.Errorf("%s %s 应被允许", c.method, c.path)
+		}
+	}
+
+	denied := []struct{ method, path string }{
+		{http.MethodDelete, "/v1/files/file-1"},
+		{http.MethodGet, "/v1/files"},
+		{http.MethodPost, "/v1/files"},
+		{http.MethodGet, "/v1/files/file-1"},
+		{http.MethodGet, "/v1/files/file-1/content"},
+		{http.MethodPost, "/v1/fine_tuning/jobs"},
+		{http.MethodGet, "/v1/fine_tuning/jobs"},
+		{http.MethodPost, "/v1/fine-tunes"},
+		{http.MethodPost, "/v1/batches"},
+		{http.MethodPost, "/v1/vector_stores"},
+		{http.MethodPost, "/v1/assistants"},
+		{http.MethodPut, "/v1/chat/completions"},
+		{http.MethodDelete, "/v1/chat/completions"},
+		{http.MethodGet, "/v1/chat/completions"},
+		{http.MethodPost, "/v1/models"},
+		{http.MethodDelete, "/v1/models/gpt-4"},
+		{http.MethodGet, "/v1/unknown"},
+	}
+	for _, c := range denied {
+		if IsAllowedEndpoint(c.method, c.path) {
+			t.Errorf("%s %s 应被拒绝", c.method, c.path)
+		}
+	}
 }

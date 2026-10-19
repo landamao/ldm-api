@@ -58,7 +58,6 @@ type Route struct {
 // Resolved 是一次路由解析的完整结果。
 type Resolved struct {
 	Model   store.Model
-	Caps    store.Caps // 实际生效的能力参数（可能继承自 ParamSource）
 	Routes  []Route
 	NoRoute string // 有模型但没有任何可用路由时的原因
 }
@@ -82,17 +81,17 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 	if !m.Enabled {
 		return nil, ErrModelDisabled
 	}
-	res := &Resolved{Model: m, Caps: r.effectiveCaps(m)}
+	res := &Resolved{Model: m}
 
 	switch m.Type {
 	case store.ModelTypeChannel:
 		ch, err := r.Store.GetChannel(m.ChannelID)
 		if err != nil {
-			res.NoRoute = fmt.Sprintf("渠道 %s 不存在", m.ChannelID)
+			res.NoRoute = fmt.Sprintf("渠道「%s」不存在", m.ChannelID)
 			return res, nil
 		}
 		if !ch.Enabled {
-			res.NoRoute = fmt.Sprintf("渠道 %s 已禁用", ch.ID)
+			res.NoRoute = fmt.Sprintf("渠道「%s」已禁用", ch.ID)
 			return res, nil
 		}
 		res.Routes = []Route{{Channel: ch, Upstream: m.Upstream}}
@@ -136,19 +135,6 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 	return res, nil
 }
 
-// effectiveCaps 计算模型实际生效的能力参数，支持从另一个模型继承。
-func (r *Relay) effectiveCaps(m store.Model) store.Caps {
-	if m.ParamSource == "" || m.ParamSource == m.ID {
-		return m.Caps
-	}
-	src, err := r.Store.GetModel(m.ParamSource)
-	if err != nil {
-		// 继承目标不存在时退回自身配置；如果是渠道模型被删了，还可以试着从渠道反推
-		return m.Caps
-	}
-	return r.effectiveCaps(src)
-}
-
 // ---------- 请求处理 ----------
 
 // Request 描述一次待转发的客户端请求。
@@ -167,13 +153,18 @@ type Request struct {
 type Result struct {
 	ModelID       string
 	ChannelID     string
+	ChannelName   string
 	UpstreamModel string
 	StatusCode    int
 	Usage         upstream.Usage
 	LatencyMs     int64
 	FirstByteMs   int64
 	Retries       int
-	Err           string
+	// Err 是内部失败原因（可能包含渠道、上游地址等细节），只写日志。
+	Err string
+	// ClientErr 是实际返回给调用方的错误文案。网关自身原因对外会收敛成笼统提示，
+	// 与 Err 不同；记录它才能在日志里还原调用方真正看到的内容。
+	ClientErr     string
 	Stream        bool
 	UsageEstimate bool
 	// ReasoningChars 是思考内容的字符数，模型没输出思考时为 0。
@@ -202,10 +193,23 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	start := time.Now()
 	res := &Result{ModelID: modelOf(req), Stream: req.Stream}
 
+	// 防御性校验：即使调用方绕过 handleAPI，也不允许把非模型端点转发到上游。
+	if !IsAllowedEndpoint(req.Method, req.Path) {
+		const msg = "不支持的接口，API 密钥只能调用模型相关端点"
+		writeAPIError(w, http.StatusNotFound, "invalid_request_error", msg)
+		res.StatusCode = http.StatusNotFound
+		res.ClientErr = msg
+		res.Err = "unsupported endpoint: " + req.Method + " " + req.Path
+		res.LatencyMs = time.Since(start).Milliseconds()
+		return res
+	}
+
 	modelID := modelOf(req)
 	if modelID == "" {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request_error", "请求体中缺少 model 字段")
+		const msg = "请求体中缺少 model 字段"
+		writeAPIError(w, http.StatusBadRequest, "invalid_request_error", msg)
 		res.StatusCode = http.StatusBadRequest
+		res.ClientErr = msg
 		res.Err = "missing model"
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
@@ -222,15 +226,17 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		}
 		writeAPIError(w, code, typ, msg)
 		res.StatusCode = code
+		res.ClientErr = msg
 		res.Err = err.Error()
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
 	}
 	if len(resolved.Routes) == 0 {
 		// 客户端只看到笼统结论，具体原因（渠道已禁用等）只写进日志，避免泄露内部信息。
-		writeAPIError(w, http.StatusServiceUnavailable, "server_error",
-			"模型「"+modelID+"」当前没有可用渠道")
+		msg := "模型「" + modelID + "」当前没有可用渠道"
+		writeAPIError(w, http.StatusServiceUnavailable, "server_error", msg)
 		res.StatusCode = http.StatusServiceUnavailable
+		res.ClientErr = msg
 		res.Err = resolved.NoRoute
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
@@ -245,6 +251,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	for i, route := range resolved.Routes {
 		res.Retries = i
 		res.ChannelID = route.Channel.ID
+		res.ChannelName = route.Channel.Name
 		res.UpstreamModel = route.Upstream
 
 		attemptStarted := time.Now()
@@ -332,8 +339,17 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 			writeUpstreamRawParts(w, lastRawHdr, lastStatus, lastRaw)
 		} else {
 			// 网关自身原因（配置缺失、网络错误等）只写进日志，对外给笼统结论。
-			writeAPIError(w, lastStatus, "server_error", clientErrorMessage(modelID))
+			msg := clientErrorMessage(modelID)
+			writeAPIError(w, lastStatus, "server_error", msg)
+			res.ClientErr = msg
 		}
+	}
+	// 上游错误体无论是否已经写出，都是调用方实际收到的内容。
+	// 透传上游原始错误时，内部原因不再重复同一段内容，留空让日志显示 —；
+	// 渠道、状态码等信息已经记在日志摘要和重试明细里。
+	if lastRaw != nil {
+		res.ClientErr = string(lastRaw)
+		res.Err = ""
 	}
 	return res
 }
@@ -349,8 +365,8 @@ type attemptOutcome struct {
 	reasoning int
 	// canceled 表示这次失败是客户端主动断开造成的，不是上游的问题。
 	canceled bool
-	// upstreamRaw/upstreamHdr 是上游错误响应，仅在最后一次尝试时保留，
-	// 用于把上游原始错误原样透传给调用方。
+	// upstreamRaw/upstreamHdr 是上游错误响应，在最后一次尝试或 4xx 直接透传时保留，
+	// 用于把上游原始错误原样返回给调用方，并记录调用方实际收到的内容。
 	upstreamRaw []byte
 	upstreamHdr http.Header
 	// upstreamBroken 表示上游在响应中途断开，即使已经写出响应也要标记失败。
@@ -386,9 +402,8 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	body := req.Body
 	convertBody := !prov.RawBody && req.JSON != nil && isChatPath(req.Path)
 	if convertBody {
-		// 能力参数（工具调用 / 思考 / 图片是否支持）只用于界面展示，
-		// 不参与请求改写——传空的 Caps 让协议转换只做格式映射。
-		// 想恢复「按能力裁剪请求」的行为，把 resolved.Caps 传回去即可。
+		// 能力参数只用于界面展示，不参与请求校验或改写；
+		// 传空的 Caps 让协议转换只做格式映射。
 		converted := prov.BuildBody(req.JSON, route.Upstream, store.Caps{})
 		body = mustJSON(converted)
 	} else if req.JSON != nil && prov.Type == store.ChannelOpenAI {
@@ -404,7 +419,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	base := upstream.NormalizeBase(route.Channel.BaseURL)
 	if base == "" {
 		return attemptOutcome{
-			err:       fmt.Errorf("渠道 %s 没有配置接口地址", route.Channel.ID),
+			err:       fmt.Errorf("渠道「%s」没有配置接口地址", route.Channel.ID),
 			retryable: true, status: http.StatusBadGateway,
 		}
 	}
@@ -438,13 +453,14 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		msg := fmt.Sprintf("渠道 %s 返回 %d: %s", route.Channel.ID, resp.StatusCode, truncate(string(raw), 600))
+		msg := fmt.Sprintf("渠道「%s」返回 %d: %s", route.Channel.ID, resp.StatusCode, truncate(string(raw), 600))
 		// 4xx 里只有限流和超时值得换渠道重试
 		retryable := resp.StatusCode == 429 || resp.StatusCode >= 500
 		if !retryable {
 			// 客户端错误：把上游原始响应透传，方便调用方定位
 			writeUpstreamRaw(w, resp, raw)
-			return attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: false, wrote: true}
+			return attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: false, wrote: true,
+				upstreamRaw: raw, upstreamHdr: resp.Header}
 		}
 		out := attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: !isLast}
 		if isLast {
@@ -611,6 +627,9 @@ var hopHeaders = map[string]bool{
 	"transfer-encoding": true, "upgrade": true, "host": true,
 	"content-length": true, "accept-encoding": true,
 	"authorization": true, "x-api-key": true, "x-goog-api-key": true,
+	"api-key": true, "openai-organization": true, "openai-project": true,
+	"x-forwarded-for": true, "x-forwarded-host": true, "x-forwarded-proto": true,
+	"x-real-ip": true, "forwarded": true,
 	"cookie": true, "origin": true, "referer": true, "user-agent": true,
 }
 

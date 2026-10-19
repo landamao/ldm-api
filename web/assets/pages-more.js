@@ -19,17 +19,54 @@
     return k.slice(0, 12) + '••••' + k.slice(-4);
   };
 
-  // 错误详情弹窗：手机端没有 hover，点状态徽章也能看到完整报错。
+  // 失败判定：上游错误透传时 error 为空，但 client_error 仍有内容，
+  // 状态码 >= 400 或客户端取消也属于失败。成功记录不提供错误弹窗入口。
+  const logOK = (l) => !l.canceled && l.status_code > 0 && l.status_code < 400
+    && !l.error && !l.client_error;
+
+  // 错误详情弹窗：顶部概要只放请求模型、渠道模型、渠道和状态码，
+  // 下面分成「错误详情」和「内部原因」两个独立块。错误详情是调用方实际
+  // 收到的内容，内部原因只给后台排查。
   function showLogError(l) {
     const status = l.status_code > 0 ? String(l.status_code) : '—';
-    const channel = l.channel_id
-      ? `${l.channel_id}${l.upstream_model ? ' / ' + l.upstream_model : ''}`
+    const statusTone = l.canceled ? 'amber' : 'red';
+    const channelModel = l.channel_id
+      ? `${l.channel_id}/${l.upstream_model || '—'}`
       : '—';
+    const channelLabel = l.channel_id
+      ? `${l.channel_id}${l.channel_name ? '（' + l.channel_name + '）' : ''}`
+      : '未命中渠道';
+    const summary = [
+      ['请求模型', `<span class="mono">${esc(l.model_id || '—')}</span>`],
+      ['渠道模型', `<span class="mono">${esc(channelModel)}</span>`],
+      ['渠道', `<span class="mono">${esc(channelLabel)}</span>`],
+      ['状态码', `<span class="badge badge--${statusTone}">${esc(status)}</span>`],
+      l.endpoint ? ['接口', `<span class="mono">${esc(l.endpoint)}</span>`] : null,
+    ].filter(Boolean);
+
+    const block = (text, tone) => {
+      const v = (text || '').trim();
+      return v
+        ? `<div class="log-error__block log-error__block--${tone}">${esc(v)}</div>`
+        : '<div class="log-error__block log-error__block--empty">—</div>';
+    };
+
     openModal({
-      title: '错误详情',
-      desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 状态码 <span class="mono">${esc(status)}</span>`,
-      body: `<div class="fs-13" style="white-space:pre-wrap;word-break:break-word;line-height:1.7">${esc(l.error || '没有记录错误信息')}</div>
-        <div class="muted fs-12 mt-8">渠道 <span class="mono">${esc(channel)}</span></div>`,
+      title: '错误信息',
+      size: 'lg',
+      body: `<div class="log-error">
+        <dl class="kv log-error__summary">
+          ${summary.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}
+        </dl>
+        <div class="log-error__section">
+          <div class="log-error__label">错误详情</div>
+          ${block(l.client_error, statusTone)}
+        </div>
+        <div class="log-error__section">
+          <div class="log-error__label">内部原因</div>
+          ${block(l.error, 'internal')}
+        </div>
+      </div>`,
       footer: `<div class="spacer"></div><button class="btn" data-close>关闭</button>`,
     });
   }
@@ -167,6 +204,7 @@
             <div class="stat">
               <div class="stat__label">${icon('check', 13)}成功率</div>
               <div class="stat__value" style="color:${rateColor(t.requests ? t.success_rate : 100)}">${t.requests ? t.success_rate.toFixed(1) : '100.0'}<small style="color:inherit">%</small></div>
+              <div class="stat__foot">${t.errors ? `${fmtInt(t.errors)} 次失败` : '全部成功'}</div>
             </div>
             <div class="stat">
               <div class="stat__label">${icon('clock', 13)}平均速度</div>
@@ -298,12 +336,10 @@
                   <td class="right num">${esc(fmtDuration(l.latency_ms))}</td>
                   <td class="right num" title="${fmtInt(l.total_tokens)}">${fmtDash(l.total_tokens)}</td>
                   <td>${l.canceled
-                    ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" title="${esc(l.error)}">${esc(l.status_code || 200)}</button>`
-                    : (l.status_code > 0 && l.status_code < 400 && !l.error
+                    ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
+                    : (logOK(l)
                       ? '<span class="badge badge--green">成功</span>'
-                      : (l.error
-                        ? `<button type="button" class="badge badge--red badge--click" data-recent-error="${idx}" title="${esc(l.error)}">${esc(l.status_code || '失败')}</button>`
-                        : `<span class="badge badge--red">${esc(l.status_code || '失败')}</span>`))}</td>
+                      : `<button type="button" class="badge badge--red badge--click" data-recent-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || '失败')}</button>`)}</td>
                 </tr>`).join('')}</tbody>
               </table>
             </div>`
@@ -2886,7 +2922,7 @@
             <td class="fs-12" style="white-space:pre-wrap;word-break:break-word;max-width:340px">${a.error ? esc(a.error) : '<span class="muted">—</span>'}</td>
           </tr>`;
         }).join('');
-        const finalOK = l.status_code > 0 && l.status_code < 400 && !l.error;
+        const finalOK = logOK(l);
         openModal({
           title: '重试历史',
           desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 共 ${attempts.length} 次尝试 · ${finalOK ? '最终成功' : '最终失败'}`,
@@ -2959,12 +2995,10 @@
                 ${l.first_byte_ms ? `<div class="muted fs-12">首字 ${esc(fmtDuration(l.first_byte_ms))}</div>` : ''}
                 <div class="muted fs-12">总token ${tok(l.total_tokens)}</div></td>
               <td>${l.canceled
-                ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" title="${esc(l.error)}">${esc(l.status_code || 200)}</button>`
-                : (l.status_code > 0 && l.status_code < 400 && !l.error
+                ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
+                : (logOK(l)
                   ? '<span class="badge badge--green">成功</span>'
-                  : (l.error
-                    ? `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" title="${esc(l.error)}">${esc(l.status_code || '失败')}</button>`
-                    : `<span class="badge badge--red">${esc(l.status_code || '失败')}</span>`))}</td>
+                  : `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || '失败')}</button>`)}</td>
               <td class="muted fs-12 mono">${esc(l.ip || '—')}</td>
             </tr>`).join('')}</tbody>
           </table>

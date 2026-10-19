@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,6 +80,200 @@ func TestTokenAllowsModel(t *testing.T) {
 	wildcard := store.Token{AllowedModels: []string{"*"}}
 	if !tokenAllowsModel(wildcard, "任意") {
 		t.Error("通配符应允许所有模型")
+	}
+}
+
+// 管理接口只能由登录会话访问。API 密钥是调用方调模型用的，
+// 即使密钥有效（甚至被禁用）也不能获得任何管理权限。
+func TestAdminEndpointsRequireSessionCookie(t *testing.T) {
+	s, st := newTestServer(t, "auth-admin")
+	key, err := s.EnsureDefaultToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+
+	do := func(path, apiKey string, cookie *http.Cookie) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, gw.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+
+	// API 密钥仍然可以正常获取模型列表
+	if code := do("/v1/models", key, nil); code != http.StatusOK {
+		t.Fatalf("API 密钥调用 /v1/models 应成功，得到 %d", code)
+	}
+	// 但所有管理接口都必须拒绝 API 密钥
+	for _, path := range []string{"/api/channels", "/api/tokens", "/api/auth/me"} {
+		if code := do(path, key, nil); code != http.StatusUnauthorized {
+			t.Errorf("API 密钥访问 %s 应返回 401，得到 %d", path, code)
+		}
+	}
+
+	// 密钥被禁用后同样不能访问管理接口
+	tok, err := st.FindTokenByKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok.Enabled = false
+	if err := st.SaveToken(tok); err != nil {
+		t.Fatal(err)
+	}
+	if code := do("/api/channels", key, nil); code != http.StatusUnauthorized {
+		t.Errorf("已禁用密钥访问管理接口应返回 401，得到 %d", code)
+	}
+
+	// 登录会话仍然可以正常访问
+	sess, err := s.issueSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := do("/api/channels", "", &http.Cookie{Name: sessionCookie, Value: sess}); code != http.StatusOK {
+		t.Errorf("登录会话访问管理接口应成功，得到 %d", code)
+	}
+}
+
+// 改密后所有旧会话必须立即失效。
+func TestPasswordChangeInvalidatesSessions(t *testing.T) {
+	s, _ := newTestServer(t, "pwd-sessions")
+	old, err := s.issueSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.verifySession(old) {
+		t.Fatal("改密前的会话应有效")
+	}
+	if err := s.SetPassword("newpass123"); err != nil {
+		t.Fatal(err)
+	}
+	if s.verifySession(old) {
+		t.Error("改密后旧会话应立即失效")
+	}
+	fresh, err := s.issueSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.verifySession(fresh) {
+		t.Error("改密后新签发的会话应有效")
+	}
+	if !s.CheckPassword("newpass123") {
+		t.Error("新密码应能通过校验")
+	}
+}
+
+// 保存渠道的响应不能回传明文上游密钥。
+func TestSaveChannelResponseMasksAPIKey(t *testing.T) {
+	s, st := newTestServer(t, "channel-mask")
+	now := time.Now().UnixMilli()
+	const rawKey = "sk-upstream-secret-123456"
+	if err := st.SaveChannel(store.Channel{
+		ID: "c", Name: "渠道", Type: store.ChannelOpenAI, BaseURL: "https://example.com",
+		APIKey: rawKey, Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/channels/c", strings.NewReader("{}"))
+	req.SetPathValue("id", "c")
+	rec := httptest.NewRecorder()
+	s.saveChannel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), rawKey) {
+		t.Error("响应不应包含明文上游密钥")
+	}
+	var resp struct {
+		Channel store.Channel `json:"channel"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Channel.APIKey != maskKey(rawKey) {
+		t.Errorf("密钥应脱敏为 %q，得到 %q", maskKey(rawKey), resp.Channel.APIKey)
+	}
+}
+
+// 密码错误时应按配置的延迟返回。
+func TestLoginWrongPasswordDelays(t *testing.T) {
+	s, _ := newTestServer(t, "login-delay")
+	oldDelay := loginFailureDelay
+	loginFailureDelay = 20 * time.Millisecond
+	defer func() { loginFailureDelay = oldDelay }()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"wrong"}`))
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	s.handleLogin(rec, req)
+	elapsed := time.Since(start)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("错误密码应返回 401，得到 %d", rec.Code)
+	}
+	if elapsed < loginFailureDelay {
+		t.Errorf("错误密码应至少延迟 %v，实际 %v", loginFailureDelay, elapsed)
+	}
+}
+
+func TestLoginLimiterSlidingWindow(t *testing.T) {
+	l := newLoginLimiter()
+	now := time.Now()
+	for i := 0; i < loginMaxAttempts; i++ {
+		if ok, _ := l.allow("1.2.3.4", now); !ok {
+			t.Fatalf("第 %d 次尝试应被允许", i+1)
+		}
+	}
+	if ok, retry := l.allow("1.2.3.4", now); ok || retry <= 0 {
+		t.Errorf("第 %d 次尝试应被拒绝并给出等待时间，得到 ok=%v retry=%v", loginMaxAttempts+1, ok, retry)
+	}
+	// 其他 IP 不受影响
+	if ok, _ := l.allow("5.6.7.8", now); !ok {
+		t.Error("不同 IP 应各自计数")
+	}
+	// 窗口过去后恢复
+	if ok, _ := l.allow("1.2.3.4", now.Add(loginWindow+time.Second)); !ok {
+		t.Error("窗口过后应恢复")
+	}
+}
+
+func TestLoginHandlerRateLimit(t *testing.T) {
+	s, _ := newTestServer(t, "login-rate")
+	oldDelay := loginFailureDelay
+	loginFailureDelay = time.Millisecond
+	defer func() { loginFailureDelay = oldDelay }()
+
+	do := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"wrong"}`))
+		rec := httptest.NewRecorder()
+		s.handleLogin(rec, req)
+		return rec
+	}
+	for i := 0; i < loginMaxAttempts; i++ {
+		if rec := do(); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("第 %d 次应返回 401，得到 %d", i+1, rec.Code)
+		}
+	}
+	rec := do()
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("第 %d 次应返回 429，得到 %d", loginMaxAttempts+1, rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("限流响应应带 Retry-After")
 	}
 }
 
@@ -995,7 +1190,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	if err := st.SaveModel(store.Model{
 		ID: "router", Type: store.ModelTypeCustom, Enabled: true,
 		Routes:      []store.Route{{ChannelID: "A", Upstream: "a"}},
-		ParamSource: "A/a", DisplayName: "路由模型", Description: "自定义描述", Tags: []string{"tag-b"},
+		DisplayName: "路由模型", Description: "自定义描述", Tags: []string{"tag-b"},
 		Caps:     store.Caps{MaxOutput: &ctx},
 		Affinity: true, CooldownSec: 120, CooldownReset: true,
 	}); err != nil {
@@ -1030,7 +1225,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 		t.Errorf("渠道模型的能力参数被清空: %+v", chModel.Caps)
 	}
 
-	// 只提交 enabled：自定义模型的路由、调度、参数来源、描述都要保留。
+	// 只提交 enabled：自定义模型的路由、调度、描述都要保留。
 	put("router", map[string]any{"enabled": false})
 	m, err := st.GetModel("router")
 	if err != nil {
@@ -1042,7 +1237,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	if len(m.Routes) != 1 || m.Routes[0].ChannelID != "A" || m.Routes[0].Upstream != "a" {
 		t.Errorf("自定义模型路由被清空: %+v", m.Routes)
 	}
-	if m.ParamSource != "A/a" || m.DisplayName != "路由模型" || m.Description != "自定义描述" || len(m.Tags) != 1 {
+	if m.DisplayName != "路由模型" || m.Description != "自定义描述" || len(m.Tags) != 1 {
 		t.Errorf("自定义模型的配置被清空: %+v", m)
 	}
 	if !m.Affinity || m.CooldownSec != 120 || !m.CooldownReset {
@@ -1055,7 +1250,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	// 显式提交空值仍然可以清空，保证编辑表单能正常保存。
 	put("router", map[string]any{
 		"description": "", "tags": []string{}, "caps": map[string]any{}, "routes": []map[string]any{},
-		"affinity": false, "cooldown_sec": 0, "cooldown_reset": false, "param_source": "",
+		"affinity": false, "cooldown_sec": 0, "cooldown_reset": false,
 	})
 	m, err = st.GetModel("router")
 	if err != nil {
@@ -1067,7 +1262,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	if m.Caps.ContextLength != nil || m.Caps.MaxOutput != nil {
 		t.Errorf("显式空 caps 应清空能力参数: %+v", m.Caps)
 	}
-	if m.ParamSource != "" || m.Affinity || m.CooldownSec != 0 || m.CooldownReset {
+	if m.Affinity || m.CooldownSec != 0 || m.CooldownReset {
 		t.Errorf("显式空值应清空调度配置: %+v", m)
 	}
 }
@@ -1207,6 +1402,9 @@ func TestRelayRefusesChannelWithoutBaseURL(t *testing.T) {
 	}
 	if !strings.Contains(res.Err, "没有配置接口地址") {
 		t.Errorf("日志应保留内部原因，实际：%q", res.Err)
+	}
+	if !strings.Contains(res.ClientErr, "暂不可用") {
+		t.Errorf("日志应记录对外返回，实际：%q", res.ClientErr)
 	}
 }
 
@@ -1617,7 +1815,7 @@ func TestRecordPersistsAttempts(t *testing.T) {
 		StatusCode: http.StatusOK, Retries: 1,
 		Attempts: []store.LogAttempt{
 			{ChannelID: "A", ChannelName: "主线路", UpstreamModel: "m",
-				StatusCode: http.StatusInternalServerError, LatencyMs: 12, Error: "渠道 A 返回 500: boom"},
+				StatusCode: http.StatusInternalServerError, LatencyMs: 12, Error: "渠道「A」返回 500: boom"},
 			{ChannelID: "B", ChannelName: "备用线路", UpstreamModel: "m",
 				StatusCode: http.StatusOK, LatencyMs: 8},
 		},
@@ -1642,6 +1840,39 @@ func TestRecordPersistsAttempts(t *testing.T) {
 	if got.Attempts[1].ChannelID != "B" || got.Attempts[1].StatusCode != 200 ||
 		got.Attempts[1].Error != "" {
 		t.Errorf("第二次尝试明细错误: %+v", got.Attempts[1])
+	}
+}
+
+// 日志要把「调用方实际看到的错误」和「内部原因」分开存：
+// 渠道全在冷却时对外只有笼统提示，排查时还得能看到冷却这个真实原因。
+func TestRecordLogsClientErrorAndInternalReason(t *testing.T) {
+	s, st := newTestServer(t, "log-error")
+	res := &relay.Result{
+		ModelID:     "x",
+		ChannelID:   "A",
+		ChannelName: "主线路",
+		StatusCode:  http.StatusServiceUnavailable,
+		ClientErr:   "模型「x」当前没有可用渠道",
+		Err:         "所有路由都在失败冷却中",
+	}
+	s.record(store.Token{ID: "tk", Name: "测试密钥"}, &relay.Request{Path: "/v1/chat/completions"}, res)
+
+	logs, _, err := st.QueryLogs(store.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("应写入 1 条日志，得到 %d", len(logs))
+	}
+	got := logs[0]
+	if got.ClientError != "模型「x」当前没有可用渠道" {
+		t.Errorf("对外返回内容不正确：%q", got.ClientError)
+	}
+	if got.Error != "所有路由都在失败冷却中" {
+		t.Errorf("内部原因不正确：%q", got.Error)
+	}
+	if got.ChannelName != "主线路" {
+		t.Errorf("渠道名称不正确：%q", got.ChannelName)
 	}
 }
 
@@ -1733,5 +1964,83 @@ func TestClientDisconnectAfterDoneIsNotLoggedCanceled(t *testing.T) {
 	}
 	if got.CompletionTokens != 2 || got.TotalTokens != 5 {
 		t.Fatalf("应保留上游上报的用量，得到 %+v", got)
+	}
+}
+
+// API 密钥只能调用模型端点：文件、微调等账号级接口必须在网关层拒绝，
+// 不能带着管理员的渠道密钥打到上游。
+func TestAPIKeyOnlyReachesModelEndpoints(t *testing.T) {
+	s, st := newTestServer(t, "api-scope")
+	key, err := s.EnsureDefaultToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var upstreamHits int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer up.Close()
+
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: "A", Type: store.ChannelOpenAI, BaseURL: up.URL,
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+
+	do := func(method, path, body string) int {
+		t.Helper()
+		req, err := http.NewRequest(method, gw.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+
+	denied := []struct{ method, path string }{
+		{http.MethodDelete, "/v1/files/file-abc"},
+		{http.MethodGet, "/v1/files"},
+		{http.MethodPost, "/v1/fine_tuning/jobs"},
+		{http.MethodPost, "/v1/batches"},
+		{http.MethodPut, "/v1/chat/completions"},
+		{http.MethodGet, "/v1/chat/completions"},
+	}
+	for _, c := range denied {
+		body := `{"model":"A/a"}`
+		if code := do(c.method, c.path, body); code != http.StatusNotFound {
+			t.Errorf("%s %s 应返回 404，得到 %d", c.method, c.path, code)
+		}
+	}
+	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
+		t.Fatalf("被拒绝的请求不应打到上游，实际上游收到 %d 次", got)
+	}
+
+	body := `{"model":"A/a","messages":[{"role":"user","content":"hi"}]}`
+	if code := do(http.MethodPost, "/v1/chat/completions", body); code != http.StatusOK {
+		t.Fatalf("正常模型调用应成功，得到 %d", code)
+	}
+	if got := atomic.LoadInt32(&upstreamHits); got != 1 {
+		t.Fatalf("正常调用应转发 1 次，实际上游收到 %d 次", got)
 	}
 }

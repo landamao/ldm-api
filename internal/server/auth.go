@@ -50,15 +50,39 @@ type sessionPayload struct {
 }
 
 func (s *Server) sessionSecret() []byte {
-	if s.secret == nil {
-		v, err := s.store.GetMeta("session_secret")
-		if err != nil || v == "" {
-			v = randomHex(32)
-			_ = s.store.SetMeta("session_secret", v)
-		}
-		s.secret = []byte(v)
+	s.secretMu.RLock()
+	if s.secret != nil {
+		v := s.secret
+		s.secretMu.RUnlock()
+		return v
 	}
+	s.secretMu.RUnlock()
+
+	s.secretMu.Lock()
+	defer s.secretMu.Unlock()
+	if s.secret != nil {
+		return s.secret
+	}
+	v, err := s.store.GetMeta("session_secret")
+	if err != nil || v == "" {
+		v = randomHex(32)
+		_ = s.store.SetMeta("session_secret", v)
+	}
+	s.secret = []byte(v)
 	return s.secret
+}
+
+// rotateSessionSecret 生成新的会话密钥。改密后调用，
+// 所有用旧密钥签发的会话会立即失效。
+func (s *Server) rotateSessionSecret() error {
+	v := randomHex(32)
+	if err := s.store.SetMeta("session_secret", v); err != nil {
+		return err
+	}
+	s.secretMu.Lock()
+	s.secret = []byte(v)
+	s.secretMu.Unlock()
+	return nil
 }
 
 func (s *Server) issueSession() (string, error) {
@@ -121,7 +145,11 @@ func (s *Server) SetPassword(password string) error {
 	}
 	st.RootPasswordSalt = randomHex(16)
 	st.RootPasswordHash = hashPassword(password, st.RootPasswordSalt)
-	return s.store.SaveSettings(st)
+	if err := s.store.SaveSettings(st); err != nil {
+		return err
+	}
+	// 改密后轮换会话密钥，让改密前签发的所有会话立即失效。
+	return s.rotateSessionSecret()
 }
 
 // EnsureDefaultPassword 首次启动时写入默认密码，并返回是否为默认密码。

@@ -184,8 +184,11 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 保存接口和列表接口保持一致，不回传明文上游密钥。
+	view := ch
+	view.APIKey = maskKey(ch.APIKey)
 	writeOK(w, map[string]any{
-		"channel":           ch,
+		"channel":           view,
 		"removed_upstreams": gone,
 		"refs":              refs,
 		"channel_models":    prefixed(ch.ID, ch.Models),

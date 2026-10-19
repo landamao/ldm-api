@@ -1,7 +1,8 @@
 package store
 
-// Caps 描述一个模型的能力参数。所有字段都是可空的：
-// nil 表示“从上游透传”（不做任何改写，由上游自己决定）。
+// Caps 描述一个模型的能力参数，仅用于模型广场 / 模型列表的展示。
+// 所有字段都是可空的：nil 表示“未声明”，网关不会据此校验或改写请求，
+// 实际能力完全由上游决定。
 type Caps struct {
 	ContextLength *int  `json:"context_length,omitempty"`
 	MaxOutput     *int  `json:"max_output,omitempty"`
@@ -102,15 +103,14 @@ type Provider struct {
 // Type == channel 时：ChannelID + Upstream 指向唯一的渠道模型。
 // Type == custom  时：Routes 是有序路由链，按组划分优先级、组内按权重选择。
 type Model struct {
-	ID          string  `json:"id"`
-	Type        string  `json:"type"`
-	ChannelID   string  `json:"channel_id,omitempty"`
-	Upstream    string  `json:"upstream,omitempty"`
-	Routes      []Route `json:"routes,omitempty"`
-	ParamSource string  `json:"param_source,omitempty"` // "" 表示使用自身 Caps，否则继承该模型 ID 的 Caps
-	ProviderID  string  `json:"provider_id,omitempty"`
-	Caps        Caps    `json:"caps"`
-	Enabled     bool    `json:"enabled"`
+	ID         string  `json:"id"`
+	Type       string  `json:"type"`
+	ChannelID  string  `json:"channel_id,omitempty"`
+	Upstream   string  `json:"upstream,omitempty"`
+	Routes     []Route `json:"routes,omitempty"`
+	ProviderID string  `json:"provider_id,omitempty"`
+	Caps       Caps    `json:"caps"`
+	Enabled    bool    `json:"enabled"`
 
 	// Affinity 开启后：某条路由本次请求成功，下一次请求优先从它开始。
 	// CooldownSec 是路由失败后的不可用冷却时长（秒），0 表示默认 300。
@@ -163,6 +163,7 @@ type Log struct {
 	TokenName        string `json:"token_name"`
 	ModelID          string `json:"model_id"`
 	ChannelID        string `json:"channel_id"`
+	ChannelName      string `json:"channel_name,omitempty"`
 	UpstreamModel    string `json:"upstream_model"`
 	Endpoint         string `json:"endpoint"`
 	PromptTokens     int    `json:"prompt_tokens"`
@@ -171,10 +172,14 @@ type Log struct {
 	LatencyMs        int64  `json:"latency_ms"`
 	FirstByteMs      int64  `json:"first_byte_ms"`
 	StatusCode       int    `json:"status_code"`
-	Error            string `json:"error,omitempty"`
-	Stream           bool   `json:"stream"`
-	Retries          int    `json:"retries"`
-	IP               string `json:"ip"`
+	// Error 是内部失败原因，可能包含渠道、上游地址等细节，只用于后台排查。
+	Error string `json:"error,omitempty"`
+	// ClientError 是实际返回给调用方的错误内容。网关对外会收敛成笼统提示，
+	// 上游错误则原样透传；没有响应体（如流式中断、客户端取消）时为空。
+	ClientError string `json:"client_error,omitempty"`
+	Stream      bool   `json:"stream"`
+	Retries     int    `json:"retries"`
+	IP          string `json:"ip"`
 
 	// Attempts 是本次请求的每次路由尝试，仅在重试过（尝试次数 > 1）时记录。
 	Attempts []LogAttempt `json:"attempts,omitempty"`

@@ -26,8 +26,6 @@ type modelView struct {
 	ProviderIcon  string      `json:"provider_icon,omitempty"`
 	ProviderColor string      `json:"provider_color,omitempty"`
 	Routes        []routeView `json:"routes,omitempty"`
-	CapsSource    string      `json:"caps_source,omitempty"`
-	Effective     store.Caps  `json:"effective_caps"`
 }
 
 type routeView struct {
@@ -81,10 +79,6 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	}
 	providers, _ := s.store.ListProviders()
 	providerByID := providerMap(providers)
-	modelByID := map[string]store.Model{}
-	for _, m := range models {
-		modelByID[m.ID] = m
-	}
 
 	out := make([]modelView, 0, len(models))
 	for _, m := range models {
@@ -136,22 +130,9 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		if !m.Enabled {
 			v.Status = statusDisabled
 		}
-		v.CapsSource = m.ParamSource
-		v.Effective = s.effectiveCapsOf(m, modelByID, 0)
 		out = append(out, v)
 	}
 	writeOK(w, out)
-}
-
-func (s *Server) effectiveCapsOf(m store.Model, byID map[string]store.Model, depth int) store.Caps {
-	if depth > 4 || m.ParamSource == "" || m.ParamSource == m.ID {
-		return m.Caps
-	}
-	src, ok := byID[m.ParamSource]
-	if !ok {
-		return m.Caps
-	}
-	return s.effectiveCapsOf(src, byID, depth+1)
 }
 
 // availableChannelModels 列出全部渠道模型（含已添加状态），供批量选择弹窗使用。
@@ -219,7 +200,6 @@ type modelRequest struct {
 	ChannelID     string         `json:"channel_id"`
 	Upstream      string         `json:"upstream"`
 	Routes        *[]store.Route `json:"routes"`
-	ParamSource   *string        `json:"param_source"`
 	ProviderID    *string        `json:"provider_id"`
 	Caps          *store.Caps    `json:"caps"`
 	Enabled       *bool          `json:"enabled"`
@@ -318,7 +298,6 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		m.Routes = nil
-		m.ParamSource = ""
 		m.Affinity = false
 		m.CooldownSec = 0
 		m.CooldownReset = false
@@ -353,17 +332,6 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		}
 		m.ChannelID = ""
 		m.Upstream = ""
-		// 不校验参数来源模型是否存在：不存在时按本模型参数使用。
-		if req.ParamSource != nil {
-			ps := strings.TrimSpace(*req.ParamSource)
-			if ps != "" && ps != m.ID {
-				m.ParamSource = ps
-			} else {
-				m.ParamSource = ""
-			}
-		} else if isNew {
-			m.ParamSource = ""
-		}
 	}
 
 	if isNew {
@@ -418,25 +386,8 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "旧模型记录清理失败: "+err.Error())
 			return
 		}
-		s.renameModelRefs(currentID, targetID)
 	}
 	writeOK(w, m)
-}
-
-// renameModelRefs 把其它模型里指向旧 ID 的参数继承关系改到新 ID 上。
-func (s *Server) renameModelRefs(oldID, newID string) {
-	models, err := s.store.ListModels()
-	if err != nil {
-		return
-	}
-	for _, m := range models {
-		if m.ParamSource != oldID {
-			continue
-		}
-		m.ParamSource = newID
-		m.UpdatedAt = time.Now().UnixMilli()
-		_ = s.store.SaveModel(m)
-	}
 }
 
 // extractReplyText 从上游返回的 OpenAI 格式响应里取出正文，用于测试结果展示。
@@ -582,15 +533,6 @@ func (s *Server) deleteModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relay.ClearModelRoutes(id)
-	// 清理其它模型对它的参数继承引用
-	models, _ := s.store.ListModels()
-	for _, m := range models {
-		if m.ParamSource == id {
-			m.ParamSource = ""
-			m.UpdatedAt = time.Now().UnixMilli()
-			_ = s.store.SaveModel(m)
-		}
-	}
 	writeOK(w, nil)
 }
 
@@ -658,17 +600,6 @@ func (s *Server) batchDeleteModels(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteModels(req.IDs); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	gone := map[string]bool{}
-	for _, id := range req.IDs {
-		gone[id] = true
-	}
-	models, _ := s.store.ListModels()
-	for _, m := range models {
-		if gone[m.ParamSource] {
-			m.ParamSource = ""
-			_ = s.store.SaveModel(m)
-		}
 	}
 	writeOK(w, map[string]any{"deleted": len(req.IDs)})
 }

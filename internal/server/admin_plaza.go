@@ -52,10 +52,6 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 	}
 	providers, _ := s.store.ListProviders()
 	providerByID := providerMap(providers)
-	modelByID := map[string]store.Model{}
-	for _, m := range models {
-		modelByID[m.ID] = m
-	}
 
 	// 最近 24 小时的调用量与失败量
 	stats, _ := s.store.RangeStats(time.Now().Add(-24*time.Hour).UnixMilli(), time.Now().UnixMilli())
@@ -74,7 +70,7 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 	for _, m := range models {
 		item := plazaItem{
 			ID: m.ID, Type: m.Type, DisplayName: m.DisplayName, Description: m.Description,
-			Tags: m.Tags, Caps: s.effectiveCapsOf(m, modelByID, 0), Available: m.Enabled,
+			Tags: m.Tags, Caps: m.Caps, Available: m.Enabled,
 			ProviderID: m.ProviderID,
 			Affinity:   m.Affinity, CooldownSec: m.CooldownSec, CooldownReset: m.CooldownReset,
 			Requests24h: reqs[m.ID], Errors24h: errs[m.ID],

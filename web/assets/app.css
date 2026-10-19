@@ -972,6 +972,37 @@ html[data-theme="dark"] .tristate__opt.is-on { background: rgba(255, 255, 255, .
 }
 .modal__foot .spacer { flex: 1; }
 
+/* 调用错误详情：顶部概要 + 两个独立内容块 */
+.log-error { display: flex; flex-direction: column; gap: 16px; }
+.log-error__summary {
+  grid-template-columns: 64px 1fr;
+  gap: 7px 14px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius);
+}
+.log-error__section { display: flex; flex-direction: column; gap: 7px; }
+.log-error__label { font-size: 12px; font-weight: 650; color: var(--text-2); }
+.log-error__block {
+  padding: 11px 13px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-line);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow: auto;
+}
+.log-error__block--red { border-left-color: var(--red-500); }
+.log-error__block--amber { border-left-color: var(--amber-500); }
+.log-error__block--internal { border-left-color: var(--primary-border); }
+.log-error__block--empty { color: var(--text-3); border-left-color: var(--border-line); }
+
 /* 选择列表 */
 .pick-list {
   border: 1px solid var(--border-line);

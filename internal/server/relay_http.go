@@ -37,11 +37,23 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := strings.TrimPrefix(r.URL.Path, "/v1")
-	p = "/v1" + p
+	p := "/v1" + strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1"), "/")
+
+	// API 密钥只能调用模型。显式白名单之外的路径（文件、微调、批处理等）
+	// 在网关层直接拒绝，避免调用方拿管理员的渠道密钥操作上游账号。
+	if !relay.IsAllowedEndpoint(r.Method, p) {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": map[string]any{
+				"message": "不支持的接口，API 密钥只能调用模型相关端点",
+				"type":    "invalid_request_error",
+				"code":    "unsupported_endpoint",
+			},
+		})
+		return
+	}
 
 	// 模型列表不需要请求体
-	if r.Method == http.MethodGet && (p == "/v1/models" || p == "/v1/models/") {
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && p == "/v1/models" {
 		s.serveModelList(w, token)
 		return
 	}
@@ -131,6 +143,7 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		TokenName:        token.Name,
 		ModelID:          res.ModelID,
 		ChannelID:        res.ChannelID,
+		ChannelName:      res.ChannelName,
 		UpstreamModel:    res.UpstreamModel,
 		Endpoint:         req.Path,
 		PromptTokens:     res.Usage.PromptTokens,
@@ -140,6 +153,7 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		FirstByteMs:      res.FirstByteMs,
 		StatusCode:       res.StatusCode,
 		Error:            truncateErr(res.Err),
+		ClientError:      truncateErr(res.ClientErr),
 		Stream:           req.Stream,
 		Retries:          res.Retries,
 		Attempts:         res.Attempts,

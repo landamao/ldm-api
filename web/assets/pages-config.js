@@ -15,6 +15,27 @@
     { value: 'gemini', label: 'Google Gemini', hint: 'Google AI Studio / Gemini API' },
   ];
 
+  // 从系统剪贴板粘贴到指定输入框；浏览器不允许读取时给出明确提示。
+  async function pasteTextInto(input) {
+    try {
+      if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+        throw new Error('clipboard unavailable');
+      }
+      const text = await navigator.clipboard.readText();
+      if (!text) {
+        Toast.warn('剪贴板是空的');
+        input.focus();
+        return;
+      }
+      input.value = text;
+      input.focus();
+      Toast.success('已从剪贴板粘贴');
+    } catch (e) {
+      Toast.error('无法读取剪贴板，请手动粘贴（Ctrl+V）');
+      input.focus();
+    }
+  }
+
   const CHANNEL_HINT_KEY = 'ldmapi.channels.hint.dismissed';
   const CHANNEL_DISABLED_HINT_KEY = 'ldmapi.channels.disabled-warning.dismissed';
 
@@ -1355,8 +1376,7 @@
         : '<span class="muted fs-12">未设置</span>'}</td>
       <td>${sourceHtml}</td>
       <td>
-        ${window.LDM.capBadges(m.effective_caps, { showNeg: true })}
-        ${m.caps_source ? `<div class="muted fs-12" style="margin-top:4px">参数继承自 <code>${esc(m.caps_source)}</code></div>` : ''}
+        ${window.LDM.capBadges(m.caps, { showNeg: true })}
       </td>
       <td>${statusHtml}</td>
       ${multi ? '' : `<td>
@@ -1380,7 +1400,7 @@
     if (!item) {
       item = {
         ...m,
-        caps: m.effective_caps || m.caps || {},
+        caps: m.caps || {},
         available: m.enabled && m.channel_ready,
         source: m.type === 'channel'
           ? m.channel_id + (m.channel_name ? `（${m.channel_name}）` : '')
@@ -2141,12 +2161,6 @@
         <div class="field__hint">渠道模型的 ID 由「渠道 ID / 上游模型名」自动生成，不可修改。</div>
       </div>
       <div class="field">
-        <label class="field__label">状态</label>
-        <div style="height:36px;display:flex;align-items:center">
-          <label class="switch"><input type="checkbox" id="m-enabled" ${m.enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用该模型</span></label>
-        </div>
-      </div>
-      <div class="field">
         <label class="field__label">提供商</label>
         ${providerSelectHtml(providers, m.provider_id || '__auto', 'm-provider-id')}
         <div class="field__hint">模型广场会按提供商分类，并自动使用提供商的图标。「自动识别」按模型名匹配关键词。</div>
@@ -2155,20 +2169,30 @@
         <label class="field__label">描述</label>
         <input class="input" id="m-desc" value="${esc(m.description || '')}" placeholder="可选">
       </div>
-      ${capsEditorHtml(m.effective_caps || m.caps || {}, {})}`;
+      ${capsEditorHtml(m.caps || {})}
+      <div class="field mt-16">
+        <label class="switch"><input type="checkbox" id="m-enabled" ${m.enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用该模型</span></label>
+      </div>`;
 
     openModal({
       title: '编辑渠道模型',
-      desc: `模型 <code>${esc(m.id)}</code> 的能力参数。留空或选择「透传」表示不做任何干预，由上游决定。`,
+      desc: `模型 <code>${esc(m.id)}</code> 的能力参数只用于展示，网关不会根据这些参数校验或改写请求。`,
       body,
       size: 'lg',
       footer: `<div class="spacer"></div>
         <button class="btn" data-act="cancel">取消</button>
         <button class="btn btn--primary" data-act="save">保存</button>`,
       onMount(mo) {
+        bindCapsEditor(mo.body);
         mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
         mo.foot.querySelector('[data-act=save]').onclick = async () => {
-          const caps = readCapsEditor(mo.body);
+          let caps;
+          try {
+            caps = readCapsEditor(mo.body);
+          } catch (e) {
+            Toast.error(e.message, '能力参数格式有误');
+            return;
+          }
           const btn = mo.foot.querySelector('[data-act=save]');
           btn.disabled = true;
           btn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';
@@ -2198,13 +2222,17 @@
   }
 
   // ---------- 能力参数编辑器 ----------
-  function capsEditorHtml(caps, opts) {
-    const o = opts || {};
+  // 能力参数只用于模型广场 / 模型列表的展示，网关不会在请求时校验、裁剪或改写。
+  // 支持可视化与 JSON 两种编辑方式，JSON 便于复制粘贴和备份。
+  const CAPS_KEYS = ['context_length', 'max_output', 'tool_calling', 'thinking', 'vision'];
+
+  function capsEditorHtml(caps) {
+    const c = caps || {};
     const tri = (id, label, val, hint) => `
       <div class="field">
         <label class="field__label">${esc(label)}</label>
         <div class="tristate" data-tri="${id}">
-          <div class="tristate__opt${val == null ? ' is-on' : ''}" data-value="auto">从上游透传</div>
+          <div class="tristate__opt${val == null ? ' is-on' : ''}" data-value="auto">留空（不声明）</div>
           <div class="tristate__opt${val === true ? ' is-on' : ''}" data-value="yes">支持</div>
           <div class="tristate__opt${val === false ? ' is-on' : ''}" data-value="no">不支持</div>
         </div>
@@ -2212,26 +2240,91 @@
       </div>`;
 
     return `<div class="sep"></div>
-      <div class="section-title">能力参数</div>
-      <div class="form-row">
-        <div class="field">
-          <label class="field__label">上下文长度（tokens）</label>
-          <input class="input" id="c-ctx" type="number" min="0" value="${caps.context_length || ''}" placeholder="留空则透传上游">
+      <div id="caps-editor">
+        <div class="section-title" style="display:flex;align-items:center;gap:10px">
+          <span>能力参数</span>
+          <div class="pill-toggle" id="caps-mode" style="margin-left:auto">
+            <button type="button" data-caps-mode="visual" class="is-on">可视化</button>
+            <button type="button" data-caps-mode="json">JSON</button>
+          </div>
         </div>
-        <div class="field">
-          <label class="field__label">最大输出（tokens）</label>
-          <input class="input" id="c-max" type="number" min="0" value="${caps.max_output || ''}" placeholder="留空则透传上游">
+        <div class="field__hint" style="margin:-4px 0 12px">这些参数只用于模型广场和模型列表的展示，网关不会根据它们校验、裁剪或改写请求；留空表示不声明。全部留空时不会做任何能力相关的处理（模型名替换和协议转换仍会正常进行）。</div>
+        <div id="caps-visual">
+          <div class="form-row">
+            <div class="field">
+              <label class="field__label">上下文长度（tokens）</label>
+              <input class="input" id="c-ctx" type="number" min="0" value="${c.context_length == null ? '' : c.context_length}" placeholder="留空表示不声明">
+            </div>
+            <div class="field">
+              <label class="field__label">最大输出（tokens）</label>
+              <input class="input" id="c-max" type="number" min="0" value="${c.max_output == null ? '' : c.max_output}" placeholder="留空表示不声明">
+            </div>
+          </div>
+          ${tri('tool', '工具调用（Function Calling）', c.tool_calling, '仅用于展示，不会据此剥离 tools 字段。')}
+          ${tri('think', '思考（Reasoning）', c.thinking, '仅用于展示，不会据此移除 reasoning_effort、thinking 等参数。')}
+          ${tri('vision', '图片输入（Vision）', c.vision, '仅用于展示，不会据此过滤消息里的图片内容。')}
         </div>
-      </div>
-      ${tri('tool', '工具调用（Function Calling）', caps.tool_calling, '选择「不支持」时，网关会在转发前剥离请求里的 tools 字段。')}
-      ${tri('think', '思考（Reasoning）', caps.thinking, '选择「不支持」时，会移除 reasoning_effort、thinking 等参数。')}
-      ${tri('vision', '图片输入（Vision）', caps.vision, '选择「不支持」时，会自动过滤掉消息中的图片内容。')}`;
+        <div id="caps-json" style="display:none">
+          <textarea class="textarea" id="c-caps-json" spellcheck="false" style="min-height:150px" placeholder='{"context_length":128000,"max_output":8192,"tool_calling":true}'></textarea>
+          <div class="btn-row mt-8">
+            <button class="btn btn--sm" type="button" data-act="copy-caps-json">${icon('copy', 13)}复制 JSON</button>
+            <button class="btn btn--sm" type="button" data-act="paste-caps-json">${icon('paste', 13)}粘贴 JSON</button>
+          </div>
+          <div class="field__hint">可直接粘贴能力参数对象。支持 context_length、max_output、tool_calling、thinking、vision 五个字段，null 或留空表示不声明。</div>
+        </div>
+      </div>`;
   }
 
-  function readCapsEditor(scope) {
+  const capsSerialize = (caps) => {
+    const out = {};
+    CAPS_KEYS.forEach((k) => {
+      if (caps && caps[k] !== undefined && caps[k] !== null) out[k] = caps[k];
+    });
+    return JSON.stringify(out, null, 2);
+  };
+
+  function capsParseJSON(text) {
+    if (!String(text || '').trim()) return {};
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      throw new Error('JSON 解析失败：' + e.message);
+    }
+    // 兼容直接粘贴 { "caps": { ... } } 的模型片段
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      && parsed.caps && typeof parsed.caps === 'object' && !Array.isArray(parsed.caps)) {
+      parsed = parsed.caps;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('需要一个能力参数对象，例如 {"context_length":128000}');
+    }
+    const out = {};
+    Object.keys(parsed).forEach((k) => {
+      if (!CAPS_KEYS.includes(k)) throw new Error(`不支持的字段：${k}`);
+      const v = parsed[k];
+      if (v === null || v === undefined || v === '') return;
+      if (k === 'context_length' || k === 'max_output') {
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 0) throw new Error(`${k} 需为非负整数`);
+        out[k] = n;
+      } else {
+        if (typeof v !== 'boolean') throw new Error(`${k} 需为 true / false`);
+        out[k] = v;
+      }
+    });
+    return out;
+  }
+
+  function readCapsVisual(scope) {
     const num = (id) => {
-      const v = scope.querySelector('#' + id).value.trim();
-      return v === '' ? null : Number(v);
+      const el = scope.querySelector('#' + id);
+      if (!el) return null;
+      const v = el.value.trim();
+      if (v === '') return null;
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0) throw new Error('上下文长度和最大输出需为非负整数');
+      return n;
     };
     const tri = (id) => {
       const on = scope.querySelector(`[data-tri=${id}] .tristate__opt.is-on`);
@@ -2247,6 +2340,36 @@
     return caps;
   }
 
+  function applyCapsVisual(scope, caps) {
+    const set = (id, v) => {
+      const el = scope.querySelector('#' + id);
+      if (el) el.value = v == null ? '' : v;
+    };
+    set('c-ctx', caps.context_length);
+    set('c-max', caps.max_output);
+    [['tool', caps.tool_calling], ['think', caps.thinking], ['vision', caps.vision]].forEach(([id, v]) => {
+      const group = scope.querySelector(`[data-tri=${id}]`);
+      if (!group) return;
+      group.querySelectorAll('.tristate__opt').forEach((opt) => {
+        const on = v == null
+          ? opt.dataset.value === 'auto'
+          : (v ? opt.dataset.value === 'yes' : opt.dataset.value === 'no');
+        opt.classList.toggle('is-on', on);
+      });
+    });
+  }
+
+  function readCapsEditor(scope) {
+    const editor = scope.querySelector('#caps-editor');
+    if (editor) {
+      const jsonEl = editor.querySelector('#caps-json');
+      if (jsonEl && jsonEl.style.display !== 'none') {
+        return capsParseJSON(editor.querySelector('#c-caps-json').value);
+      }
+    }
+    return readCapsVisual(scope);
+  }
+
   function bindCapsEditor(scope) {
     scope.querySelectorAll('.tristate').forEach((group) => {
       group.querySelectorAll('.tristate__opt').forEach((opt) => {
@@ -2256,6 +2379,63 @@
         };
       });
     });
+
+    const editor = scope.querySelector('#caps-editor');
+    if (!editor) return;
+    const visualEl = editor.querySelector('#caps-visual');
+    const jsonEl = editor.querySelector('#caps-json');
+    const jsonInput = editor.querySelector('#c-caps-json');
+    const modeEl = editor.querySelector('#caps-mode');
+    let mode = 'visual';
+
+    const setMode = (next) => {
+      if (next === mode) return;
+      if (next === 'json') {
+        try {
+          jsonInput.value = capsSerialize(readCapsVisual(scope));
+        } catch (e) {
+          Toast.error(e.message, '能力参数格式有误');
+          return;
+        }
+      } else {
+        let caps;
+        try {
+          caps = capsParseJSON(jsonInput.value);
+        } catch (e) {
+          Toast.error(e.message, 'JSON 格式有误');
+          return;
+        }
+        applyCapsVisual(scope, caps);
+      }
+      mode = next;
+      visualEl.style.display = next === 'visual' ? '' : 'none';
+      jsonEl.style.display = next === 'json' ? '' : 'none';
+      modeEl.querySelectorAll('[data-caps-mode]').forEach((b) => {
+        b.classList.toggle('is-on', b.dataset.capsMode === next);
+      });
+    };
+
+    modeEl.querySelectorAll('[data-caps-mode]').forEach((b) => {
+      b.onclick = () => setMode(b.dataset.capsMode);
+    });
+    const copyBtn = editor.querySelector('[data-act=copy-caps-json]');
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        if (mode !== 'json') {
+          try {
+            jsonInput.value = capsSerialize(readCapsVisual(scope));
+          } catch (e) {
+            Toast.error(e.message, '能力参数格式有误');
+            return;
+          }
+        }
+        copyText(jsonInput.value, '能力参数 JSON ');
+      };
+    }
+    const pasteBtn = editor.querySelector('[data-act=paste-caps-json]');
+    if (pasteBtn) {
+      pasteBtn.onclick = () => pasteTextInto(jsonInput);
+    }
   }
 
   // ---------- 自定义模型（弹窗1 + 弹窗2 + 分组/权重/拖拽） ----------
@@ -2263,7 +2443,7 @@
     const isNew = !existing;
     const m = existing || {
       id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
-      param_source: '', caps: {}, enabled: true, display_name: '', description: '', tags: [],
+      caps: {}, enabled: true, display_name: '', description: '', tags: [],
     };
     // 本地编辑态
     const draft = {
@@ -2271,8 +2451,7 @@
         model_id: r.model_id, channel_id: r.channel_id, upstream: r.upstream, channel_name: r.channel_name,
         weight: r.weight || 0, group: r.group || 0,
       })),
-      caps: m.effective_caps || m.caps || {},
-      paramSource: m.param_source || '',
+      caps: m.caps || {},
     };
 
     // 目标路由模型的长说明收进问号：悬停看摘要，点击看完整规则
@@ -2303,6 +2482,7 @@
           <textarea class="textarea" id="cm-route-json" spellcheck="false" style="min-height:180px" placeholder='[{"channel_id":"渠道ID","upstream":"模型名","weight":0,"group":0}]'></textarea>
           <div class="btn-row mt-8">
             <button class="btn btn--sm" data-act="copy-json">${icon('copy', 13)}复制 JSON</button>
+            <button class="btn btn--sm" data-act="paste-json">${icon('paste', 13)}粘贴 JSON</button>
           </div>
           <div class="field__hint">可直接复制粘贴复用。channel_id + upstream 定位渠道模型；相同 group 且相邻的条目自动成组；weight 决定组内第一个尝试的条目（按比例随机，全部相等时等概率），失败后按组内配置顺序顺延。</div>
         </div>
@@ -2339,12 +2519,6 @@
         <div class="field__hint">模型广场会按提供商分类，并自动使用提供商的图标。「自动识别」按模型名匹配关键词。</div>
       </div>
 
-      <div class="field">
-        <label class="field__label">参数来源</label>
-        <select class="select" id="cm-paramsrc"></select>
-        <div class="field__hint">选择「使用本模型的参数」时，下面手动配置；也可以直接复用某个已配置模型的参数。</div>
-      </div>
-
       <div id="caps-host"></div>
 
       <div class="field mt-16">
@@ -2362,7 +2536,6 @@
       onMount(mo) {
         const routeHost = mo.body.querySelector('#route-host');
         const capsHost = mo.body.querySelector('#caps-host');
-        const paramSel = mo.body.querySelector('#cm-paramsrc');
         // 渠道实时状态：路由条目上显示「渠道已禁用」或「渠道模型不存在」徽章
         // （异步加载后重渲染路由列表；加载完成前不显示状态，避免误报）
         const channelState = {};
@@ -2910,18 +3083,8 @@
 
 
         const renderCaps = () => {
-          const usingOwn = !draft.paramSource;
-          capsHost.innerHTML = capsEditorHtml(usingOwn ? draft.caps : {}, {});
-          if (!usingOwn) {
-            capsHost.style.opacity = '.45';
-            capsHost.style.pointerEvents = 'none';
-            capsHost.insertAdjacentHTML('afterbegin',
-              `<div class="alert alert--info" style="margin-bottom:12px">${icon('info', 15)}<div>当前使用模型 <code>${esc(draft.paramSource)}</code> 的参数，下方配置已停用。</div></div>`);
-          } else {
-            capsHost.style.opacity = '';
-            capsHost.style.pointerEvents = '';
-            bindCapsEditor(capsHost);
-          }
+          capsHost.innerHTML = capsEditorHtml(draft.caps || {});
+          bindCapsEditor(capsHost);
         };
 
         const renderRoutes = (flat = false) => {
@@ -3099,16 +3262,8 @@
           bindRouteDrag();
         };
 
-        const renderParamSource = async () => {
-          const models = await State.loadModels();
-          const candidates = models.filter((x) => x.id !== m.id && x.type === 'channel');
-          paramSel.innerHTML = `<option value="">使用本模型的参数</option>` +
-            candidates.map((x) => `<option value="${esc(x.id)}"${draft.paramSource === x.id ? ' selected' : ''}>复用 ${esc(x.id)} 的参数</option>`).join('');
-        };
-
         renderRoutes();
         renderCaps();
-        renderParamSource();
 
         State.loadChannels().then((chs) => {
           (chs || []).forEach((c) => {
@@ -3117,11 +3272,6 @@
           channelStateLoaded = true;
           renderRoutes();
         }).catch(() => {});
-
-        paramSel.onchange = () => {
-          draft.paramSource = paramSel.value;
-          renderCaps();
-        };
 
         mo.body.querySelector('#cm-route-help').onclick = () => {
           openModal({
@@ -3143,6 +3293,9 @@
         });
         mo.body.querySelector('[data-act=copy-json]').onclick = () => {
           copyText(routeJsonInput.value, '路由 JSON ');
+        };
+        mo.body.querySelector('[data-act=paste-json]').onclick = () => {
+          pasteTextInto(routeJsonInput);
         };
 
         mo.body.querySelector('[data-act=pick]').onclick = () => {
@@ -3168,6 +3321,13 @@
             }
           }
           if (!draft.routes.length) { Toast.warn('请至少选择一个目标路由模型'); return; }
+          let caps;
+          try {
+            caps = readCapsEditor(capsHost);
+          } catch (e) {
+            Toast.error(e.message, '能力参数格式有误');
+            return;
+          }
 
           const payload = {
             id: newID,
@@ -3177,8 +3337,7 @@
             affinity: mo.body.querySelector('#cm-affinity').checked,
             cooldown_sec: Math.max(0, Math.min(86400, Math.round(Number(mo.body.querySelector('#cm-cooldown').value) || 0))),
             cooldown_reset: mo.body.querySelector('#cm-cooldown-reset').checked,
-            param_source: draft.paramSource,
-            caps: draft.paramSource ? {} : readCapsEditor(capsHost),
+            caps,
             enabled: mo.body.querySelector('#cm-enabled').checked,
             description: mo.body.querySelector('#cm-desc').value.trim(),
             tags: mo.body.querySelector('#cm-tags').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),

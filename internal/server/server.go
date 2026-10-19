@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ldmapi/internal/relay"
@@ -23,21 +24,24 @@ import (
 )
 
 type Server struct {
-	store     *store.Store
-	relay     *relay.Relay
-	secret    []byte
-	StartedAt time.Time
-	Version   string
+	store        *store.Store
+	relay        *relay.Relay
+	secret       []byte
+	secretMu     sync.RWMutex
+	loginLimiter *loginLimiter
+	StartedAt    time.Time
+	Version      string
 	// DevDir 非空时前端资源从磁盘目录读取，方便改前端时无需重新编译。
 	DevDir string
 }
 
 func New(st *store.Store) *Server {
 	s := &Server{
-		store:     st,
-		relay:     relay.New(st),
-		StartedAt: time.Now(),
-		Version:   "1.0.0",
+		store:        st,
+		relay:        relay.New(st),
+		loginLimiter: newLoginLimiter(),
+		StartedAt:    time.Now(),
+		Version:      "1.0.0",
 	}
 	if err := s.EnsureProviders(); err != nil {
 		log.Printf("初始化提供商失败: %v", err)
@@ -202,14 +206,13 @@ func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) isAdmin(r *http.Request) bool {
-	if c, err := r.Cookie(sessionCookie); err == nil && s.verifySession(c.Value) {
-		return true
+	// 管理端只认登录会话。API 密钥是给调用方调模型用的，
+	// 不能因为持有密钥就获得管理权限（禁用/过期的密钥同样不行）。
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return false
 	}
-	// 兼容用 API 密钥直接调管理接口的场景
-	if _, err := s.findToken(r.Header.Get("Authorization"), r.Header.Get("x-api-key")); err == nil {
-		return true
-	}
-	return false
+	return s.verifySession(c.Value)
 }
 
 // ---------- 静态资源 ----------

@@ -22,11 +22,11 @@ import (
 	"ldmapi/internal/termtitle"
 )
 
-var version = "1.5.0"
+var version = "1.6.0"
 
 func main() {
 	var (
-		host     = flag.String("host", "0.0.0.0", "监听地址")
+		host     = flag.String("host", "127.0.0.1", "监听地址")
 		port     = flag.Int("port", 6700, "监听端口")
 		dataDir  = flag.String("data", "", "数据目录（默认：可执行文件同级的 data 目录）")
 		password = flag.String("password", "", "重置管理端密码后启动（可选）")
