@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -129,15 +130,33 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	st, _ := s.store.GetSettings()
 	counts, _ := s.store.Stats()
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
 	writeOK(w, map[string]any{
 		"logged_in":        true,
 		"version":          s.Version,
 		"started_at":       s.StartedAt.UnixMilli(),
 		"uptime_seconds":   int64(time.Since(s.StartedAt).Seconds()),
+		"system":           systemName(),
+		"memory_bytes":     mem.Sys,
 		"default_password": s.CheckPassword(DefaultPassword),
 		"counts":           counts,
 		"settings":         publicSettings(st),
 	})
+}
+
+// systemName 返回便于展示的运行平台，如 “Windows · amd64”。
+func systemName() string {
+	name := runtime.GOOS
+	switch name {
+	case "windows":
+		name = "Windows"
+	case "darwin":
+		name = "macOS"
+	case "linux":
+		name = "Linux"
+	}
+	return name + " · " + runtime.GOARCH
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {

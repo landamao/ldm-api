@@ -3133,6 +3133,25 @@
       ]);
       actions.innerHTML = '';
 
+      const fmtMem = (n) => {
+        n = Number(n) || 0;
+        if (n < 1024) return n + ' B';
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+        if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+        return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+      };
+
+      const BACKUP_SCOPES = [
+        ['channels', '渠道配置', '含明文上游 Key'],
+        ['models', '模型配置', '路由与能力参数'],
+        ['providers', '提供商', '名称、图标与匹配词'],
+        ['tokens', 'API 密钥', '含明文 Key'],
+        ['settings', '系统设置', '站点信息与密码哈希'],
+        ['logs', '调用日志', '数据量大时较慢'],
+        ['stats', '统计数据', '按小时聚合'],
+      ];
+      const BACKUP_LABELS = Object.fromEntries(BACKUP_SCOPES.map(([key, label]) => [key, label]));
+
       root.innerHTML = `
         ${me.default_password ? `<div class="alert alert--warn mb-18">${icon('alert', 16)}<div>
           <span class="strong">当前仍在使用默认密码 landamao</span><br>
@@ -3214,22 +3233,63 @@
                 <div class="stat__value" style="font-size:19px">v${esc(me.version)}</div>
               </div>
               <div class="stat">
-                <div class="stat__label">已运行</div>
+                <div class="stat__label">运行时间</div>
                 <div class="stat__value" style="font-size:19px">${esc(fmtUptime(me.uptime_seconds))}</div>
               </div>
               <div class="stat">
-                <div class="stat__label">渠道 / 模型 / 密钥</div>
-                <div class="stat__value" style="font-size:19px">${me.counts.channels} / ${me.counts.models} / ${me.counts.tokens}</div>
+                <div class="stat__label">系统</div>
+                <div class="stat__value" style="font-size:19px">${esc(me.system || '—')}</div>
               </div>
               <div class="stat">
-                <div class="stat__label">累计日志</div>
-                <div class="stat__value" style="font-size:19px">${fmtInt(me.counts.logs)}</div>
+                <div class="stat__label">内存占用</div>
+                <div class="stat__value" style="font-size:19px">${esc(fmtMem(me.memory_bytes))}</div>
               </div>
             </div>
-            <div class="alert alert--info mt-16">${icon('info', 15)}<div>
-              <span class="strong">API 地址：</span><code>${esc(location.origin)}/v1</code> —— 兼容 OpenAI 协议，
-              把任何 OpenAI SDK 的 <code>base_url</code> 指向这里、<code>api_key</code> 换成令牌管理里创建的密钥即可。
-            </div></div>
+          </div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card__head">
+            <div><div class="card__title">备份导出</div><div class="card__sub">写入服务器本地 JSON，不经浏览器下载</div></div>
+            <div class="card__actions">
+              <label class="backup-check backup-check--all">
+                <input type="checkbox" id="backup-all"><span><b>全选</b></span>
+              </label>
+            </div>
+          </div>
+          <div class="card__body">
+            <div class="backup-scopes" id="backup-scopes">
+              ${BACKUP_SCOPES.map(([key, label, hint]) => `
+                <label class="backup-check">
+                  <input type="checkbox" value="${key}">
+                  <span><b>${label}</b><em>${hint}</em></span>
+                </label>`).join('')}
+            </div>
+            <div class="alert alert--warn mt-12">
+              ${icon('alert', 15)}
+              <div>
+                文件写入在运行网关的设备上（数据目录下的 <code>backups</code> 文件夹），
+                为确保安全性，<b>无法通过浏览器下载</b>。文件包含明文上游 Key 和 API 密钥，请妥善保管。
+                导出期间会暂停所有数据写入，直到导出完成。
+              </div>
+            </div>
+            <div class="btn-row mt-12">
+              <button class="btn btn--primary" id="backup-export">${icon('file', 14)}导出备份</button>
+              <select class="select" id="backup-indent" aria-label="JSON 缩进" style="width:auto;min-width:132px">
+                <option value="0">紧凑（无缩进）</option>
+                <option value="2" selected>2 空格缩进</option>
+                <option value="4">4 空格缩进</option>
+              </select>
+              <span class="muted fs-12">远程部署时请通过 SSH / SFTP 到该路径取回文件</span>
+            </div>
+            <div id="backup-result"></div>
+          </div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card__body" style="display:flex;align-items:center;justify-content:center;gap:5px;padding:14px 20px">
+            <span class="muted fs-12">设计与开发由</span>
+            <a href="https://github.com/landamao" target="_blank" rel="noopener noreferrer" class="strong">懒大猫</a>
           </div>
         </div>`;
 
@@ -3257,6 +3317,55 @@
       };
       logoInput.addEventListener('input', debounce(syncPreview, 300));
       syncPreview();
+
+      // 导出范围：全选框跟随子项状态，部分选中时显示为半选。
+      const scopeInputs = Array.from(q('#backup-scopes').querySelectorAll('input[type="checkbox"]'));
+      const allInput = q('#backup-all');
+      const syncAll = () => {
+        const checked = scopeInputs.filter((x) => x.checked).length;
+        allInput.checked = checked === scopeInputs.length;
+        allInput.indeterminate = checked > 0 && checked < scopeInputs.length;
+      };
+      allInput.onchange = () => {
+        scopeInputs.forEach((x) => { x.checked = allInput.checked; });
+        syncAll();
+      };
+      scopeInputs.forEach((x) => { x.onchange = syncAll; });
+      syncAll();
+
+      q('#backup-export').onclick = async () => {
+        const scopes = scopeInputs.filter((x) => x.checked).map((x) => x.value);
+        if (!scopes.length) {
+          Toast.warn('请至少选择一个导出范围');
+          return;
+        }
+        const btn = q('#backup-export');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>导出中';
+        try {
+          const indent = Number(q('#backup-indent').value) || 0;
+          const res = await API.post('/api/backup/export', { scopes, indent });
+          const counts = res.counts || {};
+          const parts = Object.keys(counts)
+            .map((key) => `${BACKUP_LABELS[key] || key} ${fmtInt(counts[key])}`);
+          q('#backup-result').innerHTML = `
+            <div class="backup-result">
+              <div class="backup-result__head">${icon('check', 15)}<span>已导出 ${esc(res.file)}</span></div>
+              <div class="backup-result__path mono">${esc(res.path)}</div>
+              <div class="backup-result__meta">${fmtMem(res.size)}${parts.length ? ' · ' + esc(parts.join(' · ')) : ''}</div>
+              <div class="btn-row mt-8">
+                <button class="btn btn--sm" id="backup-copy">${icon('copy', 12)}复制路径</button>
+              </div>
+            </div>`;
+          q('#backup-copy').onclick = () => copyText(res.path, '备份路径');
+          Toast.success('备份已写入服务器本地');
+        } catch (e) {
+          Toast.error(e.message, '导出失败');
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = window.LDM.icon('file', 14) + '导出备份';
+        }
+      };
 
       q('#s-save').onclick = async () => {
         const btn = q('#s-save');

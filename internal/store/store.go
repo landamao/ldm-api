@@ -65,6 +65,18 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// Path 返回数据库文件路径，供需要同目录存放文件的调用方使用。
+func (s *Store) Path() string { return s.db.Path() }
+
+// WithWriteLock 在 fn 执行期间持有写锁，阻塞所有写操作（保存、删除、日志、统计等）。
+// 备份导出用它保证各个范围读到的数据来自同一时刻，不会与写入交错。
+// fn 内部只能调用读方法，否则会重复加锁造成死锁。
+func (s *Store) WithWriteLock(fn func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return fn()
+}
+
 func put(b *bolt.Bucket, key string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -461,6 +473,20 @@ func (s *Store) CountLogs() (int, error) {
 		return nil
 	})
 	return n, err
+}
+
+// ForEachLog 按存储顺序（最新的在前）遍历全部日志。
+// 导出时用它流式写入文件，避免把大量日志一次性读进内存。
+func (s *Store) ForEachLog(fn func(Log) error) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bLogs).ForEach(func(_, v []byte) error {
+			var l Log
+			if err := json.Unmarshal(v, &l); err != nil {
+				return nil // 跳过损坏记录，不影响其余日志导出
+			}
+			return fn(l)
+		})
+	})
 }
 
 // ---------- Stats ----------

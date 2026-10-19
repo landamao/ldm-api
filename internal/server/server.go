@@ -31,6 +31,9 @@ type Server struct {
 	loginLimiter *loginLimiter
 	StartedAt    time.Time
 	Version      string
+	// DataDir 是数据目录，备份文件写到 <DataDir>/backups。
+	// 为空时回退到数据库文件所在目录。
+	DataDir string
 	// DevDir 非空时前端资源从磁盘目录读取，方便改前端时无需重新编译。
 	DevDir string
 }
@@ -104,6 +107,9 @@ func (s *Server) Handler() http.Handler {
 	// ---- 设置 ----
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.admin(s.saveSettings))
+
+	// ---- 备份导出 ----
+	mux.HandleFunc("POST /api/backup/export", s.admin(s.exportBackup))
 
 	// ---- 模型广场 / 在线对话 ----
 	mux.HandleFunc("GET /api/plaza", s.admin(s.plaza))
