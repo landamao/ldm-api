@@ -23,6 +23,22 @@ const maxCooldownSec = 86400
 // routeKey 生成一条路由的全局唯一键。
 func routeKey(chID, upstream string) string { return chID + "/" + upstream }
 
+// channelHasModel 判断渠道的模型列表里是否还有这个上游模型。
+// 只有渠道仍列出的模型才允许转发：从渠道里删掉模型后，即使上游还认得，
+// 模型设置里的残留路由也不能再被调用。
+func channelHasModel(ch store.Channel, upstream string) bool {
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return false
+	}
+	for _, m := range ch.Models {
+		if strings.TrimSpace(m) == upstream {
+			return true
+		}
+	}
+	return false
+}
+
 // routeStates 记录路由的运行时状态。key 是「渠道ID/上游模型」：
 // 同一渠道模型被多个自定义模型引用时共享状态——上游真的挂了，对所有引用它的模型都该冷却。
 var routeStates = struct {
@@ -171,15 +187,16 @@ type planCandidate struct {
 // PlanRoute 生成一次请求的尝试链。
 // channels 是已确认存在的渠道表；enabled 判断渠道是否启用。
 // 全部条目都在冷却中且未开重置时返回 nil（调用方给出「不可用」原因）。
+// 第二个返回值表示本次是否命中了模型亲和（上次成功的条目被提到链首），用于日志标记。
 //
 // 规则：
-//  1. 剔除渠道禁用与冷却中的条目；全被冷却时按 CooldownReset 重置所有冷却再来一遍。
+//  1. 剔除渠道禁用、渠道已移除该模型与冷却中的条目；全被冷却时按 CooldownReset 重置所有冷却再来一遍。
 //  2. 按配置顺序把连续同 Group 的条目切成优先级组（Group 为 0 的条目每条自成一组），
 //     组间按顺序故障转移；组内按权重加权随机抽出首选，其余保持配置顺序在组内顺延。
 //  3. 开启亲和且上次成功的条目可用时，把它提到整条链的最前面（无论它属于哪个组）。
-func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(string) bool) []planCandidate {
+func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(string) bool) ([]planCandidate, bool) {
 	if len(m.Routes) == 0 {
-		return nil
+		return nil, false
 	}
 	cooldown := time.Duration(m.CooldownSec) * time.Second
 	if cooldown <= 0 {
@@ -191,7 +208,7 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 	routeStates.Lock()
 	for i, rt := range m.Routes {
 		ch, ok := channels[rt.ChannelID]
-		if !ok || !enabled(rt.ChannelID) {
+		if !ok || !enabled(rt.ChannelID) || !channelHasModel(ch, rt.Upstream) {
 			continue
 		}
 		c := planCandidate{cfgIdx: i, rt: rt, ch: ch}
@@ -213,7 +230,7 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 
 	if len(live) == 0 {
 		if !m.CooldownReset || len(all) == 0 {
-			return nil
+			return nil, false
 		}
 		keys := make([]string, 0, len(all))
 		for _, c := range all {
@@ -253,6 +270,7 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 	}
 
 	// 亲和：上次成功的条目提到链首
+	affinityHit := false
 	if m.Affinity {
 		routeStates.Lock()
 		last := routeStates.lastRoute[m.ID]
@@ -261,10 +279,11 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 			for i, c := range chain {
 				if routeKey(c.rt.ChannelID, c.rt.Upstream) == last {
 					chain = append([]planCandidate{c}, append(chain[:i:i], chain[i+1:]...)...)
+					affinityHit = true
 					break
 				}
 			}
 		}
 	}
-	return chain
+	return chain, affinityHit
 }

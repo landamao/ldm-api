@@ -63,6 +63,8 @@ type Resolved struct {
 	Model   store.Model
 	Routes  []Route
 	NoRoute string // 有模型但没有任何可用路由时的原因
+	// Affinity 表示本次命中了模型亲和：上次成功的路由被提到了链首。
+	Affinity bool
 }
 
 // 常见错误
@@ -97,6 +99,10 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 			res.NoRoute = fmt.Sprintf("渠道「%s」已禁用", ch.ID)
 			return res, nil
 		}
+		if !channelHasModel(ch, m.Upstream) {
+			// 渠道里已没有这个模型：解析阶段直接跳过，不单独给错误原因。
+			return res, nil
+		}
 		res.Routes = []Route{{Channel: ch, Upstream: m.Upstream}}
 	case store.ModelTypeCustom:
 		chans, err := r.Store.ListChannels()
@@ -107,15 +113,19 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 		for _, c := range chans {
 			byID[c.ID] = c
 		}
-		plan := PlanRoute(m, byID, func(id string) bool { return byID[id].Enabled })
+		plan, affinity := PlanRoute(m, byID, func(id string) bool { return byID[id].Enabled })
 		if plan == nil {
-			// 区分「渠道全挂」和「全在冷却中」两种不可用
+			// 区分「渠道全挂」和「全在冷却中」两种不可用。
+			// 渠道里已删除的模型在解析阶段就被跳过，不计入不可用原因。
 			var unavailable []string
 			cooling := false
 			for _, rt := range m.Routes {
 				ch, ok := byID[rt.ChannelID]
 				if !ok || !ch.Enabled {
 					unavailable = append(unavailable, rt.ChannelID+"/"+rt.Upstream)
+					continue
+				}
+				if !channelHasModel(ch, rt.Upstream) {
 					continue
 				}
 				cooling = true
@@ -129,6 +139,7 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 			}
 			return res, nil
 		}
+		res.Affinity = affinity
 		for _, c := range plan {
 			res.Routes = append(res.Routes, Route{Channel: c.ch, Upstream: c.rt.Upstream, Group: c.rt.Group, CfgIndex: c.cfgIdx})
 		}
@@ -178,6 +189,8 @@ type Result struct {
 	CachedTokens int
 	// Attempts 是每次路由尝试的明细，仅在重试过（尝试次数 > 1）时保留。
 	Attempts []store.LogAttempt
+	// Affinity 表示本次请求命中了模型亲和（上次成功的路由被优先尝试），用于日志标记。
+	Affinity bool
 	// Canceled 表示客户端主动断开（例如在线对话里点了「停止」），
 	// 这种请求不计入渠道失败与成功率统计。
 	Canceled bool
@@ -244,6 +257,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
 	}
+	res.Affinity = resolved.Affinity
 
 	var lastErr string
 	var lastStatus int

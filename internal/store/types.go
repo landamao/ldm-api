@@ -187,6 +187,9 @@ type Log struct {
 	// Attempts 是本次请求的每次路由尝试，仅在重试过（尝试次数 > 1）时记录。
 	Attempts []LogAttempt `json:"attempts,omitempty"`
 
+	// Affinity 表示本次请求命中了模型亲和：上次成功的路由被优先尝试。
+	Affinity bool `json:"affinity,omitempty"`
+
 	// ReasoningChars 是本次响应里思考内容的字符数，模型没输出思考时为 0。
 	ReasoningChars int `json:"reasoning_chars,omitempty"`
 	// ReasoningTokens 是上游单独上报的思考 token 数，未上报时为 0。

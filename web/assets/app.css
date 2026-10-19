@@ -621,6 +621,14 @@ html[data-theme="dark"] .badge--tag {
 .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge--click { appearance: none; font-family: inherit; cursor: pointer; }
 .badge--click:hover { filter: brightness(.96); }
+/* 模型亲和标记：橙色星星叠在模型徽章右上角（对齐 NewAPI 的渠道亲和标） */
+.affinity-star {
+  position: absolute; right: -5px; top: -5px;
+  display: inline-flex; line-height: 0;
+  color: var(--amber-500);
+  cursor: help;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .18));
+}
 
 .badge-group { display: flex; gap: 5px; flex-wrap: wrap; }
 

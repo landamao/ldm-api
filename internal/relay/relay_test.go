@@ -193,6 +193,109 @@ func TestResolveNoAvailableRoutes(t *testing.T) {
 	}
 }
 
+// 渠道里已经删掉的模型，即使模型设置里还保留着配置，也不能再转发。
+func TestResolveChannelModelRemovedFromChannel(t *testing.T) {
+	st := newTestStore(t)
+	seedChannels(t, st)
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "A/x", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "x",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := New(st)
+	res, err := r.Resolve("A/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Routes) != 0 {
+		t.Fatalf("渠道未添加的模型不应有可用路由，得到 %+v", res.Routes)
+	}
+	if res.NoRoute != "" {
+		t.Errorf("被跳过的模型不应单独报原因，得到 %q", res.NoRoute)
+	}
+
+	rec := httptest.NewRecorder()
+	out := New(st).Do(context.Background(), rec, &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: []byte(`{"model":"A/x"}`),
+		JSON: map[string]any{"model": "A/x"},
+	})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("状态码应为 503，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "模型「A/x」当前没有可用渠道") {
+		t.Errorf("对外文案应与无可用渠道一致，得到 %s", rec.Body.String())
+	}
+	if out.Err != "" {
+		t.Errorf("被跳过的模型不应记录专门错误，得到 %q", out.Err)
+	}
+}
+
+// 自定义模型的路由里混有渠道已删除的模型时，只跳过失效的那几条。
+func TestResolveCustomSkipsRemovedChannelModels(t *testing.T) {
+	st := newTestStore(t)
+	seedChannels(t, st)
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "LDM", Type: store.ModelTypeCustom,
+		Routes: []store.Route{
+			{ChannelID: "A", Upstream: "c"},
+			{ChannelID: "A", Upstream: "x"},
+			{ChannelID: "B", Upstream: "d"},
+		},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "GONE", Type: store.ModelTypeCustom,
+		Routes:  []store.Route{{ChannelID: "A", Upstream: "x"}},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := New(st)
+	res, err := r.Resolve("LDM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Routes) != 2 || res.Routes[0].Channel.ID != "A" || res.Routes[1].Channel.ID != "B" {
+		t.Fatalf("应跳过渠道已移除的模型，得到 %+v", res.Routes)
+	}
+
+	gone, err := r.Resolve("GONE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gone.Routes) != 0 {
+		t.Fatalf("所有路由都被移除时不应有可用路由，得到 %+v", gone.Routes)
+	}
+	// 被移除的路由在解析阶段就跳过，与「没有配置路由」同等对待，不再单独报原因
+	if gone.NoRoute != "该自定义模型尚未配置路由目标" {
+		t.Errorf("被移除的路由不应单独报原因，得到 %q", gone.NoRoute)
+	}
+
+	// 剩下的有效路由全部冷却时，原因应如实报冷却，而不是已跳过的路由
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+	MarkFailure("A", "c")
+	MarkFailure("B", "d")
+	cooling, err := r.Resolve("LDM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cooling.Routes) != 0 {
+		t.Fatalf("有效路由都在冷却时不应有可用路由，得到 %+v", cooling.Routes)
+	}
+	if cooling.NoRoute != "所有路由都在失败冷却中" {
+		t.Errorf("应报冷却原因，得到 %q", cooling.NoRoute)
+	}
+}
+
 func TestWeightedGroupPicksInside(t *testing.T) {
 	st := newTestStore(t)
 	seedChannels(t, st)
@@ -289,6 +392,9 @@ func TestAffinityMovesLastSuccessToFront(t *testing.T) {
 		if res.Routes[0].Channel.ID != "B" {
 			t.Fatalf("开启亲和后应从上次成功的 B/d 开始，得到 %s", res.Routes[0].Channel.ID)
 		}
+		if !res.Affinity {
+			t.Fatal("命中亲和时 Resolve 应标记 Affinity")
+		}
 	}
 	// 未开启亲和的模型不受影响
 	_ = st.SaveModel(store.Model{
@@ -302,6 +408,9 @@ func TestAffinityMovesLastSuccessToFront(t *testing.T) {
 	res, _ := r.Resolve("NO")
 	if res.Routes[0].Channel.ID != "A" {
 		t.Errorf("未开启亲和应保持配置顺序，得到 %s", res.Routes[0].Channel.ID)
+	}
+	if res.Affinity {
+		t.Error("未开启亲和的模型不应标记 Affinity")
 	}
 }
 
@@ -856,8 +965,8 @@ func TestRetryHistoryRecordsFailedAttempts(t *testing.T) {
 	defer good.Close()
 
 	for _, c := range []store.Channel{
-		{ID: "hist-bad", Name: "故障线路", Type: store.ChannelOpenAI, BaseURL: bad.URL, Enabled: true, CreatedAt: now, UpdatedAt: now},
-		{ID: "hist-good", Name: "正常线路", Type: store.ChannelOpenAI, BaseURL: good.URL, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "hist-bad", Name: "故障线路", Type: store.ChannelOpenAI, BaseURL: bad.URL, Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "hist-good", Name: "正常线路", Type: store.ChannelOpenAI, BaseURL: good.URL, Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now},
 	} {
 		if err := st.SaveChannel(c); err != nil {
 			t.Fatal(err)
@@ -919,7 +1028,7 @@ func TestNoRetryKeepsAttemptsEmpty(t *testing.T) {
 	now := time.Now().UnixMilli()
 	if err := st.SaveChannel(store.Channel{
 		ID: "single", Name: "单线路", Type: store.ChannelOpenAI, BaseURL: srv.URL,
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
+		Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -953,8 +1062,8 @@ func TestCanceledRequestRecordsAffinity(t *testing.T) {
 	st := newTestStore(t)
 	now := time.Now().UnixMilli()
 	for _, c := range []store.Channel{
-		{ID: "cancel-a", Name: "主线路", Type: store.ChannelOpenAI, BaseURL: "http://127.0.0.1:1", Enabled: false, CreatedAt: now, UpdatedAt: now},
-		{ID: "cancel-b", Name: "备用线路", Type: store.ChannelOpenAI, BaseURL: "http://127.0.0.1:1", Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "cancel-a", Name: "主线路", Type: store.ChannelOpenAI, BaseURL: "http://127.0.0.1:1", Models: []string{"a"}, Enabled: false, CreatedAt: now, UpdatedAt: now},
+		{ID: "cancel-b", Name: "备用线路", Type: store.ChannelOpenAI, BaseURL: "http://127.0.0.1:1", Models: []string{"b"}, Enabled: true, CreatedAt: now, UpdatedAt: now},
 	} {
 		if err := st.SaveChannel(c); err != nil {
 			t.Fatal(err)
@@ -1031,8 +1140,8 @@ func TestUpstreamStreamDisconnectMarksFailure(t *testing.T) {
 	defer good.Close()
 
 	for _, c := range []store.Channel{
-		{ID: "stream-bad", Name: "断流线路", Type: store.ChannelOpenAI, BaseURL: broken.URL, Enabled: true, CreatedAt: now, UpdatedAt: now},
-		{ID: "stream-good", Name: "正常线路", Type: store.ChannelOpenAI, BaseURL: good.URL, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "stream-bad", Name: "断流线路", Type: store.ChannelOpenAI, BaseURL: broken.URL, Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "stream-good", Name: "正常线路", Type: store.ChannelOpenAI, BaseURL: good.URL, Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now},
 	} {
 		if err := st.SaveChannel(c); err != nil {
 			t.Fatal(err)
@@ -1093,7 +1202,7 @@ func TestClientDisconnectAfterDoneCountsAsSuccess(t *testing.T) {
 
 	if err := st.SaveChannel(store.Channel{
 		ID: "done-ch", Name: "正常线路", Type: store.ChannelOpenAI, BaseURL: up.URL,
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
+		Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1146,7 +1255,7 @@ func TestClientDisconnectMidStreamMarksCanceled(t *testing.T) {
 
 	if err := st.SaveChannel(store.Channel{
 		ID: "mid-ch", Name: "正常线路", Type: store.ChannelOpenAI, BaseURL: up.URL,
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
+		Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1216,7 +1325,7 @@ func TestClientErrorsHideInternals(t *testing.T) {
 		t.Helper()
 		if err := st.SaveChannel(store.Channel{
 			ID: "secret-chan", Name: "内部线路", Type: store.ChannelOpenAI,
-			BaseURL: baseURL, Enabled: enabled, CreatedAt: now, UpdatedAt: now,
+			BaseURL: baseURL, Models: []string{"m"}, Enabled: enabled, CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1395,7 +1504,7 @@ func seedSingleRoute(t *testing.T, st *store.Store, channelID, baseURL string, t
 	now := time.Now().UnixMilli()
 	if err := st.SaveChannel(store.Channel{
 		ID: channelID, Name: channelID, Type: store.ChannelOpenAI,
-		BaseURL: baseURL, Enabled: true, CreatedAt: now, UpdatedAt: now,
+		BaseURL: baseURL, Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}

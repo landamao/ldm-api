@@ -1576,7 +1576,7 @@ func TestChatRawBodyPassesThrough(t *testing.T) {
 	now := time.Now().UnixMilli()
 	if err := st.SaveChannel(store.Channel{
 		ID: "A", Type: store.ChannelOpenAI, BaseURL: up.URL,
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
+		Models: []string{"a"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1627,7 +1627,7 @@ func TestChatPassesSamplingParameters(t *testing.T) {
 	now := time.Now().UnixMilli()
 	if err := st.SaveChannel(store.Channel{
 		ID: "A", Type: store.ChannelOpenAI, BaseURL: up.URL,
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
+		Models: []string{"a"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1966,7 +1966,7 @@ func TestRecordPersistsAttempts(t *testing.T) {
 	req := &relay.Request{Path: "/v1/chat/completions", Method: http.MethodPost}
 	res := &relay.Result{
 		ModelID: "hist/model", ChannelID: "B", UpstreamModel: "m",
-		StatusCode: http.StatusOK, Retries: 1,
+		StatusCode: http.StatusOK, Retries: 1, Affinity: true,
 		Attempts: []store.LogAttempt{
 			{ChannelID: "A", ChannelName: "主线路", UpstreamModel: "m",
 				StatusCode: http.StatusInternalServerError, LatencyMs: 12, Error: "渠道「A」返回 500: boom"},
@@ -1994,6 +1994,9 @@ func TestRecordPersistsAttempts(t *testing.T) {
 	if got.Attempts[1].ChannelID != "B" || got.Attempts[1].StatusCode != 200 ||
 		got.Attempts[1].Error != "" {
 		t.Errorf("第二次尝试明细错误: %+v", got.Attempts[1])
+	}
+	if !got.Affinity {
+		t.Error("亲和标记未持久化")
 	}
 }
 
@@ -2051,7 +2054,7 @@ func TestClientDisconnectAfterDoneIsNotLoggedCanceled(t *testing.T) {
 
 	if err := st.SaveChannel(store.Channel{
 		ID: "e2e-ch", Name: "端到端线路", Type: store.ChannelOpenAI, BaseURL: up.URL,
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
+		Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2141,7 +2144,7 @@ func TestAPIKeyOnlyReachesModelEndpoints(t *testing.T) {
 	now := time.Now().UnixMilli()
 	if err := st.SaveChannel(store.Channel{
 		ID: "A", Type: store.ChannelOpenAI, BaseURL: up.URL,
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
+		Models: []string{"a"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}

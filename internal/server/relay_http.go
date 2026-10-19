@@ -161,6 +161,7 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		Stream:           req.Stream,
 		Retries:          res.Retries,
 		Attempts:         res.Attempts,
+		Affinity:         res.Affinity,
 		IP:               req.IP,
 		ReasoningChars:   res.ReasoningChars,
 		ReasoningTokens:  res.ReasoningTokens,

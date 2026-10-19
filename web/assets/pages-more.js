@@ -24,6 +24,12 @@
   const logOK = (l) => !l.canceled && l.status_code > 0 && l.status_code < 400
     && !l.error && !l.client_error;
 
+  // 模型亲和标记：橙色四角星叠在模型徽章右上角，样式对齐 NewAPI 的渠道亲和标。
+  const AFFINITY_STAR = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M10.9 2.4l1.9 5.3a2.6 2.6 0 001.5 1.5l5.3 1.9-5.3 1.9a2.6 2.6 0 00-1.5 1.5l-1.9 5.3-1.9-5.3a2.6 2.6 0 00-1.5-1.5L2.2 11.1l5.3-1.9a2.6 2.6 0 001.5-1.5z"/><path d="M19 2l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z"/></svg>`;
+  const affinityTitle = (l) => l.retries
+    ? '模型亲和命中：优先尝试上次成功的路由，失败后已切换'
+    : '模型亲和命中：本次直接复用了上次成功的路由';
+
   // 错误详情弹窗：顶部概要只放请求模型、渠道模型、渠道和状态码，
   // 下面分成「错误详情」和「内部原因」两个独立块。错误详情是调用方实际
   // 收到的内容，内部原因只给后台排查。
@@ -2972,7 +2978,10 @@
               <td class="nowrap muted fs-12">${esc(fmtTime(l.time))}</td>
               <td>
                 <div class="flex-center gap-6" style="flex-wrap:wrap">
-                  ${colorBadge(l.model_id)}
+                  <span style="position:relative;display:inline-block">
+                    ${colorBadge(l.model_id)}
+                    ${l.affinity ? `<span class="affinity-star" title="${affinityTitle(l)}">${AFFINITY_STAR}</span>` : ''}
+                  </span>
                   ${l.stream ? '<span class="badge badge--gray">流式</span>' : ''}
                   ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
                 </div>
