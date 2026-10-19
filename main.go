@@ -22,7 +22,7 @@ import (
 	"ldmapi/internal/termtitle"
 )
 
-var version = "1.8.0"
+var version = "1.9.0"
 
 func main() {
 	var (
@@ -59,6 +59,7 @@ func main() {
 
 	srv := server.New(st)
 	srv.Version = version
+	srv.DataDir = dir
 	if dir := os.Getenv("LDMAPI_DEV"); dir != "" {
 		srv.DevDir = dir
 		log.Printf("开发模式：前端资源从 %s 读取", dir)
