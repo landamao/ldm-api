@@ -17,9 +17,16 @@
 
   function fmtNum(n) {
     n = Number(n) || 0;
-    if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-    if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(2) + '万';
+    const abs = Math.abs(n);
+    const fixed = (v) => v.toFixed(2);
+    if (abs >= 1e9) return fixed(n / 1e9) + 'B';
+    if (abs >= 1e6) {
+      // 999.995M 这类值四舍五入后会变成 1000M，需要进位到 B
+      return Math.abs(n / 1e6) >= 999.995 ? fixed(n / 1e9) + 'B' : fixed(n / 1e6) + 'M';
+    }
+    if (abs >= 1e3) {
+      return Math.abs(n / 1e3) >= 999.995 ? fixed(n / 1e6) + 'M' : fixed(n / 1e3) + 'K';
+    }
     return n.toLocaleString('zh-CN');
   }
 

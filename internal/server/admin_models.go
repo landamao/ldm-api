@@ -209,10 +209,55 @@ type modelRequest struct {
 	Affinity      *bool          `json:"affinity"`
 	CooldownSec   *int           `json:"cooldown_sec"`
 	CooldownReset *bool          `json:"cooldown_reset"`
+	Timeout       *int           `json:"timeout"`
 }
 
 func (s *Server) clearModelCooldowns(w http.ResponseWriter, r *http.Request) {
-	writeOK(w, map[string]any{"cleared": relay.ClearAllCooldowns()})
+	// 三种用法：
+	//   body {"model_ids":[...]}  批量按模型清（模型列表多选）
+	//   ?model_id= / ?channel_id= 单个模型或渠道
+	//   都不传                    清空全部
+	var req struct {
+		ModelIDs []string `json:"model_ids"`
+	}
+	if r.ContentLength > 0 {
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+	}
+	if len(req.ModelIDs) > 0 {
+		cleared := 0
+		for _, raw := range req.ModelIDs {
+			id := strings.TrimSpace(raw)
+			if id == "" {
+				continue
+			}
+			m, err := s.store.GetModel(id)
+			if err != nil {
+				continue // 选中的模型可能刚被删除，跳过
+			}
+			cleared += relay.ClearCooldownsForModel(m)
+		}
+		writeOK(w, map[string]any{"cleared": cleared})
+		return
+	}
+	q := r.URL.Query()
+	modelID := strings.TrimSpace(q.Get("model_id"))
+	channelID := strings.TrimSpace(q.Get("channel_id"))
+	switch {
+	case modelID != "":
+		m, err := s.store.GetModel(modelID)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "模型不存在")
+			return
+		}
+		writeOK(w, map[string]any{"cleared": relay.ClearCooldownsForModel(m)})
+	case channelID != "":
+		writeOK(w, map[string]any{"cleared": relay.ClearCooldownsForChannel(channelID)})
+	default:
+		writeOK(w, map[string]any{"cleared": relay.ClearAllCooldowns()})
+	}
 }
 
 func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
@@ -357,6 +402,13 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled != nil {
 		m.Enabled = *req.Enabled
 	}
+	// 超时对所有模型类型生效，0 表示默认 300 秒。
+	if req.Timeout != nil {
+		m.Timeout = *req.Timeout
+		if m.Timeout < 0 {
+			m.Timeout = 0
+		}
+	}
 	if req.DisplayName != nil {
 		m.DisplayName = strings.TrimSpace(*req.DisplayName)
 	}
@@ -381,6 +433,8 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	if renamed {
 		relay.ClearModelRoutes(currentID)
 	}
+	// 亲和记录指向的路由已从配置里删掉时一并清理，避免以后加回来时旧亲和复活
+	relay.PruneModelRoutes(m.ID, m.Routes)
 	if renamed {
 		if err := s.store.DeleteModel(currentID); err != nil {
 			writeErr(w, http.StatusInternalServerError, "旧模型记录清理失败: "+err.Error())
@@ -600,6 +654,9 @@ func (s *Server) batchDeleteModels(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteModels(req.IDs); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	for _, id := range req.IDs {
+		relay.ClearModelRoutes(id)
 	}
 	writeOK(w, map[string]any{"deleted": len(req.IDs)})
 }

@@ -70,7 +70,7 @@ func main() {
 		}
 		ch := store.Channel{
 			ID: c.id, Name: c.name, Type: c.typ, BaseURL: c.baseURL,
-			APIKey: "sk-demo-0000000000000000", Enabled: true, Weight: 1, Timeout: 300,
+			APIKey: "sk-demo-0000000000000000", Enabled: true, Weight: 1,
 			AppendV1: boolp(appendV1), Remark: c.remark,
 			CreatedAt: now - int64(len(channels)-i)*1000, UpdatedAt: now,
 		}

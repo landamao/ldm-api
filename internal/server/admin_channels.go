@@ -73,7 +73,6 @@ type channelRequest struct {
 	Headers  *map[string]string `json:"headers"`
 	Enabled  *bool              `json:"enabled"`
 	Weight   *int               `json:"weight"`
-	Timeout  *int               `json:"timeout"`
 	Remark   *string            `json:"remark"`
 }
 
@@ -160,9 +159,6 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Weight != nil {
 		ch.Weight = *req.Weight
-	}
-	if req.Timeout != nil {
-		ch.Timeout = *req.Timeout
 	}
 	if req.Remark != nil {
 		ch.Remark = strings.TrimSpace(*req.Remark)

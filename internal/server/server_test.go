@@ -1275,7 +1275,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	if err := st.SaveModel(store.Model{
 		ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a", Enabled: true,
 		DisplayName: "A 模型", Description: "渠道模型描述", Tags: []string{"tag-a"},
-		Caps: store.Caps{ContextLength: &ctx, ToolCalling: &tool},
+		Caps: store.Caps{ContextLength: &ctx, ToolCalling: &tool}, Timeout: 45,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1284,7 +1284,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 		Routes:      []store.Route{{ChannelID: "A", Upstream: "a"}},
 		DisplayName: "路由模型", Description: "自定义描述", Tags: []string{"tag-b"},
 		Caps:     store.Caps{MaxOutput: &ctx},
-		Affinity: true, CooldownSec: 120, CooldownReset: true,
+		Affinity: true, CooldownSec: 120, CooldownReset: true, Timeout: 60,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1316,6 +1316,9 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	if chModel.Caps.ContextLength == nil || *chModel.Caps.ContextLength != ctx {
 		t.Errorf("渠道模型的能力参数被清空: %+v", chModel.Caps)
 	}
+	if chModel.Timeout != 45 {
+		t.Errorf("渠道模型的超时时间被清空: %+v", chModel)
+	}
 
 	// 只提交 enabled：自定义模型的路由、调度、描述都要保留。
 	put("router", map[string]any{"enabled": false})
@@ -1338,11 +1341,14 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	if m.Caps.MaxOutput == nil || *m.Caps.MaxOutput != ctx {
 		t.Errorf("自定义模型的能力参数被清空: %+v", m.Caps)
 	}
+	if m.Timeout != 60 {
+		t.Errorf("自定义模型的超时时间被清空: %+v", m)
+	}
 
 	// 显式提交空值仍然可以清空，保证编辑表单能正常保存。
 	put("router", map[string]any{
 		"description": "", "tags": []string{}, "caps": map[string]any{}, "routes": []map[string]any{},
-		"affinity": false, "cooldown_sec": 0, "cooldown_reset": false,
+		"affinity": false, "cooldown_sec": 0, "cooldown_reset": false, "timeout": 0,
 	})
 	m, err = st.GetModel("router")
 	if err != nil {
@@ -1356,6 +1362,62 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	}
 	if m.Affinity || m.CooldownSec != 0 || m.CooldownReset {
 		t.Errorf("显式空值应清空调度配置: %+v", m)
+	}
+	if m.Timeout != 0 {
+		t.Errorf("显式 timeout=0 应恢复默认: %+v", m)
+	}
+}
+
+// 清除冷却支持按模型、按渠道缩小范围；不传参数时保持原来的全局清空。
+func TestClearCooldownsScoped(t *testing.T) {
+	s, st := newTestServer(t, "clear-cooldowns")
+	relay.ClearAllCooldowns()
+	defer relay.ClearAllCooldowns()
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "CM", Type: store.ModelTypeCustom,
+		Routes:  []store.Route{{ChannelID: "CH-A", Upstream: "x"}, {ChannelID: "CH-B", Upstream: "y"}},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	call := func(query string, body string) (int, int) {
+		t.Helper()
+		var rd io.Reader
+		if body != "" {
+			rd = strings.NewReader(body)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/models/clear-cooldowns"+query, rd)
+		s.clearModelCooldowns(rec, req)
+		var out struct {
+			Cleared int `json:"cleared"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out.Cleared
+	}
+
+	relay.MarkFailure("CH-A", "x")
+	relay.MarkFailure("CH-B", "y")
+	if code, n := call("?model_id=CM", ""); code != http.StatusOK || n != 2 {
+		t.Fatalf("按模型清冷却应清 2 条，得到 %d %d", code, n)
+	}
+	// 多选：body 里不存在的模型直接忽略
+	relay.MarkFailure("CH-A", "x")
+	relay.MarkFailure("CH-B", "y")
+	if code, n := call("", `{"model_ids":["CM","missing"]}`); code != http.StatusOK || n != 2 {
+		t.Fatalf("按模型批量清冷却应清 2 条，得到 %d %d", code, n)
+	}
+	relay.MarkFailure("CH-A", "x")
+	if code, n := call("?channel_id=CH-A", ""); code != http.StatusOK || n != 1 {
+		t.Fatalf("按渠道清冷却应清 1 条，得到 %d %d", code, n)
+	}
+	if code, _ := call("?model_id=missing", ""); code != http.StatusNotFound {
+		t.Fatalf("模型不存在应返回 404，得到 %d", code)
+	}
+	relay.MarkFailure("CH-A", "x")
+	if code, n := call("", ""); code != http.StatusOK || n != 1 {
+		t.Fatalf("不传参数应清空全部冷却，得到 %d %d", code, n)
 	}
 }
 

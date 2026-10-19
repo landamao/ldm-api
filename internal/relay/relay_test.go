@@ -317,7 +317,7 @@ func TestCooldownSkipsFailedRoute(t *testing.T) {
 		},
 		Enabled: true, CreatedAt: now, UpdatedAt: now,
 	})
-	MarkFailure("A", "a", time.Minute)
+	MarkFailure("A", "a")
 	r := New(st)
 	res, err := r.Resolve("CD")
 	if err != nil {
@@ -329,8 +329,8 @@ func TestCooldownSkipsFailedRoute(t *testing.T) {
 }
 
 func TestClearAllCooldowns(t *testing.T) {
-	MarkFailure("CLR-A", "a", time.Minute)
-	MarkFailure("CLR-B", "b", time.Minute)
+	MarkFailure("CLR-A", "a")
+	MarkFailure("CLR-B", "b")
 	if n := ClearAllCooldowns(); n < 2 {
 		t.Fatalf("应至少清除 2 条冷却，得到 %d", n)
 	}
@@ -352,8 +352,8 @@ func TestCooldownResetWhenAllCooling(t *testing.T) {
 		Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}
 	_ = st.SaveModel(m)
-	MarkFailure("A", "a", time.Minute)
-	MarkFailure("B", "d", time.Minute)
+	MarkFailure("A", "a")
+	MarkFailure("B", "d")
 
 	// 未开重置：直接不可用
 	r := New(st)
@@ -388,9 +388,8 @@ func TestCooldownExpiredRecovers(t *testing.T) {
 		Routes:  []store.Route{{ChannelID: "A", Upstream: "a"}, {ChannelID: "B", Upstream: "d"}},
 		Enabled: true, CreatedAt: now, UpdatedAt: now,
 	})
-	// 冷却 30ms，等它过期
-	MarkFailure("A", "a", 30*time.Millisecond)
-	time.Sleep(60 * time.Millisecond)
+	// 失败发生在一小时前：默认冷却 300 秒，已过期
+	markFailureAt("A", "a", time.Now().Add(-time.Hour))
 	r := New(st)
 	res, err := r.Resolve("CE")
 	if err != nil {
@@ -398,6 +397,125 @@ func TestCooldownExpiredRecovers(t *testing.T) {
 	}
 	if len(res.Routes) != 2 {
 		t.Fatalf("冷却过期后应恢复，得到 %d 条", len(res.Routes))
+	}
+}
+
+// 冷却时长取当前配置：调小后已冷却的条目应提前恢复，调大后应立即生效。
+func TestCooldownUsesCurrentConfigDuration(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+	st := newTestStore(t)
+	seedChannels(t, st)
+	now := time.Now().UnixMilli()
+	m := store.Model{
+		ID: "CDYN", Type: store.ModelTypeCustom,
+		Routes:      []store.Route{{ChannelID: "A", Upstream: "a"}, {ChannelID: "B", Upstream: "d"}},
+		CooldownSec: 1,
+		Enabled:     true, CreatedAt: now, UpdatedAt: now,
+	}
+	_ = st.SaveModel(m)
+	// 2 秒前失败：1 秒冷却已过期
+	markFailureAt("A", "a", time.Now().Add(-2*time.Second))
+	res, err := New(st).Resolve("CDYN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Routes) != 2 {
+		t.Fatalf("冷却 1 秒，2 秒前失败应已恢复，得到 %d 条", len(res.Routes))
+	}
+	// 调大到 10 秒后，同一条失败记录应立即重新生效
+	m.CooldownSec = 10
+	if err := st.SaveModel(m); err != nil {
+		t.Fatal(err)
+	}
+	res, err = New(st).Resolve("CDYN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Routes) != 1 || res.Routes[0].Channel.ID != "B" {
+		t.Fatalf("调大冷却时长后应立即进入冷却，得到 %+v", res.Routes)
+	}
+}
+
+// 共享同一条渠道模型的多个自定义模型，各自按自己的 CooldownSec 判断，互不覆盖。
+func TestCooldownSharedAcrossModelsUsesOwnDuration(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+	st := newTestStore(t)
+	seedChannels(t, st)
+	now := time.Now().UnixMilli()
+	routes := []store.Route{{ChannelID: "A", Upstream: "a"}, {ChannelID: "B", Upstream: "d"}}
+	_ = st.SaveModel(store.Model{
+		ID: "CD-LONG", Type: store.ModelTypeCustom, Routes: routes,
+		CooldownSec: 600, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	})
+	_ = st.SaveModel(store.Model{
+		ID: "CD-SHORT", Type: store.ModelTypeCustom, Routes: routes,
+		CooldownSec: 1, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	})
+	markFailureAt("A", "a", time.Now().Add(-2*time.Second))
+	// 长冷却模型：仍应跳过 A/a
+	res, err := New(st).Resolve("CD-LONG")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Routes) != 1 || res.Routes[0].Channel.ID != "B" {
+		t.Fatalf("600 秒冷却的模型应继续跳过 A/a，得到 %+v", res.Routes)
+	}
+	// 短冷却模型：已过期，两条都可用
+	res, err = New(st).Resolve("CD-SHORT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Routes) != 2 {
+		t.Fatalf("1 秒冷却的模型应已恢复，得到 %d 条", len(res.Routes))
+	}
+}
+
+func TestPruneModelRoutes(t *testing.T) {
+	ClearModelRoutes("PRUNE")
+	defer ClearModelRoutes("PRUNE")
+	MarkSuccess("PRUNE", "PCH", "p")
+	PruneModelRoutes("PRUNE", []store.Route{{ChannelID: "PCH", Upstream: "p"}})
+	routeStates.Lock()
+	last := routeStates.lastRoute["PRUNE"]
+	routeStates.Unlock()
+	if last == "" {
+		t.Fatal("路由仍在配置里时不应清理亲和记录")
+	}
+	PruneModelRoutes("PRUNE", []store.Route{{ChannelID: "OTHER", Upstream: "x"}})
+	routeStates.Lock()
+	_, ok := routeStates.lastRoute["PRUNE"]
+	routeStates.Unlock()
+	if ok {
+		t.Fatal("路由已从配置删除时亲和记录应清理")
+	}
+}
+
+func TestClearCooldownsScoped(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+	MarkFailure("SC-A", "x")
+	MarkFailure("SC-A", "y")
+	MarkFailure("SC-B", "z")
+	m := store.Model{Type: store.ModelTypeCustom, Routes: []store.Route{
+		{ChannelID: "SC-A", Upstream: "x"},
+		{ChannelID: "SC-B", Upstream: "z"},
+	}}
+	if n := ClearCooldownsForModel(m); n != 2 {
+		t.Fatalf("应按模型清掉 2 条冷却，得到 %d", n)
+	}
+	if n := ClearCooldownsForChannel("SC-A"); n != 1 {
+		t.Fatalf("应按渠道清掉剩余的 1 条冷却，得到 %d", n)
+	}
+	// 渠道模型：按自身渠道/上游清
+	MarkFailure("SC-B", "z")
+	cm := store.Model{Type: store.ModelTypeChannel, ChannelID: "SC-B", Upstream: "z"}
+	if n := ClearCooldownsForModel(cm); n != 1 {
+		t.Fatalf("渠道模型应清掉自身路由的冷却，得到 %d", n)
+	}
+	if n := ClearAllCooldowns(); n != 0 {
+		t.Fatalf("冷却应已清空，仍剩 %d", n)
 	}
 }
 
@@ -1269,5 +1387,124 @@ func TestIsAllowedEndpoint(t *testing.T) {
 		if IsAllowedEndpoint(c.method, c.path) {
 			t.Errorf("%s %s 应被拒绝", c.method, c.path)
 		}
+	}
+}
+
+func seedSingleRoute(t *testing.T, st *store.Store, channelID, baseURL string, timeout int) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: channelID, Name: channelID, Type: store.ChannelOpenAI,
+		BaseURL: baseURL, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "m", Type: store.ModelTypeCustom, Timeout: timeout,
+		Routes:  []store.Route{{ChannelID: channelID, Upstream: "m"}},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 流式只约束首字：首块数据到达后，总时长可以超过超时时间。
+func TestStreamTimeoutStopsAfterFirstChunk(t *testing.T) {
+	st := newTestStore(t)
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"a"}}]}`+"\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-time.After(1500 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"b"},"finish_reason":"stop"}]}`+"\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer up.Close()
+
+	seedSingleRoute(t, st, "stream-slow", up.URL, 1)
+
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: []byte(`{"model":"m","stream":true,"messages":[]}`), Stream: true,
+		JSON: map[string]any{"model": "m", "stream": true},
+	}
+	res := New(st).Do(context.Background(), httptest.NewRecorder(), req)
+	if res.Err != "" {
+		t.Fatalf("首字到达后不应再受超时限制: %+v", res)
+	}
+	if res.Canceled {
+		t.Fatalf("不应记为客户端断开: %+v", res)
+	}
+}
+
+// 流式在首块数据到达前超时，照常记为上游超时。
+func TestStreamTimeoutBeforeFirstChunk(t *testing.T) {
+	st := newTestStore(t)
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		select {
+		case <-time.After(1500 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"late"}}]}`+"\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer up.Close()
+
+	seedSingleRoute(t, st, "stream-silent", up.URL, 1)
+
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: []byte(`{"model":"m","stream":true,"messages":[]}`), Stream: true,
+		JSON: map[string]any{"model": "m", "stream": true},
+	}
+	res := New(st).Do(context.Background(), httptest.NewRecorder(), req)
+	if res.Err != "上游响应超时" {
+		t.Fatalf("首字超时应记为上游超时: %+v", res)
+	}
+	if res.Canceled {
+		t.Fatalf("不应记为客户端断开: %+v", res)
+	}
+}
+
+// 非流式的超时覆盖整次请求，包括等响应头和读完响应体。
+func TestNonStreamTimeoutCoversWholeRequest(t *testing.T) {
+	st := newTestStore(t)
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(1500 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer up.Close()
+
+	seedSingleRoute(t, st, "plain-slow", up.URL, 1)
+
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: []byte(`{"model":"m","messages":[]}`),
+		JSON: map[string]any{"model": "m"},
+	}
+	res := New(st).Do(context.Background(), httptest.NewRecorder(), req)
+	if res.Err != "上游响应超时" {
+		t.Fatalf("非流式整次请求超时应记为上游超时: %+v", res)
+	}
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("状态码应为 502，得到 %d", res.StatusCode)
 	}
 }

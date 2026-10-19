@@ -57,7 +57,6 @@ type Channel struct {
 	Headers   map[string]string `json:"headers,omitempty"`
 	Enabled   bool              `json:"enabled"`
 	Weight    int               `json:"weight"`
-	Timeout   int               `json:"timeout"` // 秒，0 表示默认 300
 	Remark    string            `json:"remark,omitempty"`
 	CreatedAt int64             `json:"created_at"`
 	UpdatedAt int64             `json:"updated_at"`
@@ -119,6 +118,10 @@ type Model struct {
 	Affinity      bool `json:"affinity,omitempty"`
 	CooldownSec   int  `json:"cooldown_sec,omitempty"`
 	CooldownReset bool `json:"cooldown_reset,omitempty"`
+
+	// Timeout 是模型级超时（秒），0 表示默认 300。
+	// 非流式为整次请求超时，流式为首字超时（首块数据到达后不再限时）。
+	Timeout int `json:"timeout,omitempty"`
 
 	DisplayName string   `json:"display_name,omitempty"`
 	Description string   `json:"description,omitempty"`

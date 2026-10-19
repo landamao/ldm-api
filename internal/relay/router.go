@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -9,8 +10,15 @@ import (
 
 // 路由调度：按配置顺序切分优先级组，组间顺序故障转移，组内按权重随机抽首选；
 // 支持模型亲和（上次成功者下次优先）与失败冷却（冷却期内跳过）。
+// 冷却状态按「渠道ID/上游模型」全局共享，但时长取当前请求模型的 CooldownSec，
+// 修改配置后对已存在的冷却立即生效。
 
 const defaultCooldownSec = 300
+
+// 冷却时长配置上限（与后台保存时的限制一致）。超过这个时长的失败记录对所有模型
+// 都已过期，可以安全清理；不能按当前模型的时长清理，否则短冷却模型会删掉
+// 长冷却模型还需要共享的记录。
+const maxCooldownSec = 86400
 
 // routeKey 生成一条路由的全局唯一键。
 func routeKey(chID, upstream string) string { return chID + "/" + upstream }
@@ -19,12 +27,10 @@ func routeKey(chID, upstream string) string { return chID + "/" + upstream }
 // 同一渠道模型被多个自定义模型引用时共享状态——上游真的挂了，对所有引用它的模型都该冷却。
 var routeStates = struct {
 	sync.Mutex
-	lastOK    map[string]time.Time
-	cooldown  map[string]time.Time
-	lastRoute map[string]string // 模型ID -> 上次请求成功走的路由 key（亲和）
+	failedAt  map[string]time.Time // 路由 key -> 最近一次失败时刻
+	lastRoute map[string]string    // 模型ID -> 上次请求成功走的路由 key（亲和）
 }{
-	lastOK:    map[string]time.Time{},
-	cooldown:  map[string]time.Time{},
+	failedAt:  map[string]time.Time{},
 	lastRoute: map[string]string{},
 }
 
@@ -33,16 +39,20 @@ func MarkSuccess(modelID, channelID, upstream string) {
 	routeStates.Lock()
 	defer routeStates.Unlock()
 	k := routeKey(channelID, upstream)
-	routeStates.lastOK[k] = time.Now()
-	delete(routeStates.cooldown, k)
+	delete(routeStates.failedAt, k)
 	routeStates.lastRoute[modelID] = k
 }
 
-// MarkFailure 让失败条目进入冷却期。
-func MarkFailure(channelID, upstream string, cooldown time.Duration) {
+// MarkFailure 记录失败时刻。冷却时长不在这里固化：判定时用当前模型配置的
+// CooldownSec 计算，这样修改冷却时长对已经处于冷却的条目也能立即生效。
+func MarkFailure(channelID, upstream string) {
+	markFailureAt(channelID, upstream, time.Now())
+}
+
+func markFailureAt(channelID, upstream string, at time.Time) {
 	routeStates.Lock()
 	defer routeStates.Unlock()
-	routeStates.cooldown[routeKey(channelID, upstream)] = time.Now().Add(cooldown)
+	routeStates.failedAt[routeKey(channelID, upstream)] = at
 }
 
 // clearCooldowns 清掉指定渠道模型的冷却（全部冷却且开启重置时用）。
@@ -50,7 +60,7 @@ func clearCooldowns(keys []string) {
 	routeStates.Lock()
 	defer routeStates.Unlock()
 	for _, k := range keys {
-		delete(routeStates.cooldown, k)
+		delete(routeStates.failedAt, k)
 	}
 }
 
@@ -58,8 +68,46 @@ func clearCooldowns(keys []string) {
 func ClearAllCooldowns() int {
 	routeStates.Lock()
 	defer routeStates.Unlock()
-	n := len(routeStates.cooldown)
-	clear(routeStates.cooldown)
+	n := len(routeStates.failedAt)
+	clear(routeStates.failedAt)
+	return n
+}
+
+// ClearCooldownsForModel 清掉该模型路由涉及的失败冷却，返回清除条数。
+// 冷却按「渠道ID/上游模型」全局共享，因此会同时解除其他引用同一条路由的模型的冷却。
+func ClearCooldownsForModel(m store.Model) int {
+	var keys []string
+	if m.Type == store.ModelTypeChannel {
+		keys = []string{routeKey(m.ChannelID, m.Upstream)}
+	} else {
+		for _, rt := range m.Routes {
+			keys = append(keys, routeKey(rt.ChannelID, rt.Upstream))
+		}
+	}
+	routeStates.Lock()
+	defer routeStates.Unlock()
+	n := 0
+	for _, k := range keys {
+		if _, ok := routeStates.failedAt[k]; ok {
+			delete(routeStates.failedAt, k)
+			n++
+		}
+	}
+	return n
+}
+
+// ClearCooldownsForChannel 清掉某个渠道下所有上游模型的冷却，返回清除条数。
+func ClearCooldownsForChannel(channelID string) int {
+	prefix := channelID + "/"
+	routeStates.Lock()
+	defer routeStates.Unlock()
+	n := 0
+	for k := range routeStates.failedAt {
+		if strings.HasPrefix(k, prefix) {
+			delete(routeStates.failedAt, k)
+			n++
+		}
+	}
 	return n
 }
 
@@ -67,6 +115,23 @@ func ClearAllCooldowns() int {
 func ClearModelRoutes(modelID string) {
 	routeStates.Lock()
 	defer routeStates.Unlock()
+	delete(routeStates.lastRoute, modelID)
+}
+
+// PruneModelRoutes 在编辑模型后调用：亲和记录指向的路由已不在新配置里时清掉记录，
+// 避免之后把同一路由加回来时旧亲和“复活”。
+func PruneModelRoutes(modelID string, routes []store.Route) {
+	routeStates.Lock()
+	defer routeStates.Unlock()
+	last, ok := routeStates.lastRoute[modelID]
+	if !ok {
+		return
+	}
+	for _, rt := range routes {
+		if routeKey(rt.ChannelID, rt.Upstream) == last {
+			return
+		}
+	}
 	delete(routeStates.lastRoute, modelID)
 }
 
@@ -131,9 +196,16 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 		}
 		c := planCandidate{cfgIdx: i, rt: rt, ch: ch}
 		all = append(all, c)
-		if cd, cooling := routeStates.cooldown[routeKey(rt.ChannelID, rt.Upstream)]; cooling && now.Before(cd) {
-			c.cooling = true
-			continue
+		k := routeKey(rt.ChannelID, rt.Upstream)
+		if failedAt, failed := routeStates.failedAt[k]; failed {
+			elapsed := now.Sub(failedAt)
+			if elapsed < cooldown {
+				c.cooling = true
+				continue
+			}
+			if elapsed >= time.Duration(maxCooldownSec)*time.Second {
+				delete(routeStates.failedAt, k)
+			}
 		}
 		live = append(live, c)
 	}

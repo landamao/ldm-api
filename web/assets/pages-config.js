@@ -558,7 +558,7 @@
     const isNew = !ch;
     const data = ch || {
       id: '', name: '', type: 'openai', base_url: '', api_key: '', append_v1: true,
-      models: [], enabled: true, timeout: 300, remark: '', headers: {},
+      models: [], enabled: true, remark: '', headers: {},
     };
 
     const body = `
@@ -624,10 +624,6 @@
         <summary style="cursor:pointer;font-size:12.5px;font-weight:620;color:var(--text-2)">高级设置</summary>
         <div class="mt-12">
           <div class="form-row">
-            <div class="field">
-              <label class="field__label">超时时间（秒）</label>
-              <input class="input" id="f-timeout" type="number" min="1" value="${esc(data.timeout || 300)}">
-            </div>
             <div class="field">
               <label class="field__label">状态</label>
               <div style="height:36px;display:flex;align-items:center">
@@ -781,7 +777,6 @@
           const payload = {
             id, name: $('#f-name').value.trim(), type: typeEl.value,
             base_url: base, api_key: key, append_v1: $('#f-append-v1').checked, models,
-            timeout: Number($('#f-timeout').value) || 300,
             enabled: $('#f-enabled').checked,
             headers, remark: $('#f-remark').value.trim(),
           };
@@ -1044,10 +1039,11 @@
             <span class="muted fs-12" id="filter-count" ${modelState.multi ? 'style="display:none"' : ''}></span>
             <button class="btn btn--sm" id="btn-multi" style="${modelState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
             <span class="muted fs-12" id="multi-count" style="${modelState.multi ? '' : 'display:none'}">已选 ${modelState.selected.size} 个</span>
-            <button class="btn btn--sm" id="m-enable" style="${modelState.multi ? '' : 'display:none'}">${icon('play', 13)}批量启用</button>
-            <button class="btn btn--sm" id="m-disable" style="${modelState.multi ? '' : 'display:none'}">${icon('pause', 13)}批量禁用</button>
-            <button class="btn btn--sm" id="m-provider" style="${modelState.multi ? '' : 'display:none'}">${icon('box', 13)}批量设置提供商</button>
-            <button class="btn btn--sm btn--danger" id="m-del" style="${modelState.multi ? '' : 'display:none'}">${icon('trash', 13)}批量删除</button>
+            <button class="btn btn--sm" id="m-enable" style="${modelState.multi ? '' : 'display:none'}">${icon('play', 13)}启用</button>
+            <button class="btn btn--sm" id="m-disable" style="${modelState.multi ? '' : 'display:none'}">${icon('pause', 13)}禁用</button>
+            <button class="btn btn--sm" id="m-provider" style="${modelState.multi ? '' : 'display:none'}">${icon('box', 13)}设置提供商</button>
+            <button class="btn btn--sm" id="m-cooldown" style="${modelState.multi ? '' : 'display:none'}">${icon('refresh', 13)}清除冷却</button>
+            <button class="btn btn--sm btn--danger" id="m-del" style="${modelState.multi ? '' : 'display:none'}">${icon('trash', 13)}删除</button>
             <button class="btn btn--sm btn--ghost" id="m-exit" style="${modelState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
           </div>
           <div id="model-table"></div>
@@ -1232,6 +1228,7 @@
         set('m-enable', modelState.multi);
         set('m-disable', modelState.multi);
         set('m-provider', modelState.multi);
+        set('m-cooldown', modelState.multi);
         set('m-del', modelState.multi);
         set('m-exit', modelState.multi);
         renderTable();
@@ -1285,7 +1282,7 @@
         const sel = getSelectedModels();
         if (!sel.length) { Toast.info('请先勾选模型'); return; }
         const choice = await chooseProviderDialog({
-          title: '批量设置提供商',
+          title: '设置提供商',
           desc: `将为选中的 ${sel.length} 个模型设置提供商。`,
           providers,
           current: '',
@@ -1305,11 +1302,21 @@
           await refreshAfterBatch(`${label}（${sel.length} 个模型）`);
         } catch (e) { Toast.error(e.message); }
       };
+      root.querySelector('#m-cooldown').onclick = async () => {
+        const sel = getSelectedModels();
+        if (!sel.length) { Toast.info('请先勾选模型'); return; }
+        try {
+          const res = await API.post('/api/models/clear-cooldowns', { model_ids: sel.map((m) => m.id) });
+          const n = res && res.cleared ? res.cleared : 0;
+          if (n) Toast.success(`已清除 ${n} 条路由冷却`);
+          else Toast.info('选中的模型没有处于冷却中的路由');
+        } catch (e) { Toast.error(e.message); }
+      };
       root.querySelector('#m-del').onclick = async () => {
         const sel = getSelectedModels();
         if (!sel.length) { Toast.info('请先勾选模型'); return; }
         const ok = await confirmDialog({
-          title: '批量删除',
+          title: '删除选中模型',
           message: `确定删除选中的 <b>${sel.length}</b> 个模型吗？删除后这些模型将无法被调用。<br><br>该操作不可撤销。`,
           confirmText: `删除（${sel.length}）`,
           danger: true,
@@ -2169,6 +2176,11 @@
         <label class="field__label">描述</label>
         <input class="input" id="m-desc" value="${esc(m.description || '')}" placeholder="可选">
       </div>
+      <div class="field">
+        <label class="field__label">超时时间（秒）</label>
+        <input class="input" id="m-timeout" type="number" min="1" value="${esc(m.timeout || 300)}">
+        <div class="field__hint">非流式限制整次请求；流式只限制首字，首字到达后不再限时。</div>
+      </div>
       ${capsEditorHtml(m.caps || {})}
       <div class="field mt-16">
         <label class="switch"><input type="checkbox" id="m-enabled" ${m.enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用该模型</span></label>
@@ -2206,6 +2218,7 @@
               provider_id: readProviderSelect(mo.body, 'm-provider-id', providers, m.upstream || m.id),
               enabled: mo.body.querySelector('#m-enabled').checked,
               description: mo.body.querySelector('#m-desc').value.trim(),
+              timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#m-timeout').value) || 300)),
             });
             mo.close();
             Toast.success('模型配置已保存');
@@ -2443,7 +2456,7 @@
     const isNew = !existing;
     const m = existing || {
       id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
-      caps: {}, enabled: true, display_name: '', description: '', tags: [],
+      caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
     };
     // 本地编辑态
     const draft = {
@@ -2461,7 +2474,7 @@
       <div class="field">
         <label class="field__label">模型 ID<span class="req">*</span></label>
         <input class="input mono" id="cm-id" value="${esc(m.id)}" placeholder="例如 LDM">
-        <div class="field__hint">对外暴露的唯一模型名，调用时 <code>model</code> 填这个值。${isNew ? '' : '可以直接修改；改名后引用它的模型会自动跟着更新。'}</div>
+        <div class="field__hint">对外暴露的唯一模型名，调用时 <code>model</code> 填这个值。</div>
       </div>
 
       <div class="field">
@@ -2501,6 +2514,12 @@
           </div>
           <div class="field__hint" style="margin-top:2px">条目失败后在冷却时长内视为不可用直接跳过（0 = 默认 300 秒）。「自动重置」决定全部条目都在冷却中时的行为：关=直接返回不可用；开=清空所有冷却再路由一遍。</div>
         </div>
+      </div>
+
+      <div class="field">
+        <label class="field__label">超时时间（秒）</label>
+        <input class="input" id="cm-timeout" type="number" min="1" value="${esc(m.timeout || 300)}">
+        <div class="field__hint">非流式限制整次请求；流式只限制首字，首字到达后不再限时。</div>
       </div>
 
       <div class="field">
@@ -3337,6 +3356,7 @@
             affinity: mo.body.querySelector('#cm-affinity').checked,
             cooldown_sec: Math.max(0, Math.min(86400, Math.round(Number(mo.body.querySelector('#cm-cooldown').value) || 0))),
             cooldown_reset: mo.body.querySelector('#cm-cooldown-reset').checked,
+            timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#cm-timeout').value) || 300)),
             caps,
             enabled: mo.body.querySelector('#cm-enabled').checked,
             description: mo.body.querySelector('#cm-desc').value.trim(),

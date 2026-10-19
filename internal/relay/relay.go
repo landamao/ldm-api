@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ldmapi/internal/store"
@@ -37,7 +38,9 @@ func New(st *store.Store) *Relay {
 		TLSHandshakeTimeout:   20 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
-		ResponseHeaderTimeout: 300 * time.Second,
+		// 等待响应头的上限由每次请求的 context 定时器控制（渠道超时时间），
+		// 这里不设固定值，避免它盖过渠道配置。
+		ResponseHeaderTimeout: 0,
 	}
 	return &Relay{
 		Store: st,
@@ -305,12 +308,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		// 上游在响应中途断开时，即使已经写出部分响应也按普通失败标记；
 		// 其余已写出响应的失败（如 4xx 透传）是请求本身的问题，不冷却渠道。
 		if !outcome.wrote || outcome.upstreamBroken {
-			m := resolved.Model
-			cd := time.Duration(m.CooldownSec) * time.Second
-			if cd <= 0 {
-				cd = defaultCooldownSec * time.Second
-			}
-			MarkFailure(route.Channel.ID, route.Upstream, cd)
+			MarkFailure(route.Channel.ID, route.Upstream)
 		}
 		if !outcome.retryable {
 			break
@@ -392,12 +390,21 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	resolved *Resolved, route Route, isLast bool) attemptOutcome {
 
 	prov := upstream.Get(route.Channel.Type)
-	timeout := route.Channel.Timeout
+	timeout := resolved.Model.Timeout
 	if timeout <= 0 {
 		timeout = 300
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	// 非流式：timeout 是整次请求（含读完响应体）的截止时间。
+	// 流式：timeout 只限制到收到首块数据为止，首块到达后不再限时。
+	// deadline 无法延长，所以用定时器 + cancel 实现，流式拿到首块后停表。
+	reqCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(time.Duration(timeout)*time.Second, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	defer timer.Stop()
 
 	body := req.Body
 	convertBody := !prov.RawBody && req.JSON != nil && isChatPath(req.Path)
@@ -446,6 +453,10 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		if ctx.Err() != nil {
 			return attemptOutcome{err: errors.New("客户端已断开连接"), canceled: true}
 		}
+		// 定时器到点由本端取消，不能按「客户端断开」处理
+		if timedOut.Load() {
+			return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway}
+		}
 		msg := "上游请求失败: " + cleanNetErr(err)
 		return attemptOutcome{err: errors.New(msg), retryable: true, status: http.StatusBadGateway}
 	}
@@ -477,6 +488,9 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		if err != nil {
 			if ctx.Err() != nil {
 				return attemptOutcome{err: errors.New("客户端已断开连接"), canceled: true, firstByte: firstByte}
+			}
+			if timedOut.Load() {
+				return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway, firstByte: firstByte}
 			}
 			return attemptOutcome{err: fmt.Errorf("读取上游响应失败: %w", err), retryable: true, status: http.StatusBadGateway, firstByte: firstByte}
 		}
@@ -513,9 +527,15 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	tmp := make([]byte, 32*1024)
 	var pending []byte
 	reader := resp.Body
+	firstChunk := false
 	for {
 		n, rerr := reader.Read(tmp)
 		if n > 0 {
+			// 首块数据已到达，流式超时只约束到首字，之后不再限时。
+			if !firstChunk {
+				firstChunk = true
+				timer.Stop()
+			}
 			pending = append(pending, tmp[:n]...)
 			for {
 				idx := indexByte(pending, '\n')
@@ -565,6 +585,11 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						err: errors.New("客户端已断开连接"), canceled: true, wrote: true, estimated: est,
 						reasoning: st.ReasoningChars()}
+				}
+				if timedOut.Load() {
+					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
+						err: errors.New("上游响应超时"), retryable: false, wrote: true, estimated: est,
+						reasoning: st.ReasoningChars(), upstreamBroken: true}
 				}
 				return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 					err: errors.New(cleanNetErr(rerr)), retryable: false, wrote: true, estimated: est,
