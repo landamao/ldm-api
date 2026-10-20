@@ -7,6 +7,8 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -2327,5 +2329,222 @@ func TestAPIKeyOnlyReachesModelEndpoints(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&upstreamHits); got != 1 {
 		t.Fatalf("正常调用应转发 1 次，实际上游收到 %d 次", got)
+	}
+}
+
+// 管理接口不能把任意 Origin 反射回来，也不能允许携带 Cookie 的跨站读取。
+func TestAdminAPIDoesNotReflectCORS(t *testing.T) {
+	s, _ := newTestServer(t, "cors-admin")
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+
+	req, err := http.NewRequest(http.MethodGet, gw.URL+"/api/settings", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("管理接口不应回显 CORS 来源，得到 %q", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Errorf("管理接口不应允许携带凭证，得到 %q", got)
+	}
+}
+
+// 对外 /v1 仍允许浏览器 SDK 跨域调用，但不需要 Cookie 凭证。
+func TestV1APICORSAllowsOriginWithoutCredentials(t *testing.T) {
+	s, _ := newTestServer(t, "cors-v1")
+	key, err := s.EnsureDefaultToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+
+	req, err := http.NewRequest(http.MethodGet, gw.URL+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://example.com")
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://example.com" {
+		t.Errorf("对外接口应回显来源，得到 %q", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Errorf("对外接口不需要携带凭证，得到 %q", got)
+	}
+}
+
+// 同站（同主机不同端口）的页面也能带上 SameSite=Lax 的 Cookie，
+// 因此管理端写操作必须校验 Origin / Sec-Fetch-Site。
+func TestAdminMutationRejectsCrossSite(t *testing.T) {
+	s, _ := newTestServer(t, "csrf-admin")
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+	sess, err := s.issueSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	do := func(method, path, origin, secFetch string) int {
+		t.Helper()
+		req, err := http.NewRequest(method, gw.URL+path, strings.NewReader(`{"site_name":"x"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sess})
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if secFetch != "" {
+			req.Header.Set("Sec-Fetch-Site", secFetch)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+
+	if code := do(http.MethodPut, "/api/settings", "http://127.0.0.1:9999", ""); code != http.StatusForbidden {
+		t.Errorf("跨源写请求应返回 403，得到 %d", code)
+	}
+	if code := do(http.MethodPut, "/api/settings", "", "same-site"); code != http.StatusForbidden {
+		t.Errorf("同站写请求应返回 403，得到 %d", code)
+	}
+	if code := do(http.MethodPut, "/api/settings", gw.URL, "same-origin"); code != http.StatusOK {
+		t.Errorf("同源写请求应成功，得到 %d", code)
+	}
+	if code := do(http.MethodPut, "/api/settings", "", ""); code != http.StatusOK {
+		t.Errorf("不带浏览器来源头的脚本请求应成功，得到 %d", code)
+	}
+
+	// 反向代理改写 Host 时，代理写入的 X-Forwarded-Host 应被接受。
+	req, err := http.NewRequest(http.MethodPut, gw.URL+"/api/settings", strings.NewReader(`{"site_name":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://gateway.example")
+	req.Header.Set("X-Forwarded-Host", "gateway.example")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sess})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("代理改写 Host 的同源写请求应成功，得到 %d", resp.StatusCode)
+	}
+}
+
+// PUT 只更新请求里出现的字段，切换启用状态不能清空额度、过期时间、
+// 模型权限和备注。
+func TestTokenPartialUpdateKeepsFields(t *testing.T) {
+	s, _ := newTestServer(t, "token-partial")
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+	sess, err := s.issueSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := func(method, path, body string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(method, gw.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sess})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	resp := request(http.MethodPost, "/api/tokens",
+		`{"name":"测试","enabled":true,"expires_at":4102444800000,"quota_limit":123456,"allowed_models":["gpt-4o"],"remark":"重要"}`)
+	var created store.Token
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	resp = request(http.MethodPut, "/api/tokens/"+created.ID,
+		`{"id":"`+created.ID+`","name":"测试","enabled":false}`)
+	resp.Body.Close()
+
+	got, err := s.store.GetToken(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Error("启用状态应已切换为禁用")
+	}
+	if got.ExpiresAt != 4102444800000 {
+		t.Errorf("过期时间不应被清空，得到 %d", got.ExpiresAt)
+	}
+	if got.QuotaLimit != 123456 {
+		t.Errorf("额度上限不应被清空，得到 %d", got.QuotaLimit)
+	}
+	if len(got.AllowedModels) != 1 || got.AllowedModels[0] != "gpt-4o" {
+		t.Errorf("模型权限不应被清空，得到 %v", got.AllowedModels)
+	}
+	if got.Remark != "重要" {
+		t.Errorf("备注不应被清空，得到 %q", got.Remark)
+	}
+}
+
+// 开发模式从磁盘读资源时，必须把路径限制在 DevDir 内。
+func TestDevAssetRejectsTraversal(t *testing.T) {
+	s, _ := newTestServer(t, "dev-asset")
+	base := t.TempDir()
+	root := filepath.Join(base, "web")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.DevDir = root
+	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(base, "secret.txt")
+	if err := os.WriteFile(secret, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if data, err := s.readAsset("ok.txt"); err != nil || string(data) != "ok" {
+		t.Fatalf("正常资源应可读取，得到 %q / %v", data, err)
+	}
+	if _, err := s.readAsset("../secret.txt"); err == nil {
+		t.Error("斜杠路径穿越应被拒绝")
+	}
+	if _, err := s.readAsset(`..\secret.txt`); err == nil {
+		t.Error("反斜杠路径穿越应被拒绝")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/..%5Csecret.txt", nil)
+	rec := httptest.NewRecorder()
+	s.serveStatic(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("带反斜杠的静态请求应返回 404，得到 %d", rec.Code)
 	}
 }

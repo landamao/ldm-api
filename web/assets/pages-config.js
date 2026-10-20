@@ -3302,7 +3302,10 @@
           } else {
             const seg = splitGroups().find((s) => s.includes(dragState.idx)) || [];
             const names = seg.map((i) => draft.routes[i].model_id);
-            ghost.innerHTML = `${icon('box', 12)}<span>整组 · ${names.slice(0, 2).join('、')}${names.length > 2 ? ' 等' : ''}</span>`;
+            // 模型名可能来自上游，必须用 textContent 写入，不能拼进 innerHTML。
+            ghost.innerHTML = icon('box', 12) + '<span></span>';
+            ghost.querySelector('span').textContent =
+              `整组 · ${names.slice(0, 2).join('、')}${names.length > 2 ? ' 等' : ''}`;
           }
           document.body.appendChild(ghost);
           dragState.ghost = ghost;

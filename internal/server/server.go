@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -155,15 +156,18 @@ func withRecover(next http.Handler) http.Handler {
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/") || strings.HasPrefix(r.URL.Path, "/api/") {
-			origin := r.Header.Get("Origin")
-			if origin != "" {
+		// 只有对外的 /v1 接口需要 CORS：浏览器端 SDK 会用 Authorization 头携带
+		// API 密钥，不依赖 Cookie，因此不回显 Allow-Credentials。
+		// 管理端 /api 只给同源页面使用，不返回任何 CORS 头；跨站写请求由
+		// admin 中间件里的同源校验拦截。
+		if strings.HasPrefix(r.URL.Path, "/v1/") {
+			if origin := r.Header.Get("Origin"); origin != "" {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
 			}
 			w.Header().Set("Access-Control-Allow-Headers", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,POST,OPTIONS")
+			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -207,8 +211,65 @@ func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 			})
 			return
 		}
+		// 管理端写操作只接受同源页面发起。SameSite=Lax 只能挡住跨站请求，
+		// 同一主机不同端口（同站）的页面仍然会带上会话 Cookie，因此这里再
+		// 校验 Origin / Referer / Sec-Fetch-Site，防止同站 CSRF。
+		if isMutatingMethod(r.Method) && !sameOriginRequest(r) {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error": map[string]any{"message": "跨站请求已被拒绝", "type": "forbidden"},
+			})
+			return
+		}
 		next(w, r)
 	}
+}
+
+func isMutatingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	}
+	return false
+}
+
+// sameOriginRequest 判断一个写请求是否来自同源页面。
+// 非浏览器客户端（curl、脚本）通常不带 Origin/Referer/Sec-Fetch-Site，
+// 这里放行；浏览器只要带了这些头，就必须与当前 Host 一致。
+func sameOriginRequest(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+		// 继续用 Origin/Referer 校验
+	default:
+		return false
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		return originHostMatches(r, origin)
+	}
+	if referer := r.Header.Get("Referer"); referer != "" {
+		return originHostMatches(r, referer)
+	}
+	return true
+}
+
+func originHostMatches(r *http.Request, raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	// 反向代理通常会改写 Host。浏览器无法在跨站请求里自行设置
+	// X-Forwarded-Host：自定义请求头会触发预检，而 /api 不返回任何
+	// CORS 头，预检必然失败；非浏览器客户端本来就可以不带 Origin。
+	// 因此这里信任代理写入的值，兼容 Nginx 默认的 Host 改写。
+	if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" {
+		first := strings.TrimSpace(strings.Split(xfh, ",")[0])
+		if first != "" && strings.EqualFold(u.Host, first) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) isAdmin(r *http.Request) bool {
@@ -227,6 +288,12 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
 	if name == "" {
 		name = "index.html"
+	}
+	// Windows 下反斜杠也是路径分隔符，path.Clean 不会处理它。
+	// 直接拒绝，避免开发模式从 DevDir 之外读取文件。
+	if strings.ContainsRune(name, '\\') {
+		http.NotFound(w, r)
+		return
 	}
 	data, err := s.readAsset(name)
 	if err != nil {
@@ -288,7 +355,18 @@ func etagMatches(header, etag string) bool {
 
 func (s *Server) readAsset(name string) ([]byte, error) {
 	if s.DevDir != "" {
-		return os.ReadFile(filepath.Join(s.DevDir, filepath.FromSlash(name)))
+		// 开发模式直接从磁盘读取，必须确保路径不会逃出 DevDir。
+		// 反斜杠在 Windows 上同样是分隔符，先拒绝再按目录前缀校验。
+		if strings.ContainsRune(name, '\\') {
+			return nil, fs.ErrInvalid
+		}
+		root := filepath.Clean(s.DevDir)
+		full := filepath.Clean(filepath.Join(root, filepath.FromSlash(name)))
+		rel, err := filepath.Rel(root, full)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fs.ErrInvalid
+		}
+		return os.ReadFile(full)
 	}
 	return fs.ReadFile(web.FS, name)
 }

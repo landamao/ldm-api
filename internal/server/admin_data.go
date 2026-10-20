@@ -41,14 +41,16 @@ func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) saveToken(w http.ResponseWriter, r *http.Request) {
+	// 所有可编辑字段都用指针：PUT 只更新请求里出现的字段，
+	// 切换启用状态时不会把额度、过期时间、模型权限和备注清空。
 	var req struct {
-		ID            string   `json:"id"`
-		Name          string   `json:"name"`
-		Enabled       *bool    `json:"enabled"`
-		ExpiresAt     int64    `json:"expires_at"`
-		QuotaLimit    int64    `json:"quota_limit"`
-		AllowedModels []string `json:"allowed_models"`
-		Remark        string   `json:"remark"`
+		ID            string    `json:"id"`
+		Name          *string   `json:"name"`
+		Enabled       *bool     `json:"enabled"`
+		ExpiresAt     *int64    `json:"expires_at"`
+		QuotaLimit    *int64    `json:"quota_limit"`
+		AllowedModels *[]string `json:"allowed_models"`
+		Remark        *string   `json:"remark"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
@@ -71,27 +73,46 @@ func (s *Server) saveToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		name = "默认密钥"
-	}
-	t.Name = name
 	if isNew {
 		t.ID = randomHex(8)
 		t.Key = newAPIKey()
 		t.CreatedAt = time.Now().UnixMilli()
 		t.Enabled = true
 	}
+	if req.Name != nil {
+		if name := strings.TrimSpace(*req.Name); name != "" {
+			t.Name = name
+		}
+	}
+	if t.Name == "" {
+		t.Name = "默认密钥"
+	}
 	if req.Enabled != nil {
 		t.Enabled = *req.Enabled
 	}
-	t.ExpiresAt = req.ExpiresAt
-	t.QuotaLimit = req.QuotaLimit
-	t.AllowedModels = req.AllowedModels
+	if req.ExpiresAt != nil {
+		v := *req.ExpiresAt
+		if v < 0 {
+			v = 0
+		}
+		t.ExpiresAt = v
+	}
+	if req.QuotaLimit != nil {
+		v := *req.QuotaLimit
+		if v < 0 {
+			v = 0
+		}
+		t.QuotaLimit = v
+	}
+	if req.AllowedModels != nil {
+		t.AllowedModels = append([]string{}, (*req.AllowedModels)...)
+	}
 	if t.AllowedModels == nil {
 		t.AllowedModels = []string{}
 	}
-	t.Remark = strings.TrimSpace(req.Remark)
+	if req.Remark != nil {
+		t.Remark = strings.TrimSpace(*req.Remark)
+	}
 	t.UpdatedAt = time.Now().UnixMilli()
 
 	if err := s.store.SaveToken(t); err != nil {
