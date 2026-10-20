@@ -633,17 +633,9 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 			return attemptOutcome{status: status, err: errors.New(msg), retryable: false, wrote: true,
 				upstreamRaw: raw, upstreamHdr: resp.Header}
 		}
-		// 没有更多 Key 可换的 401/403 直接返回，不再把同一个认证错误
-		// 转发给其它模型。
-		if (status == http.StatusUnauthorized || status == http.StatusForbidden) && !hasMoreKeys {
-			if _, rewrite := customErrorOf(resolved.Model); rewrite {
-				return attemptOutcome{status: status, err: errors.New(msg), retryable: false,
-					upstreamRaw: raw, upstreamHdr: resp.Header, keyFailed: keyFailed, skipRouteCooldown: true}
-			}
-			writeUpstreamRaw(w, resp, raw)
-			return attemptOutcome{status: status, err: errors.New(msg), retryable: false, wrote: true,
-				upstreamRaw: raw, upstreamHdr: resp.Header, keyFailed: keyFailed}
-		}
+		// 401/403 在换完本路由的所有 Key 后是否继续尝试后续路由，
+		// 与其它状态码一致，由模型的「不可重试状态码」决定：
+		// 留空表示可重试，命中规则才直接返回。
 		out := attemptOutcome{status: status, err: errors.New(msg), retryable: !isLast, keyFailed: keyFailed}
 		if isLast {
 			// 已经是最后一条路由：上游原始错误留给 Do 原样返回给调用方

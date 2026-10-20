@@ -231,6 +231,65 @@ func TestEmptyNoRetryStatusRetriesAll(t *testing.T) {
 	}
 }
 
+// 模型不可重试状态码与渠道 Key 冷却状态码都留空时，401/403 也要按配置
+// 继续尝试后续路由：先换完本路由的所有 Key，再落到下一条路由。
+func TestEmptyStatusRulesRetryForbiddenToNextRoute(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	var forbiddenHits atomic.Int32
+	forbidden := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forbiddenHits.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"error":{"message":"no access"}}`)
+	}))
+	defer forbidden.Close()
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer fallback.Close()
+
+	st := newTestStore(t)
+	ch := statusTestChannel(t, st, "fr-a", forbidden.URL, []string{"key-k-000001", "key-k-000002"}, []string{"a"})
+	ch.KeyCooldownStatus = strp("")
+	if err := st.SaveChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	statusTestChannel(t, st, "fr-b", fallback.URL, []string{"key-k-000003"}, []string{"b"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "smart", Type: store.ModelTypeCustom,
+		Routes:        []store.Route{{ChannelID: "fr-a", Upstream: "a"}, {ChannelID: "fr-b", Upstream: "b"}},
+		NoRetryStatus: strp(""),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("smart"))
+
+	if rec.Code != http.StatusOK || res.Err != "" {
+		t.Fatalf("403 留空不可重试时应继续路由到备用模型，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := forbiddenHits.Load(); got != 2 {
+		t.Errorf("应先尝试完前一条路由的两个 Key，实际 %d 次", got)
+	}
+	if got := fallbackHits.Load(); got != 1 {
+		t.Errorf("备用路由应被调用一次，实际 %d 次", got)
+	}
+	if len(res.Attempts) != 3 {
+		t.Errorf("应记录三次尝试（两个 Key + 一条备用路由），得到 %d", len(res.Attempts))
+	}
+	// 渠道没把 403 算作 Key 故障，两个 Key 都不应冷却；路由本身按失败冷却。
+	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 2 {
+		t.Errorf("留空 Key 冷却状态码时不应冷却 Key，得到 %v（%s）", candidateIndexes(keys), reason)
+	}
+}
+
 // 把 401 从渠道的 Key 冷却列表里移除后，即使还有其它 Key 也不再换 Key，
 // 而是按模型的不可重试规则直接返回。
 func TestUnauthorizedWithoutKeyCooldownStopsFailover(t *testing.T) {
