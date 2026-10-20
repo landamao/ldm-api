@@ -383,7 +383,8 @@ type LogFilter struct {
 	TokenID   string
 	ModelID   string
 	ChannelID string
-	// Status 按结果过滤："success" 只看成功，"error" 只看失败，空表示全部。
+	// Status 按结果过滤："success" 只看成功，"error" 只看失败，
+	// "retry" 只看发生过重试的请求（不区分最终结果），空表示全部。
 	Status    string
 	OnlyError bool // 兼容旧参数，等价于 Status == "error"
 	Start     int64
@@ -426,6 +427,10 @@ func (s *Store) QueryLogs(f LogFilter) ([]Log, int, error) {
 				continue
 			}
 			if f.Status == "success" && failed {
+				continue
+			}
+			// 重试是独立维度：最终成功和最终失败都可能重试过。
+			if f.Status == "retry" && l.Retries <= 0 {
 				continue
 			}
 			total++

@@ -2891,6 +2891,7 @@
               <option value="">全部状态</option>
               <option value="success">成功</option>
               <option value="error">失败</option>
+              <option value="retry">有重试</option>
             </select>
             <div class="toolbar__spacer"></div>
             ${switchEl(logUnit.on, '单位', 'id="log-unit" title="开启后 Token 数按 K / M / B 显示，悬停可查看精确值"')}
@@ -3058,7 +3059,9 @@
             ? '当前只看失败请求，把状态筛选切回「全部状态」试试。'
             : logState.status === 'success'
               ? '当前只看成功请求，把状态筛选切回「全部状态」试试。'
-              : '发起一次 API 调用后就能在这里看到记录。';
+              : logState.status === 'retry'
+                ? '当前只看发生过重试的请求，把状态筛选切回「全部状态」试试。'
+                : '发起一次 API 调用后就能在这里看到记录。';
           host.innerHTML = emptyState('没有符合条件的日志', emptyDesc, '', 'logs');
           return;
         }
