@@ -1946,7 +1946,7 @@
           const p = JSON.parse(raw);
           const n = Array.isArray(p.messages) ? p.messages.length : 0;
           const model = typeof p.model === 'string' && p.model ? p.model : '未指定模型';
-          customHint.textContent = `模型 ${model} · ${p.stream === false ? '非流式' : '流式'} · ${n} 条消息`;
+          customHint.textContent = `模型 ${model} · ${p.stream === true ? '流式' : '非流式'} · ${n} 条消息`;
           customHint.classList.remove('is-error');
         } catch (e) {
           customHint.textContent = 'JSON 格式错误：' + e.message;
@@ -1988,7 +1988,9 @@
       const streamAssistant = async (run, bubble, view) => {
         const sentModel = run.sentModel;
         const customBody = run.customBody;
-        const useStream = customBody ? customBody.stream !== false : streaming;
+        // 实际是否流式以响应头为准：自定义请求体可能不带 stream 字段，
+        // 上游此时按非流式返回 JSON；普通模式也可能遇到上游不支持流式直接回 JSON。
+        let useStream = customBody ? customBody.stream === true : streaming;
         const t0 = run.t0;
         const isAbort = (e) => (e && e.name === 'AbortError') || run.ctl.signal.aborted;
         const scrollLog = () => {
@@ -2105,6 +2107,8 @@
             } catch (e) { /* 响应不是 JSON，保留状态码 */ }
             throw new Error(msg);
           }
+          // 请求体里的 stream 只代表意愿，真正决定解析方式的是上游实际返回的类型
+          useStream = (res.headers.get('content-type') || '').toLowerCase().includes('text/event-stream');
           if (!useStream) {
             // 非流式：等完整响应，思考与正文一次性渲染
             const j = await res.json();
