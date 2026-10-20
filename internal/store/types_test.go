@@ -78,13 +78,13 @@ func TestChannelKeyList(t *testing.T) {
 }
 
 func TestModelCustomErrorSwitches(t *testing.T) {
-	// 旧数据没有两个开关：有状态码即视为开启且始终返回。
-	legacy := Model{ErrorStatus: 503}
-	if !legacy.CustomErrorEnabled() || !legacy.CustomErrorAlways() {
-		t.Error("旧数据有状态码时应视为开启且始终返回")
-	}
+	// 没有配置开关时一律视为关闭，不能仅凭状态码推断。
 	if (Model{}).CustomErrorEnabled() || (Model{}).CustomErrorAlways() {
-		t.Error("没有状态码的旧数据应视为关闭")
+		t.Error("未配置开关时应为关闭")
+	}
+	statusOnly := Model{ErrorStatus: 503}
+	if statusOnly.CustomErrorEnabled() || statusOnly.CustomErrorAlways() {
+		t.Error("只有状态码、没有开关时应视为关闭")
 	}
 
 	on, off := true, false

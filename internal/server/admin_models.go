@@ -84,8 +84,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	out := make([]modelView, 0, len(models))
 	for _, m := range models {
 		v := modelView{Model: m, Status: statusOK}
-		// 回填两个开关的生效值：旧数据没有这两个字段，前端需要拿到
-		// 「有状态码即开启且始终返回」的兼容结果。
+		// 回填两个开关的生效值，前端直接按布尔值渲染（nil 表示未配置）。
 		errorEnabled := m.CustomErrorEnabled()
 		errorAlways := m.CustomErrorAlways()
 		v.ErrorEnabled = &errorEnabled
