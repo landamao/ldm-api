@@ -36,7 +36,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if !tokenAllowsIP(token, requestIP(r)) {
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"error": map[string]any{
-				"message": "该 API 密钥不允许从当前 IP 访问",
+				"message": "你的IP不在令牌允许访问名单",
 				"type":    "permission_error",
 				"code":    "ip_not_allowed",
 			},

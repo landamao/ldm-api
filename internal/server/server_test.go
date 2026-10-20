@@ -294,8 +294,9 @@ func TestTokenIPRestriction(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, body := call()
-	if code != http.StatusForbidden || !strings.Contains(body, `"code":"ip_not_allowed"`) {
-		t.Errorf("白名单外应返回 403 ip_not_allowed，得到 %d（%s）", code, body)
+	if code != http.StatusForbidden || !strings.Contains(body, `"code":"ip_not_allowed"`) ||
+		!strings.Contains(body, "你的IP不在令牌允许访问名单") {
+		t.Errorf("白名单外应返回 403 ip_not_allowed 与指定文案，得到 %d（%s）", code, body)
 	}
 
 	tok.AllowedIPs = []string{"127.0.0.1"}
