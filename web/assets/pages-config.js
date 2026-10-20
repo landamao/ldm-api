@@ -3271,7 +3271,7 @@
         <label class="field__label">调度选项</label>
         <div class="sched-grid">
           <label class="switch"><input type="checkbox" id="cm-affinity" ${m.affinity ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">模型亲和</span></label>
-          <div class="field__hint" style="margin-top:2px">开启后：本轮哪个路由成功了，下一轮请求就优先从它开始（提到最前）。</div>
+          <div class="field__hint" style="margin-top:2px">开启后：本轮哪个路由成功了，下一轮请求就优先从它开始。</div>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
             <span class="muted fs-12">失败冷却</span>
             <input class="input" id="cm-cooldown" type="number" min="0" max="86400" value="${m.cooldown_sec ?? 300}" style="width:90px;height:30px;font-size:12.5px">

@@ -1763,7 +1763,7 @@ html[data-theme="dark"] .msg__file { background: rgba(255, 255, 255, .08); }
 }
 .attachment-unsupported__title { font-size: 13px; font-weight: 650; color: var(--text-2); }
 
-/* 在线对话：左侧模型配置栏 + 右侧对话区 */
+/* 在线聊天：左侧模型配置栏 + 右侧对话区 */
 .chat-card {
   position: relative;
   display: flex; flex-direction: column;

@@ -203,7 +203,7 @@ type Result struct {
 	Affinity bool
 	// KeyAffinity 表示最终尝试使用的 Key 命中了 Key 亲和（上次成功的 Key 被优先尝试）。
 	KeyAffinity bool
-	// Canceled 表示客户端主动断开（例如在线对话里点了「停止」），
+	// Canceled 表示客户端主动断开（例如在线聊天里点了「停止」），
 	// 这种请求不计入渠道失败与成功率统计。
 	Canceled bool
 }
@@ -336,7 +336,7 @@ outer:
 				entry.KeyAffinity = kc.affinity
 			}
 			attempts = append(attempts, entry)
-			// 客户端主动断开（例如在线对话里点了「停止」）：按「黄色 200、记成功」记账，
+			// 客户端主动断开（例如在线聊天里点了「停止」）：按「黄色 200、记成功」记账，
 			// 同样记录亲和并清掉冷却（点停止不代表上游有问题），
 			// 不再重试、不标记渠道失败，也不往已经关闭的连接里写错误响应。
 			if outcome.canceled {

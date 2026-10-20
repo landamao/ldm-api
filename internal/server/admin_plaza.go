@@ -163,14 +163,14 @@ func joinArrow(parts []string) string {
 	return out
 }
 
-// chat 是管理端的在线对话入口：不需要创建 API 密钥就能直接和任意已启用的模型对话。
+// chat 是管理端的在线聊天入口：不需要创建 API 密钥就能直接和任意已启用的模型对话。
 // 流式与非流式调用都会照常写进日志与统计，方便在「调用日志」里回看。
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Model    string `json:"model"`
 		Messages []any  `json:"messages"`
 		Stream   bool   `json:"stream"`
-		// 采样参数用指针区分「没传」和「传了 0」：在线对话里每个参数
+		// 采样参数用指针区分「没传」和「传了 0」：在线聊天里每个参数
 		// 都有独立开关，关掉的参数不能出现在请求体里。
 		Temp    *float64        `json:"temperature"`
 		TopP    *float64        `json:"top_p"`
@@ -180,7 +180,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		Seed    *int64          `json:"seed"`
 		Raw     json.RawMessage `json:"raw"` // 自定义请求体：原样转发，不再由网关拼装
 	}
-	// 在线对话可能带上 base64 图片或附件，单独放宽到 64MB。
+	// 在线聊天可能带上 base64 图片或附件，单独放宽到 64MB。
 	if err := readJSONLimit(r, &req, 64<<20); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
 		return
@@ -235,7 +235,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := json.Marshal(payload)
 
-	source := store.Token{ID: "playground", Name: "在线对话"}
+	source := store.Token{ID: "playground", Name: "在线聊天"}
 	relayReq := &relay.Request{
 		Token:  source,
 		Path:   "/v1/chat/completions",

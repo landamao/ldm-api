@@ -2104,12 +2104,12 @@ class DemoBuilder:
             xff=ip(15),
         )
 
-        # 6) 在线对话（管理端 playground）
+        # 6) 在线聊天（管理端 playground）
         self.online_chat(
-            "chat-fast", "在线对话演示：非流式请求也会写日志。", stream=False, xff=ip(11)
+            "chat-fast", "在线聊天演示：非流式请求也会写日志。", stream=False, xff=ip(11)
         )
         self.online_chat(
-            "chat-fast", "在线对话演示：流式请求的 token 速度。", stream=True, xff=ip(12)
+            "chat-fast", "在线聊天演示：流式请求的 token 速度。", stream=True, xff=ip(12)
         )
 
         # 7) 受限令牌

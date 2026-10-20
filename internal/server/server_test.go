@@ -1911,7 +1911,7 @@ func TestChatRawBodyPassesThrough(t *testing.T) {
 	}
 }
 
-// 在线对话的采样参数要按开关原样转发：包括 0 值，也不能给没传的参数补默认值。
+// 在线聊天的采样参数要按开关原样转发：包括 0 值，也不能给没传的参数补默认值。
 func TestChatPassesSamplingParameters(t *testing.T) {
 	s, st := newTestServer(t, "chat-params")
 	var got map[string]any

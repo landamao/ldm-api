@@ -187,7 +187,7 @@ model_missing / no_routes / unavailable
 - 客户端主动取消（黄色 200，记成功）
 - 上游中途断开（红色 200，记错误）
 - embeddings、completions、原生 `/v1/messages`
-- 在线对话（管理端 playground）日志
+- 在线聊天（管理端 playground）日志
 
 日志默认分布到最近 7 天，并保证每个有调用的模型在今天至少有一条记录，所以模型广场的「近 24h」不会是一片 0。
 

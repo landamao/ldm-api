@@ -606,7 +606,7 @@
       sync(native);
       close();
       if (changed) native.dispatchEvent(new Event('change'));
-      // 页面可能借 change 把焦点移到输入框（例如在线对话），不要抢回来
+      // 页面可能借 change 把焦点移到输入框（例如在线聊天），不要抢回来
       const active = document.activeElement;
       if (trigger.isConnected && (!active || active === document.body || active === document.documentElement)) {
         trigger.focus();
@@ -1071,7 +1071,7 @@
     { group: '总览' },
     { id: 'dashboard', name: '数据看板', icon: 'dashboard' },
     { id: 'plaza', name: '模型广场', icon: 'plaza' },
-    { id: 'chat', name: '在线对话', icon: 'chat' },
+    { id: 'chat', name: '在线聊天', icon: 'chat' },
     { group: '配置' },
     { id: 'channels', name: '渠道管理', icon: 'channels' },
     { id: 'models', name: '模型管理', icon: 'models' },

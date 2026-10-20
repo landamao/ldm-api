@@ -712,7 +712,7 @@
   window.LDM.openModelDrawer = openModelDrawer;
 
   // ======================================================================
-  // 在线对话
+  // 在线聊天
   // ======================================================================
   function rateColor(r) {
     r = Number(r) || 0;
@@ -796,8 +796,8 @@
   });
 
   window.LDM.registerPage('chat', {
-    title: '在线对话',
-    desc: '在线和可用模型对话',
+    title: '在线聊天',
+    desc: '在线和可用模型聊天',
     async render(root, actions) {
       const all = await State.loadModels(true);
       const usable = all.filter((m) => m.enabled && m.channel_ready);

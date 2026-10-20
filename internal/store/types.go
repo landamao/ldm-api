@@ -352,7 +352,7 @@ type Log struct {
 	CachedTokens int `json:"cached_tokens,omitempty"`
 	// TokensPerSec 是流式请求的输出速度，按「生成耗时」而非总耗时计算。
 	TokensPerSec float64 `json:"tokens_per_sec,omitempty"`
-	// Canceled 表示客户端主动断开（在线对话点「停止」等），不计入错误统计。
+	// Canceled 表示客户端主动断开（在线聊天点「停止」等），不计入错误统计。
 	Canceled bool `json:"canceled,omitempty"`
 }
 

@@ -112,7 +112,7 @@ func (s *Server) Handler() http.Handler {
 	// ---- 备份导出 ----
 	mux.HandleFunc("POST /api/backup/export", s.admin(s.exportBackup))
 
-	// ---- 模型广场 / 在线对话 ----
+	// ---- 模型广场 / 在线聊天 ----
 	mux.HandleFunc("GET /api/plaza", s.admin(s.plaza))
 	mux.HandleFunc("POST /api/chat", s.admin(s.chat))
 
@@ -397,7 +397,7 @@ func readJSON(r *http.Request, v any) error {
 }
 
 // readJSONLimit 与 readJSON 相同，但允许调用方指定请求体上限。
-// 在线对话需要容纳 base64 图片与附件，因此单独放宽到 64MB。
+// 在线聊天需要容纳 base64 图片与附件，因此单独放宽到 64MB。
 func readJSONLimit(r *http.Request, v any, limit int64) error {
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit))
 	if err != nil {
