@@ -79,6 +79,9 @@ func TestAutoProviderAssignment(t *testing.T) {
 		if got.ProviderID != want[m] {
 			t.Errorf("模型 %s 的提供商应为 %q，实际 %q", m, want[m], got.ProviderID)
 		}
+		if got.NoRetryStatus == nil || *got.NoRetryStatus != "" {
+			t.Errorf("批量添加的模型 %s 应默认留空不可重试状态码，实际 %+v", m, got.NoRetryStatus)
+		}
 	}
 }
 

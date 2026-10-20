@@ -20,6 +20,31 @@ func TestChannelShouldAppendV1(t *testing.T) {
 	}
 }
 
+func TestChannelMultiKeyEnabled(t *testing.T) {
+	// 旧数据没有 multi_key 字段：按 Key 数量推断。
+	single := Channel{APIKeys: []ChannelKey{{Key: "sk-a"}}}
+	if single.MultiKeyEnabled() {
+		t.Error("只有一个 Key 的旧数据应视为关闭多 Key 模式")
+	}
+	legacySingle := Channel{APIKey: "sk-legacy"}
+	if legacySingle.MultiKeyEnabled() {
+		t.Error("单 Key 旧字段应视为关闭多 Key 模式")
+	}
+	multi := Channel{APIKeys: []ChannelKey{{Key: "sk-a"}, {Key: "sk-b"}}}
+	if !multi.MultiKeyEnabled() {
+		t.Error("多个 Key 的旧数据应视为开启多 Key 模式")
+	}
+
+	// 显式值优先于 Key 数量。
+	on, off := true, false
+	if !(Channel{MultiKey: &on}).MultiKeyEnabled() {
+		t.Error("显式开启时应返回 true")
+	}
+	if (Channel{MultiKey: &off, APIKeys: []ChannelKey{{Key: "sk-a"}, {Key: "sk-b"}}}).MultiKeyEnabled() {
+		t.Error("显式关闭时应返回 false")
+	}
+}
+
 func TestChannelKeyList(t *testing.T) {
 	ch := Channel{APIKeys: []ChannelKey{
 		{Key: "sk-a-12345678", Note: " 主账号 "},

@@ -20,6 +20,9 @@ type channelView struct {
 	store.Channel
 	ChannelModels []string `json:"channel_models"` // 派生的渠道模型 ID
 	AddedCount    int      `json:"added_count"`    // 已加入模型设置的渠道模型数量
+	// MultiKeyEnabled 是 MultiKey 的派生结果：旧数据未设置时按 Key 数量推断，
+	// 前端不用重复实现这套兼容规则。
+	MultiKeyEnabled bool `json:"multi_key_enabled"`
 	// KeyRows 是给两列表格使用的 Key 行：只返回掩码 Key 和备注，
 	// 前端编辑备注时不需要把掩码当成新 Key 提交回来。
 	KeyRows []keyRowView `json:"key_rows,omitempty"`
@@ -35,7 +38,8 @@ type keyRowView struct {
 // channelSaveView 是保存接口返回的渠道视图，与列表视图一样附带 Key 行。
 type channelSaveView struct {
 	store.Channel
-	KeyRows []keyRowView `json:"key_rows,omitempty"`
+	MultiKeyEnabled bool         `json:"multi_key_enabled"`
+	KeyRows         []keyRowView `json:"key_rows,omitempty"`
 }
 
 func keyRowViews(keys []store.ChannelKey) []keyRowView {
@@ -71,6 +75,7 @@ func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
 		}
 		v.APIKey = maskKey(c.APIKey)
 		v.APIKeys = nil
+		v.MultiKeyEnabled = c.MultiKeyEnabled()
 		v.KeyRows = keyRowViews(c.KeyList())
 		out = append(out, v)
 	}
@@ -158,6 +163,7 @@ type channelRequest struct {
 	BaseURL           *string            `json:"base_url"`
 	APIKey            string             `json:"api_key"`
 	KeyRows           *[]keyRowRequest   `json:"key_rows"`
+	MultiKey          *bool              `json:"multi_key"`
 	KeyMode           *string            `json:"key_mode"`
 	KeyAffinity       *bool              `json:"key_affinity"`
 	KeyCooldownSec    *int               `json:"key_cooldown_sec"`
@@ -234,8 +240,18 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 		v := true
 		ch.AppendV1 = &v
 	}
+	// 多 Key 模式：新建默认关闭；旧数据未设置时由 MultiKeyEnabled 按已有 Key 数量推断，
+	// 只有一个 Key 的旧数据同样按关闭处理。
+	if req.MultiKey != nil {
+		v := *req.MultiKey
+		ch.MultiKey = &v
+	} else if isNew {
+		v := false
+		ch.MultiKey = &v
+	}
 	// key_rows 是两列表格提交的完整列表，备注和密钥分开；
 	// 已保存的 Key 只通过下标引用，改备注不会把掩码写回去。
+	// 多 Key 模式关闭只影响调度，这里不截断列表，隐藏的 Key 仍会保留。
 	if req.KeyRows != nil {
 		keys := resolveSubmittedKeyRows(*req.KeyRows, ch.KeyList())
 		ch.APIKeys = keys
@@ -290,6 +306,10 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ch.KeyCooldownStatus = &status
+	} else if isNew {
+		// 新建渠道默认留空：任何状态码都不冷却 Key，需要时再手动填入模板。
+		empty := ""
+		ch.KeyCooldownStatus = &empty
 	}
 	if req.Models != nil {
 		models, err := normalizeModelNames(*req.Models)
@@ -334,6 +354,7 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 	view := channelSaveView{Channel: ch}
 	view.APIKey = maskKey(ch.APIKey)
 	view.APIKeys = nil
+	view.MultiKeyEnabled = ch.MultiKeyEnabled()
 	view.KeyRows = keyRowViews(ch.KeyList())
 	writeOK(w, map[string]any{
 		"channel":           view,
@@ -671,6 +692,10 @@ type probeResult struct {
 // 多 Key 渠道里单个 Key 失效不应把整条渠道判成不可用。
 func (s *Server) probeChannel(ch store.Channel) probeResult {
 	keys := ch.Keys()
+	if !ch.MultiKeyEnabled() && len(keys) > 1 {
+		// 多 Key 模式关闭时只测第一个 Key，与调度行为保持一致。
+		keys = keys[:1]
+	}
 	if len(keys) == 1 && keys[0] == "" {
 		return s.probeChannelOnce(ch)
 	}

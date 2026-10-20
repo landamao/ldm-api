@@ -481,16 +481,20 @@ func TestSaveChannelKeyRowsTwoColumns(t *testing.T) {
 		}
 	}
 
-	// 新建：两列分别提交 Key 和备注。
+	// 新建：两列分别提交 Key 和备注，显式开启多 Key 模式。
 	view, rawBody := call(`{"id":"c","name":"渠道","type":"openai","base_url":"https://example.com",
 		"key_rows":[
 			{"key":"sk-main-12345678","note":"主账号"},
 			{"key":"sk-backup-12345678","note":""}
 		],
+		"multi_key":true,
 		"key_mode":"random","key_affinity":true,"key_cooldown_sec":60,"key_cooldown_reset":true,
 		"models":["m"],"enabled":true}`)
 	if strings.Contains(rawBody, "sk-main-12345678") || strings.Contains(rawBody, "sk-backup-12345678") {
 		t.Fatal("响应不应包含明文上游密钥")
+	}
+	if !view.MultiKeyEnabled {
+		t.Error("显式开启多 Key 后 multi_key_enabled 应为 true")
 	}
 	if view.APIKey != "sk-m****5678" {
 		t.Errorf("api_key 应脱敏，得到 %q", view.APIKey)
@@ -551,6 +555,50 @@ func TestSaveChannelKeyRowsTwoColumns(t *testing.T) {
 	// remove=true 也用于显式删除。
 	call(`{"key_rows":[{"index":0,"remove":true}]}`)
 	checkStored()
+}
+
+// 多 Key 模式默认关闭：关闭只影响调度，提交的多行 Key 仍然全部保存。
+func TestSaveChannelMultiKeyDefaultsOffKeepsKeys(t *testing.T) {
+	s, st := newTestServer(t, "channel-multikey-default")
+	req := httptest.NewRequest(http.MethodPut, "/api/channels/c", strings.NewReader(`{
+		"id":"c","type":"openai","base_url":"https://example.com",
+		"key_rows":[
+			{"key":"sk-first-12345678","note":"主账号"},
+			{"key":"sk-second-12345678","note":"备用"}
+		]
+	}`))
+	req.SetPathValue("id", "c")
+	rec := httptest.NewRecorder()
+	s.saveChannel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Channel channelView `json:"channel"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Channel.MultiKeyEnabled {
+		t.Error("新建渠道默认应关闭多 Key 模式")
+	}
+	ch, err := st.GetChannel("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := ch.KeyList()
+	if len(keys) != 2 {
+		t.Fatalf("关闭多 Key 模式不应删除其余 Key，得到 %+v", keys)
+	}
+	if keys[0].Key != "sk-first-12345678" || keys[0].Note != "主账号" {
+		t.Errorf("第一个 Key 及其备注保存错误，得到 %+v", keys[0])
+	}
+	if keys[1].Key != "sk-second-12345678" || keys[1].Note != "备用" {
+		t.Errorf("第二个 Key 及其备注保存错误，得到 %+v", keys[1])
+	}
+	if ch.APIKey != "sk-first-12345678" {
+		t.Errorf("api_key 应同步为第一个 Key，得到 %q", ch.APIKey)
+	}
 }
 
 // 密码错误时应按配置的延迟返回。

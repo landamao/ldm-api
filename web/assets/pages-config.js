@@ -18,6 +18,12 @@
   // 状态码规则的默认值，与 internal/store/status.go 中的常量保持一致。
   const DEFAULT_KEY_COOLDOWN_STATUS = '401,403,408,429,500-599';
   const DEFAULT_NO_RETRY_STATUS = '400-428,430-499';
+  const NO_RETRY_STATUS_HELP_TEXT = '支持单个状态码或区间，逗号分隔，例如 400-430、429。命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。留空表示所有状态码都可重试（未配置过的旧数据也按留空处理）；点击「填入模板」填入 400-428,430-499（4xx 中除 429 外都不可重试）。401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。';
+  const NO_RETRY_STATUS_HELP_HTML = `
+    <div style="margin-bottom:8px">支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>429</code>。</div>
+    <div style="margin-bottom:8px">命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。</div>
+    <div style="margin-bottom:8px">留空表示所有状态码都可重试（未配置过的旧数据也按留空处理）；点击「填入模板」填入 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）。</div>
+    <div>401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。</div>`;
 
   // 每个渠道 / 模型编辑弹窗的「高级设置」展开状态按实体 ID 记在本地。
   // 新建时统一用 __new，避免不同实体的状态互相影响。
@@ -35,6 +41,20 @@
     } catch (e) { /* 存储不可用时默认收起 */ }
     details.addEventListener('toggle', () => {
       try { localStorage.setItem(advancedKey(kind, id), details.open ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
+    });
+  }
+
+  // 长说明统一收进标签旁的问号：悬停看摘要，点击打开完整说明。
+  function helpBadgeHtml(text, label) {
+    return `<button type="button" class="badge badge--blue badge--click field__help" title="${esc(text)}" aria-label="${esc(label)}">?</button>`;
+  }
+
+  function openHelpModal(title, html) {
+    openModal({
+      title,
+      size: 'sm',
+      body: `<div class="fs-13" style="line-height:1.8">${html}</div>`,
+      footer: `<div class="spacer"></div><button class="btn" data-close>知道了</button>`,
     });
   }
 
@@ -139,6 +159,7 @@
     const names = c.models || [];          // 渠道里填写的上游模型名
     const keyRows = c.key_rows || [];
     const keyCount = keyRows.length;
+    const multiKeyOn = c.multi_key_enabled === true;
     const keyTip = `${c.key_mode === 'random' ? '随机' : '顺序'}${c.key_affinity ? ' + 亲和' : ''}`
       + (keyCount ? `\n${keyRows.map((r, i) => `#${i + 1}${r.note ? ` ${r.note}` : ''}`).join('\n')}` : '');
     const multi = channelListState.multi;
@@ -151,7 +172,7 @@
         </div>
         ${c.name ? `<div class="muted fs-12" style="margin-top:2px">${esc(c.name)}</div>` : ''}
       </td>
-      <td>${badge(typeLabel(c.type), typeTone(c.type))}${keyCount > 1
+      <td>${badge(typeLabel(c.type), typeTone(c.type))}${multiKeyOn && keyCount > 1
         ? ` <span class="badge badge--gray" title="${esc(keyTip)}">${keyCount} Keys</span>`
         : ''}</td>
       <td><span class="muted fs-12 truncate" style="display:block;max-width:220px" title="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
@@ -1003,11 +1024,18 @@
     const isNew = !ch;
     const data = ch || {
       id: '', name: '', type: 'openai', base_url: '', api_key: '', key_rows: [], append_v1: true,
+      multi_key: false,
       key_mode: 'sequential', key_affinity: false, key_cooldown_sec: 300, key_cooldown_reset: false,
-      key_cooldown_status: DEFAULT_KEY_COOLDOWN_STATUS,
+      key_cooldown_status: '',
       models: [], enabled: true, remark: '', headers: {},
     };
     const initialKeyRows = data.key_rows || [];
+    // 旧数据没有 multi_key_enabled 时按 Key 数量推断，与后端规则保持一致。
+    const multiKeyInit = data.multi_key_enabled !== undefined
+      ? data.multi_key_enabled === true
+      : initialKeyRows.length > 1;
+    const keySchedHelpText = '顺序：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。随机：每次请求完整打乱可用 Key 后再依次尝试。Key 亲和：上次成功的 Key 优先：顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。失败冷却：Key 失败后在设定时间内跳过（0 = 不冷却）。全部冷却时重置：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。';
+    const keyCooldownStatusHelpText = `支持单个状态码或区间，逗号分隔，例如 400-430、401,403,429。命中后该 Key 进入失败冷却；未命中的错误不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。留空表示任何状态码都不冷却 Key；点击「填入模板」填入 ${DEFAULT_KEY_COOLDOWN_STATUS}。`;
 
     const body = `
       <div class="form-row">
@@ -1040,28 +1068,37 @@
           </label>
         </div>
         <input class="input mono" id="f-base" value="${esc(data.base_url || '')}" placeholder="https://api.openai.com">
-        <div class="field__hint" id="base-hint"></div>
+        <div class="field__hint" id="base-hint">必填，<b>留空不会回退到官方地址</b>，必须自己填清楚。</div>
       </div>
 
       <div class="field">
         <div class="flex-center gap-8" style="margin-bottom:6px">
           <label class="field__label" style="margin-bottom:0">API Key<span class="req">*</span></label>
-          <button class="btn btn--sm btn--icon ml-auto" id="btn-eye" type="button" title="显示/隐藏" aria-label="显示或隐藏密钥">${icon('eye', 15)}</button>
+          <label class="switch ml-auto" style="white-space:nowrap">
+            <input type="checkbox" id="f-multi-key" ${multiKeyInit ? 'checked' : ''}>
+            <span class="switch__track"></span>
+            <span class="switch__label">多 Key 模式</span>
+          </label>
+          <button class="btn btn--sm btn--icon" id="btn-eye" type="button" title="显示/隐藏" aria-label="显示或隐藏密钥">${icon('eye', 15)}</button>
         </div>
-        <div class="key-rows" id="f-key-rows">
+        <div class="key-rows${multiKeyInit ? '' : ' key-rows--single'}" id="f-key-rows">
           <div class="key-row key-row--head">
             <span>密钥</span><span>备注</span><span></span>
           </div>
         </div>
-        <button class="btn btn--sm mt-8" id="btn-add-key" type="button">${icon('plus', 13)}添加 Key</button>
-        <div class="field__hint">
-          已保存的密钥以掩码显示。
-          <b>只改备注不会重新提交密钥</b>；清空某一行的密钥或删除整行，即删除对应的 Key。
-        </div>
+        <button class="btn btn--sm mt-8" id="btn-add-key" type="button"${multiKeyInit ? '' : ' hidden'}>${icon('plus', 13)}添加 Key</button>
+        <div class="field__hint" id="f-key-hint">${multiKeyInit
+          ? '已保存的密钥以掩码显示。<b>只改备注不会重新提交密钥</b>；清空某一行的密钥或删除整行，即删除对应的 Key。'
+          : '已保存的密钥以掩码显示；清空密钥即删除该渠道的 Key。'}</div>
       </div>
 
-      <div class="field">
-        <label class="field__label">Key 调度</label>
+      <div class="field" id="f-key-sched"${multiKeyInit ? '' : ' hidden'}>
+        <div style="margin-bottom:6px">
+          <label class="field__label" style="margin-bottom:0">Key 调度
+            <button type="button" class="badge badge--blue badge--click field__help"
+                    id="f-key-sched-help" title="${esc(keySchedHelpText)}" aria-label="查看 Key 调度规则">?</button>
+          </label>
+        </div>
         <div class="flex-center gap-12" style="flex-wrap:wrap">
           <select class="select" id="f-key-mode" style="width:110px">
             <option value="sequential"${(data.key_mode || 'sequential') === 'sequential' ? ' selected' : ''}>顺序</option>
@@ -1082,13 +1119,17 @@
                  value="${esc(String(data.key_cooldown_sec ?? 300))}" style="width:92px;height:30px;font-size:12.5px">
           <span class="muted fs-12">秒</span>
         </div>
-        <div class="field__hint">
-          <b>顺序</b>：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。
-          <b>随机</b>：每次请求完整打乱可用 Key 后再依次尝试。
-          <b>Key 亲和</b>：上次成功的 Key 优先：顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。
-          <b>失败冷却</b>：Key 失败后在设定时间内跳过（0 = 不冷却）。
-          <b>全部冷却时重置</b>：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。
+        <div class="field__head" style="margin-top:12px">
+          <label class="field__label" style="margin-bottom:0">触发 Key 冷却的状态码
+            <button type="button" class="badge badge--blue badge--click field__help"
+                    id="f-key-cooldown-status-help" title="${esc(keyCooldownStatusHelpText)}" aria-label="查看状态码规则">?</button>
+          </label>
+          <button type="button" class="btn btn--ghost btn--sm field__reset"
+                  id="f-key-cooldown-status-template" title="填入常用模板">${icon('paste', 11)}填入模板</button>
         </div>
+        <input class="input mono" id="f-key-cooldown-status"
+               value="${esc(data.key_cooldown_status ?? '')}"
+               placeholder="${DEFAULT_KEY_COOLDOWN_STATUS}">
       </div>
 
       <div class="field">
@@ -1121,22 +1162,6 @@
             <textarea class="textarea" id="f-headers" rows="3" placeholder='{"X-Custom": "value"}'>${esc(Object.keys(data.headers || {}).length ? JSON.stringify(data.headers, null, 2) : '')}</textarea>
           </div>
           <div class="field">
-            <div class="field__head">
-              <label class="field__label">触发 Key 冷却的状态码</label>
-              <button type="button" class="btn btn--ghost btn--sm field__reset"
-                      id="f-key-cooldown-status-reset" title="恢复默认值">${icon('refresh', 11)}重置</button>
-            </div>
-            <input class="input mono" id="f-key-cooldown-status"
-                   value="${esc(data.key_cooldown_status ?? DEFAULT_KEY_COOLDOWN_STATUS)}"
-                   placeholder="${DEFAULT_KEY_COOLDOWN_STATUS}">
-            <div class="field__hint">
-              支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>401,403,429</code>。
-              命中后该 Key 进入失败冷却；未命中的错误不会冷却 Key，但仍按模型的重试规则继续路由，
-              全部 Key 失败后会冷却对应的渠道模型。
-              默认 <code>${DEFAULT_KEY_COOLDOWN_STATUS}</code>，留空表示任何状态码都不冷却 Key。
-            </div>
-          </div>
-          <div class="field">
             <label class="field__label">备注</label>
             <input class="input" id="f-remark" value="${esc(data.remark || '')}" placeholder="可选">
           </div>
@@ -1162,16 +1187,51 @@
         const keyRowsEl = $('#f-key-rows');
         const preview = $('#model-preview');
 
-        $('#f-key-cooldown-status-reset').onclick = () => {
+        $('#f-key-cooldown-status-template').onclick = () => {
           const input = $('#f-key-cooldown-status');
           input.value = DEFAULT_KEY_COOLDOWN_STATUS;
           input.focus();
+        };
+        $('#f-key-sched-help').onclick = () => {
+          openHelpModal('Key 调度规则', `
+            <div style="margin-bottom:8px"><b>顺序</b>：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。</div>
+            <div style="margin-bottom:8px"><b>随机</b>：每次请求完整打乱可用 Key 后再依次尝试。</div>
+            <div style="margin-bottom:8px"><b>Key 亲和</b>：上次成功的 Key 优先。顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。</div>
+            <div style="margin-bottom:8px"><b>失败冷却</b>：Key 失败后在设定时间内跳过（0 = 不冷却）。</div>
+            <div><b>全部冷却时重置</b>：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。</div>
+          `);
+        };
+        $('#f-key-cooldown-status-help').onclick = () => {
+          openHelpModal('Key 冷却状态码', `
+            <div style="margin-bottom:8px">支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>401,403,429</code>。</div>
+            <div style="margin-bottom:8px">命中后该 Key 进入失败冷却；未命中的错误不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。</div>
+            <div>留空表示任何状态码都不冷却 Key；点击「填入模板」填入 <code>${DEFAULT_KEY_COOLDOWN_STATUS}</code>。</div>
+          `);
         };
         bindAdvancedState(mo.body, 'channel', data.id);
 
         // 两列 Key 表格：密钥一列、备注一列。已保存的 Key 只在用户主动改 Key
         // 时才提交新值，只改备注时请求里只有下标和备注。
         let keysVisible = false;
+        const multiKeyEl = $('#f-multi-key');
+        const keyHintEl = $('#f-key-hint');
+
+        // 多 Key 模式关闭时只显示第一个 Key：隐藏后续行、删除按钮、添加按钮和 Key 调度。
+        // 隐藏行仍会随表单一起提交，保存时不会丢掉其余 Key，重新打开开关可以继续编辑。
+        // 单 Key 也保留备注列，方便只配一个 Key 时写备注。
+        function applyMultiKeyMode() {
+          const on = multiKeyEl.checked;
+          keyRowsEl.classList.toggle('key-rows--single', !on);
+          $('#btn-add-key').hidden = !on;
+          $('#f-key-sched').hidden = !on;
+          keyRowsEl.querySelectorAll('[data-key-row]').forEach((el, i) => {
+            el.hidden = !on && i > 0;
+          });
+          keyHintEl.innerHTML = on
+            ? '已保存的密钥以掩码显示。<b>只改备注不会重新提交密钥</b>；清空某一行的密钥或删除整行，即删除对应的 Key。'
+            : '只使用第一个 Key，其余 Key 保留但不参与调度。清空密钥即删除该 Key。';
+        }
+        multiKeyEl.onchange = applyMultiKeyMode;
 
         function applyKeyMask() {
           keyRowsEl.querySelectorAll('.key-field').forEach((el) => {
@@ -1242,6 +1302,7 @@
         function collectKeyRows() {
           const rows = [];
           keyRowsEl.querySelectorAll('[data-key-row]').forEach((el) => {
+            // 关闭多 Key 模式时隐藏行也提交，避免保存时把其余 Key 删掉。
             const key = (el.querySelector('.key-field').value || '').trim();
             const note = (el.querySelector('.key-note').value || '').trim();
             const idx = el.dataset.index;
@@ -1263,6 +1324,7 @@
         }
 
         renderKeyRows();
+        applyMultiKeyMode();
         keyRowsEl.addEventListener('click', (e) => {
           const btn = e.target.closest('[data-key-del]');
           if (!btn) return;
@@ -1282,14 +1344,6 @@
         const updateTypeHint = () => {
           const t = CHANNEL_TYPES.find((x) => x.value === typeEl.value);
           $('#type-hint').textContent = t ? t.hint : '';
-          const examples = {
-            openai: 'https://api.openai.com',
-            anthropic: 'https://api.anthropic.com',
-            gemini: 'https://generativelanguage.googleapis.com',
-          };
-          $('#base-hint').innerHTML = `必填，需要带上 <code>https://</code> 或 <code>http://</code>。
-            例如 <code>${examples[typeEl.value]}</code>。
-            <b>留空不会回退到官方地址</b>，必须自己填清楚。`;
         };
         updateTypeHint();
         typeEl.onchange = updateTypeHint;
@@ -1404,6 +1458,7 @@
           const payload = {
             id, name: $('#f-name').value.trim(), type: typeEl.value,
             base_url: base, key_rows: keys, append_v1: $('#f-append-v1').checked, models,
+            multi_key: multiKeyEl.checked,
             key_mode: $('#f-key-mode').value,
             key_affinity: $('#f-key-affinity').checked,
             key_cooldown_sec: Math.max(0, Math.min(86400, Math.round(Number($('#f-key-cooldown').value) || 0))),
@@ -2868,19 +2923,16 @@
         <div class="mt-12">
           <div class="field">
             <div class="field__head">
-              <label class="field__label">不可重试状态码</label>
+              <label class="field__label">不可重试状态码
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="m-no-retry-help" title="${esc(NO_RETRY_STATUS_HELP_TEXT)}" aria-label="查看不可重试状态码规则">?</button>
+              </label>
               <button type="button" class="btn btn--ghost btn--sm field__reset"
-                      id="m-no-retry-reset" title="恢复默认值">${icon('refresh', 11)}重置</button>
+                      id="m-no-retry-template" title="填入常用模板">${icon('paste', 11)}填入模板</button>
             </div>
             <input class="input mono" id="m-no-retry"
-                   value="${esc(m.no_retry_status ?? DEFAULT_NO_RETRY_STATUS)}"
+                   value="${esc(m.no_retry_status ?? '')}"
                    placeholder="${DEFAULT_NO_RETRY_STATUS}">
-            <div class="field__hint">
-              支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>429</code>。
-              命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。
-              默认 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）；留空表示所有状态码都可重试。
-              401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。
-            </div>
           </div>
         </div>
       </details>
@@ -2900,7 +2952,10 @@
       onMount(mo) {
         bindCapsEditor(mo.body);
         bindAdvancedState(mo.body, 'model', m.id);
-        mo.body.querySelector('#m-no-retry-reset').onclick = () => {
+        mo.body.querySelector('#m-no-retry-help').onclick = () => {
+          openHelpModal('不可重试状态码', NO_RETRY_STATUS_HELP_HTML);
+        };
+        mo.body.querySelector('#m-no-retry-template').onclick = () => {
           const input = mo.body.querySelector('#m-no-retry');
           input.value = DEFAULT_NO_RETRY_STATUS;
           input.focus();
@@ -3167,7 +3222,7 @@
     const m = existing || {
       id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
       caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
-      no_retry_status: DEFAULT_NO_RETRY_STATUS,
+      no_retry_status: '',
     };
     // 本地编辑态
     const draft = {
@@ -3238,19 +3293,16 @@
         <div class="mt-12">
           <div class="field">
             <div class="field__head">
-              <label class="field__label">不可重试状态码</label>
+              <label class="field__label">不可重试状态码
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="cm-no-retry-help" title="${esc(NO_RETRY_STATUS_HELP_TEXT)}" aria-label="查看不可重试状态码规则">?</button>
+              </label>
               <button type="button" class="btn btn--ghost btn--sm field__reset"
-                      id="cm-no-retry-reset" title="恢复默认值">${icon('refresh', 11)}重置</button>
+                      id="cm-no-retry-template" title="填入常用模板">${icon('paste', 11)}填入模板</button>
             </div>
             <input class="input mono" id="cm-no-retry"
-                   value="${esc(m.no_retry_status ?? DEFAULT_NO_RETRY_STATUS)}"
+                   value="${esc(m.no_retry_status ?? '')}"
                    placeholder="${DEFAULT_NO_RETRY_STATUS}">
-            <div class="field__hint">
-              支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>429</code>。
-              命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。
-              默认 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）；留空表示所有状态码都可重试。
-              401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。
-            </div>
           </div>
         </div>
       </details>
@@ -3289,7 +3341,10 @@
         const routeHost = mo.body.querySelector('#route-host');
         const capsHost = mo.body.querySelector('#caps-host');
         bindAdvancedState(mo.body, 'model', m.id);
-        mo.body.querySelector('#cm-no-retry-reset').onclick = () => {
+        mo.body.querySelector('#cm-no-retry-help').onclick = () => {
+          openHelpModal('不可重试状态码', NO_RETRY_STATUS_HELP_HTML);
+        };
+        mo.body.querySelector('#cm-no-retry-template').onclick = () => {
           const input = mo.body.querySelector('#cm-no-retry');
           input.value = DEFAULT_NO_RETRY_STATUS;
           input.focus();

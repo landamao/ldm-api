@@ -880,6 +880,10 @@ html[data-theme="dark"] .ldm-select[aria-expanded="true"] { background-color: rg
   white-space: nowrap;
 }
 .key-row .input { height: 32px; }
+/* 多 Key 模式关闭：保留密钥和备注两列，只隐藏删除按钮。 */
+.btn[hidden] { display: none; }
+.key-row[hidden] { display: none; }
+.key-rows--single [data-key-del] { display: none; }
 .input-group .input { flex: 1; }
 
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

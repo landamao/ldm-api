@@ -294,7 +294,7 @@ outer:
 			}
 			continue
 		}
-		multiKey := len(route.Channel.Keys()) > 1
+		multiKey := route.Channel.MultiKeyEnabled() && len(route.Channel.Keys()) > 1
 		for ki, kc := range keys {
 			hasMoreKeys := ki < len(keys)-1
 			// isLast 表示整条重试链（包括后续路由）的最后一次尝试，

@@ -69,6 +69,10 @@ func MaskKey(k string) string {
 //     随机模式先试它，其余 Key 洗牌后顺延。
 func PlanKeys(ch store.Channel) ([]keyCandidate, string) {
 	list := ch.KeyList()
+	// 多 Key 模式关闭时只调度第一个 Key，其余 Key 保留在配置里但不参与尝试。
+	if !ch.MultiKeyEnabled() && len(list) > 1 {
+		list = list[:1]
+	}
 	// 没有配置 Key：保持旧行为（不带认证头），也不做冷却记录。
 	if len(list) == 0 {
 		return []keyCandidate{{key: "", index: 1}}, ""

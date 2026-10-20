@@ -6,6 +6,9 @@
 
   const REPO_URL = 'https://github.com/landamao/ldm-api';
 
+  // 触摸设备（手机 / 平板）：程序化聚焦输入框会直接弹出虚拟键盘，需要主动规避
+  const COARSE_POINTER = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+
   // ---------- 工具 ----------
   const esc = (s) =>
     String(s == null ? '' : s)
@@ -323,7 +326,6 @@
   // 选择时回写原生 select 并派发 change，页面里原有的 .value / .onchange 都不用改。
   const Select = (function () {
     let openState = null;
-    const isCoarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
     // 把原生 select 的 option / optgroup 摊平成渲染用的条目
     function collect(native) {
@@ -476,7 +478,7 @@
 
       trigger.setAttribute('aria-expanded', 'true');
       // 触摸设备不自动聚焦搜索框，避免一打开就弹虚拟键盘
-      if (showSearch && !isCoarse) searchEl.focus();
+      if (showSearch && !COARSE_POINTER) searchEl.focus();
       else pop.focus();
     }
 
@@ -831,15 +833,18 @@
     document.body.style.overflow = 'hidden';
 
     if (onMount) onMount(api);
-    // 自动聚焦第一个输入框；如果是下拉框，聚焦到自绘触发器
-    setTimeout(() => {
-      let first = bodyEl.querySelector('input:not([type=checkbox]):not([type=radio]), textarea, select');
-      if (first && first.tagName === 'SELECT') {
-        Select.enhance(first);
-        first = first.__ldmTrigger || first;
-      }
-      if (first && !first.dataset.nofocus) first.focus();
-    }, 60);
+    // 自动聚焦第一个输入框；如果是下拉框，聚焦到自绘触发器。
+    // 触摸设备上不聚焦，否则弹窗一打开就弹出虚拟键盘。
+    if (!COARSE_POINTER) {
+      setTimeout(() => {
+        let first = bodyEl.querySelector('input:not([type=checkbox]):not([type=radio]), textarea, select');
+        if (first && first.tagName === 'SELECT') {
+          Select.enhance(first);
+          first = first.__ldmTrigger || first;
+        }
+        if (first && !first.dataset.nofocus) first.focus();
+      }, 60);
+    }
     return api;
   }
 
@@ -1050,6 +1055,7 @@
   window.LDM = {
     esc, fmtNum, fmtInt, fmtUnit, fmtTime, fmtTimeShort, relTime, fmtDuration, fmtUptime,
     copyText, debounce, icon, providerIcon, providerAvatar, Toast, API, Select, openModal, confirmDialog, promptDialog,
+    isCoarsePointer: COARSE_POINTER,
     badge, statusBadge, emptyState, loadingBlock, switchEl, capBadges, fmtContext, colorBadge,
     Theme, State, routeParam, applyLogo,
     registerPage(name, def) { PAGES[name] = def; },

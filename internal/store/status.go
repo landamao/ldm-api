@@ -8,18 +8,7 @@ import (
 )
 
 // 状态码规则：支持单个状态码和闭区间，用逗号、分号或空白分隔，
-// 例如 "400, 404-408, 429"。
-
-const (
-	// DefaultNoRetryStatus 是模型未配置时默认的不可重试状态码：
-	// 4xx 里除 429（限流）之外都直接返回。401/403 在还有其它 Key 时
-	// 仍会先换 Key 重试，详见 relay 的处理。
-	DefaultNoRetryStatus = "400-428,430-499"
-
-	// DefaultKeyCooldownStatus 是渠道未配置时默认触发 Key 冷却的状态码，
-	// 与旧版硬编码规则保持一致。
-	DefaultKeyCooldownStatus = "401,403,408,429,500-599"
-)
+// 例如 "400, 404-408, 429"。未配置时视为空规则。
 
 // StatusSet 是一组 HTTP 状态码，内部按闭区间保存。
 // 零值不匹配任何状态码。
@@ -104,42 +93,28 @@ func parseStatusRange(part string) (int, int, error) {
 	return code, code, nil
 }
 
-var (
-	defaultNoRetrySet     = mustStatusSet(DefaultNoRetryStatus)
-	defaultKeyCooldownSet = mustStatusSet(DefaultKeyCooldownStatus)
-)
-
-func mustStatusSet(raw string) StatusSet {
-	set, err := ParseStatusSet(raw)
-	if err != nil {
-		panic(err)
-	}
-	return set
-}
-
 // NoRetryStatusSet 返回模型生效的不可重试状态码规则。
-// 旧数据未设置（nil）时使用默认规则；显式空字符串表示所有状态码都可重试。
+// 未设置（nil）或数据损坏时都视为空规则：所有状态码都可重试。
 func (m Model) NoRetryStatusSet() StatusSet {
 	if m.NoRetryStatus == nil {
-		return defaultNoRetrySet
+		return StatusSet{}
 	}
 	set, err := ParseStatusSet(*m.NoRetryStatus)
 	if err != nil {
-		// 数据被手工改坏时退回默认规则，避免一个坏配置让所有错误都不可重试。
-		return defaultNoRetrySet
+		return StatusSet{}
 	}
 	return set
 }
 
 // KeyCooldownStatusSet 返回渠道生效的 Key 冷却触发规则。
-// 旧数据未设置（nil）时使用默认规则；显式空字符串表示任何状态码都不冷却 Key。
+// 未设置（nil）或数据损坏时都视为空规则：任何状态码都不冷却 Key。
 func (c Channel) KeyCooldownStatusSet() StatusSet {
 	if c.KeyCooldownStatus == nil {
-		return defaultKeyCooldownSet
+		return StatusSet{}
 	}
 	set, err := ParseStatusSet(*c.KeyCooldownStatus)
 	if err != nil {
-		return defaultKeyCooldownSet
+		return StatusSet{}
 	}
 	return set
 }

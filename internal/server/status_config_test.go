@@ -116,8 +116,47 @@ func TestSaveModelNoRetryStatus(t *testing.T) {
 	}
 }
 
+func TestNewEntitiesDefaultToEmptyStatusRules(t *testing.T) {
+	s, st := newTestServer(t, "status-defaults-empty")
+
+	// 新建渠道没有提交规则时，显式保存为空字符串（不冷却 Key），
+	// 而不是把旧版默认模板写进去。
+	req := httptest.NewRequest(http.MethodPut, "/api/channels/c", strings.NewReader(
+		`{"name":"渠道","type":"openai","base_url":"https://example.com","key_rows":[{"key":"sk-1234567890"}]}`))
+	req.SetPathValue("id", "c")
+	rec := httptest.NewRecorder()
+	s.saveChannel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("新建渠道失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	ch, err := st.GetChannel("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.KeyCooldownStatus == nil || *ch.KeyCooldownStatus != "" {
+		t.Fatalf("新建渠道的状态码规则应默认留空: %+v", ch.KeyCooldownStatus)
+	}
+
+	// 新建模型同理：不提交规则时默认留空，所有状态码都可重试。
+	req = httptest.NewRequest(http.MethodPut, "/api/models/smart", strings.NewReader(
+		`{"id":"smart","type":"custom","routes":[]}`))
+	req.SetPathValue("id", "smart")
+	rec = httptest.NewRecorder()
+	s.saveModel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("新建模型失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, err := st.GetModel("smart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.NoRetryStatus == nil || *m.NoRetryStatus != "" {
+		t.Fatalf("新建模型的不可重试状态码应默认留空: %+v", m.NoRetryStatus)
+	}
+}
+
 func TestStatusSetJSONRoundTrip(t *testing.T) {
-	// 指针字段为空时不出现在 JSON 里，前端据此使用默认值。
+	// 指针字段为空时不出现在 JSON 里，前端据此显示为空（未配置）。
 	ch := store.Channel{ID: "c"}
 	raw, _ := json.Marshal(ch)
 	if strings.Contains(string(raw), "key_cooldown_status") {

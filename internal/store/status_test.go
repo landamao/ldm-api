@@ -49,20 +49,17 @@ func TestParseStatusSetInvalid(t *testing.T) {
 }
 
 func TestStatusSetDefaults(t *testing.T) {
-	// 旧数据没有字段：使用默认规则
+	// 未配置：视为空规则，所有状态码都可重试 / 不冷却 Key
 	var m Model
-	if !m.NoRetryStatusSet().Match(400) || !m.NoRetryStatusSet().Match(401) || m.NoRetryStatusSet().Match(429) {
-		t.Error("模型默认不可重试规则不正确")
+	if !m.NoRetryStatusSet().Empty() {
+		t.Error("未配置的模型不应有不可重试状态码")
 	}
 	var c Channel
-	if !c.KeyCooldownStatusSet().Match(401) || !c.KeyCooldownStatusSet().Match(429) || !c.KeyCooldownStatusSet().Match(503) {
-		t.Error("渠道默认 Key 冷却规则不正确")
-	}
-	if c.KeyCooldownStatusSet().Match(400) || c.KeyCooldownStatusSet().Match(404) {
-		t.Error("默认规则不应因请求错误冷却 Key")
+	if !c.KeyCooldownStatusSet().Empty() {
+		t.Error("未配置的渠道不应有 Key 冷却状态码")
 	}
 
-	// 显式空字符串：关闭对应行为
+	// 显式空字符串：同样关闭对应行为
 	empty := ""
 	if !(Model{NoRetryStatus: &empty}).NoRetryStatusSet().Empty() {
 		t.Error("显式空字符串应表示没有不可重试状态码")
@@ -71,9 +68,12 @@ func TestStatusSetDefaults(t *testing.T) {
 		t.Error("显式空字符串应表示没有 Key 冷却状态码")
 	}
 
-	// 手工改坏的数据退回默认规则，避免所有错误都不可重试
+	// 手工改坏的数据也按空规则处理
 	bad := "oops"
-	if !(Model{NoRetryStatus: &bad}).NoRetryStatusSet().Match(400) {
-		t.Error("非法数据应退回默认规则")
+	if !(Model{NoRetryStatus: &bad}).NoRetryStatusSet().Empty() {
+		t.Error("非法数据应视为没有不可重试状态码")
+	}
+	if !(Channel{KeyCooldownStatus: &bad}).KeyCooldownStatusSet().Empty() {
+		t.Error("非法数据应视为没有 Key 冷却状态码")
 	}
 }

@@ -390,6 +390,10 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		m.NoRetryStatus = &status
+	} else if isNew {
+		// 新建模型默认留空：所有状态码都可重试，需要时再手动填入模板。
+		empty := ""
+		m.NoRetryStatus = &empty
 	}
 
 	if isNew {
@@ -619,6 +623,7 @@ func (s *Server) batchAddModels(w http.ResponseWriter, r *http.Request) {
 	providers, _ := s.store.ListProviders()
 
 	now := time.Now().UnixMilli()
+	noRetryStatus := ""
 	var toSave []store.Model
 	var skipped []string
 	for _, raw := range req.IDs {
@@ -639,6 +644,7 @@ func (s *Server) batchAddModels(w http.ResponseWriter, r *http.Request) {
 			ID: id, Type: store.ModelTypeChannel, ChannelID: chID, Upstream: upstream,
 			ProviderID: matchProvider(providers, upstream),
 			Enabled:    true, CreatedAt: now, UpdatedAt: now, Tags: []string{},
+			NoRetryStatus: &noRetryStatus,
 		})
 	}
 	if len(toSave) == 0 {

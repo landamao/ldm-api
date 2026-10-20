@@ -7,7 +7,7 @@
   const {
     esc, API, State, Toast, openModal, confirmDialog, promptDialog, icon, providerIcon, providerAvatar,
     badge, statusBadge, emptyState, loadingBlock, fmtTime, fmtInt, fmtUnit, fmtNum, fmtDuration,
-    fmtUptime, relTime, copyText, debounce, fmtContext, Theme, switchEl, colorBadge,
+    fmtUptime, relTime, copyText, debounce, fmtContext, Theme, switchEl, colorBadge, isCoarsePointer,
   } = window.LDM;
 
   const { areaChart, barChart, donutChart, rankList, timeLabel, hideTip } = window.Charts;
@@ -971,6 +971,8 @@
       const routeToggle = root.querySelector('#chat-route-toggle');
       const log = root.querySelector('#chat-log');
       const text = root.querySelector('#chat-text');
+      // 触摸设备上程序化聚焦会弹出虚拟键盘，切模型 / 改开关后不应打断输入
+      const focusText = () => { if (!isCoarsePointer) text.focus(); };
       const sendBtn = root.querySelector('#chat-send');
       const streamToggle = root.querySelector('#chat-stream');
       const streamInput = streamToggle.querySelector('input');
@@ -1028,11 +1030,11 @@
       setStreaming(streaming);
       streamInput.onchange = () => {
         setStreaming(streamInput.checked);
-        text.focus();
+        focusText();
       };
       streamTopInput.onchange = () => {
         setStreaming(streamTopInput.checked);
-        text.focus();
+        focusText();
       };
 
       const paramEls = paramDefs.map((p) => ({
@@ -1830,7 +1832,7 @@
           }
         }
         renderStaged();
-        text.focus();
+        focusText();
       };
 
       const renderStaged = () => {
@@ -1976,7 +1978,7 @@
         pickImage.disabled = on || sending;
         pickFile.disabled = on || sending;
         attWrap.classList.toggle('is-disabled', on);
-        if (!on) text.focus();
+        if (!on) focusText();
       };
 
       // ---------- 请求 ----------
@@ -2418,7 +2420,7 @@
           paramEnabled[row.def.key] = row.enable.querySelector('input').checked;
           syncParamRow(row);
           persistParams();
-          text.focus();
+          focusText();
         };
       });
 
@@ -2433,7 +2435,7 @@
         syncAllParams();
         persistParams();
         Toast.success('参数已恢复默认');
-        text.focus();
+        focusText();
       };
 
       // 换模型只更新左侧的路由信息，已有的对话原样保留
@@ -2442,7 +2444,7 @@
         chatStore.model = modelSel.value;
         persistChatModel(modelSel.value);
         refreshMeta();
-        text.focus();
+        focusText();
       };
       // 收起设置栏后，顶部下拉框也能直接换模型
       mobileModelSel.onchange = () => {
@@ -2450,7 +2452,7 @@
         chatStore.model = modelSel.value;
         persistChatModel(modelSel.value);
         refreshMeta();
-        text.focus();
+        focusText();
       };
       sendBtn.onclick = () => {
         if (sending) stopStream();
@@ -2571,7 +2573,7 @@
 
       restore();
       setCustomMode(customMode);
-      setTimeout(() => text.focus(), 120);
+      if (!isCoarsePointer) setTimeout(() => text.focus(), 120);
     },
   });
 
@@ -3253,32 +3255,6 @@
 
         <div class="card mt-16">
           <div class="card__head">
-            <div><div class="card__title">运行信息</div><div class="card__sub">当前实例状态</div></div>
-          </div>
-          <div class="card__body">
-            <div class="stat-grid stat-grid--4" style="margin-bottom:0">
-              <div class="stat">
-                <div class="stat__label">版本</div>
-                <div class="stat__value" style="font-size:19px">v${esc(me.version)}</div>
-              </div>
-              <div class="stat">
-                <div class="stat__label">运行时间</div>
-                <div class="stat__value" style="font-size:19px">${esc(fmtUptime(me.uptime_seconds))}</div>
-              </div>
-              <div class="stat">
-                <div class="stat__label">系统</div>
-                <div class="stat__value" style="font-size:19px">${esc(me.system || '—')}</div>
-              </div>
-              <div class="stat">
-                <div class="stat__label">内存占用</div>
-                <div class="stat__value" style="font-size:19px">${esc(fmtMem(me.memory_bytes))}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card mt-16">
-          <div class="card__head">
             <div><div class="card__title">备份导出</div><div class="card__sub">写入服务器本地 JSON，不经浏览器下载</div></div>
             <div class="card__actions">
               <label class="backup-check backup-check--all">
@@ -3312,6 +3288,32 @@
               <span class="muted fs-12">远程部署时请通过 SSH / SFTP 到该路径取回文件</span>
             </div>
             <div id="backup-result"></div>
+          </div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card__head">
+            <div><div class="card__title">运行信息</div><div class="card__sub">当前实例状态</div></div>
+          </div>
+          <div class="card__body">
+            <div class="stat-grid stat-grid--4" style="margin-bottom:0">
+              <div class="stat">
+                <div class="stat__label">版本</div>
+                <div class="stat__value" style="font-size:19px">v${esc(me.version)}</div>
+              </div>
+              <div class="stat">
+                <div class="stat__label">运行时间</div>
+                <div class="stat__value" style="font-size:19px">${esc(fmtUptime(me.uptime_seconds))}</div>
+              </div>
+              <div class="stat">
+                <div class="stat__label">系统</div>
+                <div class="stat__value" style="font-size:19px">${esc(me.system || '—')}</div>
+              </div>
+              <div class="stat">
+                <div class="stat__label">内存占用</div>
+                <div class="stat__value" style="font-size:19px">${esc(fmtMem(me.memory_bytes))}</div>
+              </div>
+            </div>
           </div>
         </div>
 

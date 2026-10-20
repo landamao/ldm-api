@@ -253,7 +253,9 @@ func TestUnauthorizedWithoutKeyCooldownStopsFailover(t *testing.T) {
 	now := time.Now().UnixMilli()
 	if err := st.SaveModel(store.Model{
 		ID: "na/a", Type: store.ModelTypeChannel, ChannelID: "na", Upstream: "a",
-		Enabled: true, CreatedAt: now, UpdatedAt: now,
+		// 模型侧把 401 视为不可重试，用来验证渠道不把它算作 Key 故障时不会换 Key。
+		NoRetryStatus: strp("400-428,430-499"),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}

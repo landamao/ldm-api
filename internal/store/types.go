@@ -78,6 +78,9 @@ type Channel struct {
 	Models []string `json:"models"`
 	// APIKeys 是渠道的多 Key 列表，Key 和备注分开保存。
 	APIKeys []ChannelKey `json:"api_keys,omitempty"`
+	// MultiKey 控制是否启用多 Key 模式。nil 表示旧数据未设置：
+	// 只有一个 Key 时视为关闭，多个 Key 时视为开启，避免已有配置失效。
+	MultiKey *bool `json:"multi_key,omitempty"`
 	// KeyMode 是多个 Key 之间的调度方式：sequential（顺序）或 random（随机）。
 	// 空值按顺序处理。
 	KeyMode string `json:"key_mode,omitempty"`
@@ -152,6 +155,15 @@ func (c Channel) Keys() []string {
 		out = append(out, item.Key)
 	}
 	return out
+}
+
+// MultiKeyEnabled 返回是否启用多 Key 模式。旧数据未设置时按 Key 数量推断：
+// 只有一个 Key（含单 Key 旧字段）视为关闭，多个 Key 视为开启。
+func (c Channel) MultiKeyEnabled() bool {
+	if c.MultiKey != nil {
+		return *c.MultiKey
+	}
+	return len(c.KeyList()) > 1
 }
 
 // KeyModeOrDefault 返回生效的 Key 调度方式。

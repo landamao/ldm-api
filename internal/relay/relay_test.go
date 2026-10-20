@@ -1783,7 +1783,8 @@ func TestMultiKeyRetriesWithinChannel(t *testing.T) {
 			{Key: "good-key-00003", Note: "可用账号"},
 		},
 		KeyMode: store.KeyModeSequential, KeyAffinity: true, KeyCooldownSec: intp(300),
-		Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+		KeyCooldownStatus: strp("401,403,408,429,500-599"),
+		Models:            []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := st.SaveChannel(ch); err != nil {
 		t.Fatal(err)
@@ -1990,8 +1991,35 @@ func TestPlanKeysCooldownAffinityAndRandom(t *testing.T) {
 	}
 }
 
-func candidateIndexes(keys []keyCandidate) []int {
-	out := make([]int, len(keys))
+// 多 Key 模式关闭时只调度第一个 Key，其余 Key 不参与尝试。
+func TestPlanKeysSingleKeyMode(t *testing.T) {
+	const chID = "plan-keys-single"
+	ClearChannelKeyState(chID)
+	defer ClearChannelKeyState(chID)
+
+	off := false
+	ch := store.Channel{
+		ID:       chID,
+		MultiKey: &off,
+		APIKeys: []store.ChannelKey{
+			{Key: "key-one-12345678"}, {Key: "key-two-12345678"},
+		},
+	}
+	keys, reason := PlanKeys(ch)
+	if reason != "" || len(keys) != 1 || keys[0].key != "key-one-12345678" {
+		t.Fatalf("关闭多 Key 时应只调度第一个 Key，得到 %+v（%s）", keys, reason)
+	}
+
+	// 显式开启后才恢复多 Key 调度。
+	on := true
+	ch.MultiKey = &on
+	keys, _ = PlanKeys(ch)
+	if len(keys) != 2 {
+		t.Fatalf("开启多 Key 后应调度全部 Key，得到 %+v", keys)
+	}
+}
+
+func candidateIndexes(keys []keyCandidate) []int {	out := make([]int, len(keys))
 	for i, k := range keys {
 		out[i] = k.index
 	}
