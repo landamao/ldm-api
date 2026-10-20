@@ -2715,9 +2715,8 @@
   async function openTokenEditor(token) {
     const isNew = !token;
     const t = token || { name: '', enabled: true, expires_at: 0, quota_limit: 0, allowed_models: [], remark: '' };
-    let models = [];
-    try { models = await API.get('/api/models'); } catch (e) { /* ignore */ }
-    const enabledModels = models.filter((m) => m.enabled);
+    // 模型权限复用「模型管理 → 添加模型」的选择弹窗（支持搜索、按渠道/提供商分组）
+    let allowedSet = new Set(t.allowed_models || []);
 
     const expiryVal = t.expires_at ? new Date(t.expires_at).toISOString().slice(0, 10) : '';
 
@@ -2739,15 +2738,9 @@
       </div>
       <div class="field">
         <label class="field__label">模型权限</label>
-        <div class="field__hint" style="margin-top:0;margin-bottom:8px">不勾选表示可以使用全部模型。</div>
-        <div class="pick-list" style="max-height:220px">
-          ${enabledModels.length === 0 ? '<div style="padding:14px;color:var(--text-3);font-size:12.5px">还没有已启用的模型</div>' : enabledModels.map((m) => `
-            <label class="pick-item" style="padding-left:13px">
-              <input type="checkbox" data-model="${esc(m.id)}" ${(t.allowed_models || []).includes(m.id) ? 'checked' : ''}>
-              <span class="pick-item__name">${esc(m.id)}</span>
-              <span class="pick-item__meta">${m.type === 'custom' ? badge('自定义', 'pink') : badge('渠道', 'blue')}</span>
-            </label>`).join('')}
-        </div>
+        <div class="field__hint" style="margin-top:0;margin-bottom:8px">不勾选表示可以使用全部模型；选中后点击模型名可复制。</div>
+        <div id="t-model-summary"></div>
+        <button class="btn btn--sm mt-8" id="t-pick-models">${icon('models', 13)}选择模型</button>
       </div>
       <div class="field">
         <label class="field__label">备注</label>
@@ -2771,6 +2764,31 @@
         <button class="btn" data-act="cancel">取消</button>
         <button class="btn btn--primary" data-act="save">${isNew ? '创建' : '保存'}</button>`,
       onMount(mo) {
+        const summaryEl = mo.body.querySelector('#t-model-summary');
+        const renderAllowed = () => {
+          summaryEl.innerHTML = allowedSet.size
+            ? `<div class="badge-group" style="max-height:104px;overflow:auto">${Array.from(allowedSet).map((m) => `<button type="button" class="badge badge--gray badge--click mono" data-copy-model="${esc(m)}" title="点击复制">${esc(m)}</button>`).join('')}</div>`
+            : '<span class="muted fs-12">全部模型</span>';
+        };
+        renderAllowed();
+        summaryEl.addEventListener('click', (e) => {
+          const el = e.target.closest('[data-copy-model]');
+          if (el) copyText(el.dataset.copyModel, '模型名 ');
+        });
+        mo.body.querySelector('#t-pick-models').onclick = () => {
+          if (!window.LDM.openModelPicker) { Toast.warn('模型选择弹窗暂不可用'); return; }
+          window.LDM.openModelPicker({
+            mode: 'models',
+            title: '选择可用模型',
+            desc: '从「模型管理」中已启用的模型里选择。不勾选表示可以使用全部模型。',
+            top: true,
+            preselected: new Set(allowedSet),
+            onConfirm(ids) {
+              allowedSet = new Set(ids);
+              renderAllowed();
+            },
+          });
+        };
         mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
         const copyBtn = mo.foot.querySelector('[data-act=copykey]');
         if (copyBtn) copyBtn.onclick = () => copyText(t.key, '密钥 ');
@@ -2778,14 +2796,13 @@
           const name = mo.body.querySelector('#t-name').value.trim();
           if (!name) { Toast.warn('请填写名称'); return; }
           const expireVal2 = mo.body.querySelector('#t-expire').value;
-          const allowed = Array.from(mo.body.querySelectorAll('input[data-model]:checked')).map((i) => i.dataset.model);
           const payload = {
             id: t.id || '',
             name,
             enabled: mo.body.querySelector('#t-enabled').checked,
             expires_at: expireVal2 ? new Date(expireVal2 + 'T23:59:59').getTime() : 0,
             quota_limit: Number(mo.body.querySelector('#t-quota').value) || 0,
-            allowed_models: allowed,
+            allowed_models: Array.from(allowedSet),
             remark: mo.body.querySelector('#t-remark').value.trim(),
           };
           const btn = mo.foot.querySelector('[data-act=save]');

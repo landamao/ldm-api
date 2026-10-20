@@ -2064,21 +2064,43 @@
     }
   }
 
-  // ---------- 模型选择弹窗（添加模型 / 自定义模型路由共用） ----------
+  // ---------- 模型选择弹窗（添加模型 / 自定义模型路由 / 令牌模型权限共用） ----------
   // mode='add'   ：列出全部渠道模型，已添加的置灰；确认后走批量添加。
   // mode='route' ：列出全部渠道模型（含未添加的），当前路由默认勾选；
   //                「已添加」徽章取打开弹窗时的路由草稿快照，本次会话内不随勾选变化；
   //                未添加的渠道模型只作为路由目标，不会加入模型列表；确认后替换路由。
+  // mode='models'：列出「模型管理」中已启用的模型，供令牌的模型权限勾选；
+  //                自定义模型归到「自定义模型」分组，确认后回传模型 ID 列表。
   // 支持按渠道 / 按提供商两种分组方式，两种视图各自记住折叠状态。
   async function openModelPicker(cfg) {
     const { mode, title, desc, preselected, top, onConfirm } = cfg;
+    const isModels = mode === 'models';
     let list;
     let providers = [];
     try {
-      [list, providers] = await Promise.all([
-        API.get('/api/models/available'),
-        State.loadProviders().catch(() => []),
-      ]);
+      if (isModels) {
+        let models;
+        [models, providers] = await Promise.all([
+          API.get('/api/models'),
+          State.loadProviders().catch(() => []),
+        ]);
+        list = (models || []).filter((m) => m.enabled).map((m) => ({
+          id: m.id,
+          channel_id: m.channel_id || '',
+          channel_name: m.channel_name || '',
+          upstream: m.upstream || '',
+          channel_ready: m.channel_ready !== false,
+          provider_id: m.provider_id || '',
+          provider_name: m.provider_name || '',
+          provider_icon: m.provider_icon || '',
+          model_type: m.type,
+        }));
+      } else {
+        [list, providers] = await Promise.all([
+          API.get('/api/models/available'),
+          State.loadProviders().catch(() => []),
+        ]);
+      }
     } catch (e) { Toast.error(e.message); return; }
 
     if (!list.length) {
@@ -2087,9 +2109,11 @@
         size: 'sm',
         top,
         body: `<div class="alert alert--warn">${icon('alert', 15)}<div>
-          ${mode === 'add'
-            ? '当前没有任何渠道模型可用。<br>请先到「渠道管理」添加渠道，并在渠道里填写模型名。'
-            : '当前没有任何渠道模型可用。<br>请先到「渠道管理」添加渠道，并在渠道里填写模型名，之后就能直接选作路由目标。'}
+          ${isModels
+            ? '当前没有已启用的模型。<br>请先到「模型管理」添加模型并启用。'
+            : mode === 'add'
+              ? '当前没有任何渠道模型可用。<br>请先到「渠道管理」添加渠道，并在渠道里填写模型名。'
+              : '当前没有任何渠道模型可用。<br>请先到「渠道管理」添加渠道，并在渠道里填写模型名，之后就能直接选作路由目标。'}
         </div></div>`,
         footer: `<div class="spacer"></div><button class="btn btn--primary" data-close>知道了</button>`,
       });
@@ -2110,19 +2134,36 @@
       }
     });
 
-    // 按渠道分组，标题用「渠道ID（渠道名）」，渠道 ID 和名称用不同样式区分
+    // 按渠道分组，标题用「渠道ID（渠道名）」，渠道 ID 和名称用不同样式区分；
+    // 令牌模型权限里还会出现没有渠道的自定义模型，统一归到「自定义模型」并排在最后
     const channelGroups = () => {
       const map = new Map();
       list.forEach((it) => {
-        if (!map.has(it.channel_id)) map.set(it.channel_id, []);
-        map.get(it.channel_id).push(it);
+        const cid = it.channel_id || '';
+        if (!map.has(cid)) map.set(cid, []);
+        map.get(cid).push(it);
       });
-      return Array.from(map.keys()).sort().map((cid) => ({
-        key: 'c:' + cid,
-        icon: '',
-        nameHtml: `<span class="pick-group__id">${esc(cid)}</span>${chanName[cid] ? `（${esc(chanName[cid])}）` : ''}`,
-        items: map.get(cid),
-      }));
+      const keys = Array.from(map.keys()).sort((a, b) => {
+        if (!a) return 1;
+        if (!b) return -1;
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+      return keys.map((cid) => {
+        if (!cid) {
+          return {
+            key: 'c:__custom',
+            icon: '',
+            nameHtml: '自定义模型',
+            items: map.get(cid),
+          };
+        }
+        return {
+          key: 'c:' + cid,
+          icon: '',
+          nameHtml: `<span class="pick-group__id">${esc(cid)}</span>${chanName[cid] ? `（${esc(chanName[cid])}）` : ''}`,
+          items: map.get(cid),
+        };
+      });
     };
 
     // 按提供商分组：按提供商配置顺序排列，未识别的统一放到最后
@@ -2170,10 +2211,12 @@
         ${it.provider_name && groupBy !== 'provider' ? `<span class="pick-item__provider" title="${esc(it.provider_name)}">${providerIcon(it.provider_icon, 14)}</span>` : ''}
         <span class="pick-item__name">${esc(it.id)}</span>
         <span class="pick-item__meta">
-          ${!it.channel_ready ? badge('渠道已禁用', 'red') : ''}
-          ${isAdd
-            ? (it.added ? badge('已添加', 'green') : '')
-            : (checked ? badge('已添加', 'green') : '')}
+          ${!it.channel_ready ? badge(isModels ? '不可用' : '渠道已禁用', 'red') : ''}
+          ${isModels
+            ? (it.model_type === 'custom' ? badge('自定义', 'pink') : badge('渠道', 'blue'))
+            : isAdd
+              ? (it.added ? badge('已添加', 'green') : '')
+              : (checked ? badge('已添加', 'green') : '')}
         </span>
       </label>`;
     };
@@ -4005,4 +4048,7 @@
       },
     });
   }
+
+  // 令牌管理等其他页面复用同一个模型选择弹窗
+  window.LDM.openModelPicker = openModelPicker;
 })();
