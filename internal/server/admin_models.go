@@ -209,6 +209,7 @@ type modelRequest struct {
 	Affinity      *bool          `json:"affinity"`
 	CooldownSec   *int           `json:"cooldown_sec"`
 	CooldownReset *bool          `json:"cooldown_reset"`
+	NoRetryStatus *string        `json:"no_retry_status"`
 	Timeout       *int           `json:"timeout"`
 }
 
@@ -378,6 +379,17 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		}
 		m.ChannelID = ""
 		m.Upstream = ""
+	}
+
+	// 不可重试状态码对所有模型类型生效：命中后直接返回上游错误，
+	// 不再尝试其它路由，也不记录 Key / 路由冷却。
+	if req.NoRetryStatus != nil {
+		status, err := store.NormalizeStatusSet(*req.NoRetryStatus)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "不可重试状态码格式有误："+err.Error())
+			return
+		}
+		m.NoRetryStatus = &status
 	}
 
 	if isNew {

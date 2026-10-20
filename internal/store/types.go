@@ -89,6 +89,10 @@ type Channel struct {
 	KeyCooldownSec *int `json:"key_cooldown_sec,omitempty"`
 	// KeyCooldownReset 控制全部 Key 都在冷却中时是否自动清空冷却再调度一遍。
 	KeyCooldownReset bool `json:"key_cooldown_reset,omitempty"`
+	// KeyCooldownStatus 是触发 Key 冷却的上游状态码规则，支持单个状态码和区间，
+	// 例如 "401,403,429,500-599"。nil 表示旧数据未设置，按默认规则；
+	// 显式空字符串表示任何状态码都不冷却 Key（状态码仍会参与路由重试）。
+	KeyCooldownStatus *string `json:"key_cooldown_status,omitempty"`
 	// AppendV1 控制是否在接口地址后补全 /v1。nil 表示旧数据，按默认开启处理。
 	// 关闭后按 BaseURL 原样拼接，适合火山方舟（/api/v3）这类非 v1 前缀的服务。
 	AppendV1  *bool             `json:"append_v1,omitempty"`
@@ -221,6 +225,12 @@ type Model struct {
 	// Timeout 是模型级超时（秒），0 表示默认 300。
 	// 非流式为整次请求超时，流式为首字超时（首块数据到达后不再限时）。
 	Timeout int `json:"timeout,omitempty"`
+
+	// NoRetryStatus 是不可重试的上游状态码规则，支持单个状态码和区间，
+	// 例如 "400-430,500"。命中后直接返回上游错误，不再尝试其它路由，
+	// 也不记录 Key / 路由冷却。nil 表示旧数据未设置，按默认规则；
+	// 显式空字符串表示所有状态码都可重试。
+	NoRetryStatus *string `json:"no_retry_status,omitempty"`
 
 	DisplayName string   `json:"display_name,omitempty"`
 	Description string   `json:"description,omitempty"`

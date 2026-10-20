@@ -15,6 +15,29 @@
     { value: 'gemini', label: 'Google Gemini', hint: 'Google AI Studio / Gemini API' },
   ];
 
+  // 状态码规则的默认值，与 internal/store/status.go 中的常量保持一致。
+  const DEFAULT_KEY_COOLDOWN_STATUS = '401,403,408,429,500-599';
+  const DEFAULT_NO_RETRY_STATUS = '400-428,430-499';
+
+  // 每个渠道 / 模型编辑弹窗的「高级设置」展开状态按实体 ID 记在本地。
+  // 新建时统一用 __new，避免不同实体的状态互相影响。
+  const ADVANCED_KEY_PREFIX = 'ldmapi.advanced.';
+
+  function advancedKey(kind, id) {
+    return ADVANCED_KEY_PREFIX + kind + '.' + (id || '__new');
+  }
+
+  function bindAdvancedState(scope, kind, id) {
+    const details = scope.querySelector('details.advanced-settings');
+    if (!details) return;
+    try {
+      details.open = localStorage.getItem(advancedKey(kind, id)) === '1';
+    } catch (e) { /* 存储不可用时默认收起 */ }
+    details.addEventListener('toggle', () => {
+      try { localStorage.setItem(advancedKey(kind, id), details.open ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
+    });
+  }
+
   // 从系统剪贴板粘贴到指定输入框；浏览器不允许读取时给出明确提示。
   async function pasteTextInto(input) {
     try {
@@ -981,6 +1004,7 @@
     const data = ch || {
       id: '', name: '', type: 'openai', base_url: '', api_key: '', key_rows: [], append_v1: true,
       key_mode: 'sequential', key_affinity: false, key_cooldown_sec: 300, key_cooldown_reset: false,
+      key_cooldown_status: DEFAULT_KEY_COOLDOWN_STATUS,
       models: [], enabled: true, remark: '', headers: {},
     };
     const initialKeyRows = data.key_rows || [];
@@ -1081,7 +1105,7 @@
         <div class="mt-12" id="model-preview"></div>
       </div>
 
-      <details class="mt-16">
+      <details class="mt-16 advanced-settings">
         <summary style="cursor:pointer;font-size:12.5px;font-weight:620;color:var(--text-2)">高级设置</summary>
         <div class="mt-12">
           <div class="form-row">
@@ -1095,6 +1119,22 @@
           <div class="field">
             <label class="field__label">自定义请求头（JSON）</label>
             <textarea class="textarea" id="f-headers" rows="3" placeholder='{"X-Custom": "value"}'>${esc(Object.keys(data.headers || {}).length ? JSON.stringify(data.headers, null, 2) : '')}</textarea>
+          </div>
+          <div class="field">
+            <div class="field__head">
+              <label class="field__label">触发 Key 冷却的状态码</label>
+              <button type="button" class="btn btn--ghost btn--sm field__reset"
+                      id="f-key-cooldown-status-reset" title="恢复默认值">${icon('refresh', 11)}重置</button>
+            </div>
+            <input class="input mono" id="f-key-cooldown-status"
+                   value="${esc(data.key_cooldown_status ?? DEFAULT_KEY_COOLDOWN_STATUS)}"
+                   placeholder="${DEFAULT_KEY_COOLDOWN_STATUS}">
+            <div class="field__hint">
+              支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>401,403,429</code>。
+              命中后该 Key 进入失败冷却；未命中的错误不会冷却 Key，但仍按模型的重试规则继续路由，
+              全部 Key 失败后会冷却对应的渠道模型。
+              默认 <code>${DEFAULT_KEY_COOLDOWN_STATUS}</code>，留空表示任何状态码都不冷却 Key。
+            </div>
           </div>
           <div class="field">
             <label class="field__label">备注</label>
@@ -1121,6 +1161,13 @@
         const modelsEl = $('#f-models');
         const keyRowsEl = $('#f-key-rows');
         const preview = $('#model-preview');
+
+        $('#f-key-cooldown-status-reset').onclick = () => {
+          const input = $('#f-key-cooldown-status');
+          input.value = DEFAULT_KEY_COOLDOWN_STATUS;
+          input.focus();
+        };
+        bindAdvancedState(mo.body, 'channel', data.id);
 
         // 两列 Key 表格：密钥一列、备注一列。已保存的 Key 只在用户主动改 Key
         // 时才提交新值，只改备注时请求里只有下标和备注。
@@ -1361,6 +1408,7 @@
             key_affinity: $('#f-key-affinity').checked,
             key_cooldown_sec: Math.max(0, Math.min(86400, Math.round(Number($('#f-key-cooldown').value) || 0))),
             key_cooldown_reset: $('#f-key-reset').checked,
+            key_cooldown_status: $('#f-key-cooldown-status').value.trim(),
             enabled: $('#f-enabled').checked,
             headers, remark: $('#f-remark').value.trim(),
           };
@@ -1370,6 +1418,13 @@
           saveBtn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';
           try {
             const res = await API.put('/api/channels/' + encodeURIComponent(id), payload);
+            // 新建渠道时把本次的展开状态落到真实 ID，之后编辑同一个渠道能直接恢复。
+            if (isNew) {
+              try {
+                const details = mo.body.querySelector('details.advanced-settings');
+                localStorage.setItem(advancedKey('channel', id), details && details.open ? '1' : '0');
+              } catch (e) { /* 忽略配额错误 */ }
+            }
             mo.close();
             const refs = (res && res.refs) || [];
             if (refs.length) {
@@ -2808,6 +2863,27 @@
         <input class="input" id="m-timeout" type="number" min="1" value="${esc(m.timeout || 300)}">
         <div class="field__hint">非流式限制整次请求；流式只限制首字，首字到达后不再限时。</div>
       </div>
+      <details class="mt-16 advanced-settings">
+        <summary style="cursor:pointer;font-size:12.5px;font-weight:620;color:var(--text-2)">高级设置</summary>
+        <div class="mt-12">
+          <div class="field">
+            <div class="field__head">
+              <label class="field__label">不可重试状态码</label>
+              <button type="button" class="btn btn--ghost btn--sm field__reset"
+                      id="m-no-retry-reset" title="恢复默认值">${icon('refresh', 11)}重置</button>
+            </div>
+            <input class="input mono" id="m-no-retry"
+                   value="${esc(m.no_retry_status ?? DEFAULT_NO_RETRY_STATUS)}"
+                   placeholder="${DEFAULT_NO_RETRY_STATUS}">
+            <div class="field__hint">
+              支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>429</code>。
+              命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。
+              默认 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）；留空表示所有状态码都可重试。
+              401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。
+            </div>
+          </div>
+        </div>
+      </details>
       ${capsEditorHtml(m.caps || {})}
       <div class="field mt-16">
         <label class="switch"><input type="checkbox" id="m-enabled" ${m.enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用该模型</span></label>
@@ -2823,6 +2899,12 @@
         <button class="btn btn--primary" data-act="save">保存</button>`,
       onMount(mo) {
         bindCapsEditor(mo.body);
+        bindAdvancedState(mo.body, 'model', m.id);
+        mo.body.querySelector('#m-no-retry-reset').onclick = () => {
+          const input = mo.body.querySelector('#m-no-retry');
+          input.value = DEFAULT_NO_RETRY_STATUS;
+          input.focus();
+        };
         mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
         mo.foot.querySelector('[data-act=save]').onclick = async () => {
           let caps;
@@ -2846,6 +2928,7 @@
               enabled: mo.body.querySelector('#m-enabled').checked,
               description: mo.body.querySelector('#m-desc').value.trim(),
               timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#m-timeout').value) || 300)),
+              no_retry_status: mo.body.querySelector('#m-no-retry').value.trim(),
             });
             mo.close();
             Toast.success('模型配置已保存');
@@ -3084,6 +3167,7 @@
     const m = existing || {
       id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
       caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
+      no_retry_status: DEFAULT_NO_RETRY_STATUS,
     };
     // 本地编辑态
     const draft = {
@@ -3149,6 +3233,28 @@
         <div class="field__hint">非流式限制整次请求；流式只限制首字，首字到达后不再限时。</div>
       </div>
 
+      <details class="mt-16 advanced-settings">
+        <summary style="cursor:pointer;font-size:12.5px;font-weight:620;color:var(--text-2)">高级设置</summary>
+        <div class="mt-12">
+          <div class="field">
+            <div class="field__head">
+              <label class="field__label">不可重试状态码</label>
+              <button type="button" class="btn btn--ghost btn--sm field__reset"
+                      id="cm-no-retry-reset" title="恢复默认值">${icon('refresh', 11)}重置</button>
+            </div>
+            <input class="input mono" id="cm-no-retry"
+                   value="${esc(m.no_retry_status ?? DEFAULT_NO_RETRY_STATUS)}"
+                   placeholder="${DEFAULT_NO_RETRY_STATUS}">
+            <div class="field__hint">
+              支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>429</code>。
+              命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。
+              默认 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）；留空表示所有状态码都可重试。
+              401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。
+            </div>
+          </div>
+        </div>
+      </details>
+
       <div class="field">
         <label class="field__label">描述</label>
         <input class="input" id="cm-desc" value="${esc(m.description || '')}" placeholder="可选，会显示在模型广场">
@@ -3182,6 +3288,12 @@
       onMount(mo) {
         const routeHost = mo.body.querySelector('#route-host');
         const capsHost = mo.body.querySelector('#caps-host');
+        bindAdvancedState(mo.body, 'model', m.id);
+        mo.body.querySelector('#cm-no-retry-reset').onclick = () => {
+          const input = mo.body.querySelector('#cm-no-retry');
+          input.value = DEFAULT_NO_RETRY_STATUS;
+          input.focus();
+        };
         // 渠道实时状态：路由条目上显示「渠道已禁用」或「渠道模型不存在」徽章
         // （异步加载后重渲染路由列表；加载完成前不显示状态，避免误报）
         const channelState = {};
@@ -3986,6 +4098,7 @@
             affinity: mo.body.querySelector('#cm-affinity').checked,
             cooldown_sec: Math.max(0, Math.min(86400, Math.round(Number(mo.body.querySelector('#cm-cooldown').value) || 0))),
             cooldown_reset: mo.body.querySelector('#cm-cooldown-reset').checked,
+            no_retry_status: mo.body.querySelector('#cm-no-retry').value.trim(),
             timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#cm-timeout').value) || 300)),
             caps,
             enabled: mo.body.querySelector('#cm-enabled').checked,
@@ -4000,6 +4113,14 @@
           const urlID = isNew ? newID : m.id;
           try {
             await API.put('/api/models/' + encodeURIComponent(urlID), payload);
+            // 新建或改名后把展开状态落到新的模型 ID，之后编辑时能直接恢复。
+            if (isNew || newID !== m.id) {
+              try {
+                const details = mo.body.querySelector('details.advanced-settings');
+                localStorage.setItem(advancedKey('model', newID), details && details.open ? '1' : '0');
+                if (!isNew) localStorage.removeItem(advancedKey('model', m.id));
+              } catch (e) { /* 忽略配额错误 */ }
+            }
             mo.close();
             const renamed = !isNew && newID !== m.id;
             if (renamed) {

@@ -469,14 +469,6 @@ func attemptErrText(err error) string {
 	return truncate(err.Error(), 500)
 }
 
-// keyFailureStatus 判断上游状态码是否应该归因到当前 Key。
-// 认证/权限、限流、超时和服务端错误会冷却 Key；请求本身有问题的 4xx 不会。
-func keyFailureStatus(code int) bool {
-	return code == http.StatusUnauthorized || code == http.StatusForbidden ||
-		code == http.StatusRequestTimeout || code == http.StatusTooManyRequests ||
-		code >= 500
-}
-
 func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request,
 	resolved *Resolved, route Route, isLast, hasMoreKeys bool) attemptOutcome {
 
@@ -555,22 +547,31 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		msg := fmt.Sprintf("渠道「%s」返回 %d: %s", route.Channel.ID, resp.StatusCode, truncate(string(raw), 600))
-		// 4xx 里只有限流和超时值得换渠道重试
-		retryable := resp.StatusCode == 429 || resp.StatusCode >= 500
-		keyFailed := keyFailureStatus(resp.StatusCode)
-		// 401/403 往往是当前 Key 失效、无权限或额度问题：还有其它 Key 时
-		// 先换 Key 重试，不要把上游错误直接抛给调用方。
-		if (resp.StatusCode == 401 || resp.StatusCode == 403) && hasMoreKeys {
-			return attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: true, keyFailed: true}
+		status := resp.StatusCode
+		msg := fmt.Sprintf("渠道「%s」返回 %d: %s", route.Channel.ID, status, truncate(string(raw), 600))
+		// 是否把这次失败归因到当前 Key 由渠道配置决定。
+		keyFailed := route.Channel.KeyCooldownStatusSet().Match(status)
+		// 401/403 往往是当前 Key 失效、无权限或额度问题：只要渠道把它算作 Key 故障，
+		// 还有其它 Key 时就先换 Key 重试。这属于 Key 级故障转移，不算跨模型路由，
+		// 因此不受模型「不可重试状态码」影响。
+		if keyFailed && (status == http.StatusUnauthorized || status == http.StatusForbidden) && hasMoreKeys {
+			return attemptOutcome{status: status, err: errors.New(msg), retryable: true, keyFailed: true}
 		}
-		if !retryable {
-			// 客户端错误：把上游原始响应透传，方便调用方定位
+		// 不可重试状态码：上游错误原样返回，不记录 Key / 路由冷却，
+		// 也不再尝试后面的路由。是否命中由模型配置决定。
+		if resolved.Model.NoRetryStatusSet().Match(status) {
 			writeUpstreamRaw(w, resp, raw)
-			return attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: false, wrote: true,
+			return attemptOutcome{status: status, err: errors.New(msg), retryable: false, wrote: true,
+				upstreamRaw: raw, upstreamHdr: resp.Header}
+		}
+		// 没有更多 Key 可换的 401/403 直接返回，不再把同一个认证错误
+		// 转发给其它模型。
+		if (status == http.StatusUnauthorized || status == http.StatusForbidden) && !hasMoreKeys {
+			writeUpstreamRaw(w, resp, raw)
+			return attemptOutcome{status: status, err: errors.New(msg), retryable: false, wrote: true,
 				upstreamRaw: raw, upstreamHdr: resp.Header, keyFailed: keyFailed}
 		}
-		out := attemptOutcome{status: resp.StatusCode, err: errors.New(msg), retryable: !isLast, keyFailed: keyFailed}
+		out := attemptOutcome{status: status, err: errors.New(msg), retryable: !isLast, keyFailed: keyFailed}
 		if isLast {
 			// 已经是最后一条路由：上游原始错误留给 Do 原样返回给调用方
 			out.upstreamRaw, out.upstreamHdr = raw, resp.Header

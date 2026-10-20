@@ -152,22 +152,23 @@ func resolveSubmittedKeyRows(rows []keyRowRequest, existing []store.ChannelKey) 
 // 指针字段未出现在请求里时表示「不修改」，这样列表页的启停开关只提交
 // enabled 也不会把其余配置清掉；完整编辑表单则带全所有字段（含显式清空）。
 type channelRequest struct {
-	ID               string             `json:"id"`
-	Name             *string            `json:"name"`
-	Type             string             `json:"type"`
-	BaseURL          *string            `json:"base_url"`
-	APIKey           string             `json:"api_key"`
-	KeyRows          *[]keyRowRequest   `json:"key_rows"`
-	KeyMode          *string            `json:"key_mode"`
-	KeyAffinity      *bool              `json:"key_affinity"`
-	KeyCooldownSec   *int               `json:"key_cooldown_sec"`
-	KeyCooldownReset *bool              `json:"key_cooldown_reset"`
-	AppendV1         *bool              `json:"append_v1"`
-	Models           *[]string          `json:"models"`
-	Headers          *map[string]string `json:"headers"`
-	Enabled          *bool              `json:"enabled"`
-	Weight           *int               `json:"weight"`
-	Remark           *string            `json:"remark"`
+	ID                string             `json:"id"`
+	Name              *string            `json:"name"`
+	Type              string             `json:"type"`
+	BaseURL           *string            `json:"base_url"`
+	APIKey            string             `json:"api_key"`
+	KeyRows           *[]keyRowRequest   `json:"key_rows"`
+	KeyMode           *string            `json:"key_mode"`
+	KeyAffinity       *bool              `json:"key_affinity"`
+	KeyCooldownSec    *int               `json:"key_cooldown_sec"`
+	KeyCooldownReset  *bool              `json:"key_cooldown_reset"`
+	KeyCooldownStatus *string            `json:"key_cooldown_status"`
+	AppendV1          *bool              `json:"append_v1"`
+	Models            *[]string          `json:"models"`
+	Headers           *map[string]string `json:"headers"`
+	Enabled           *bool              `json:"enabled"`
+	Weight            *int               `json:"weight"`
+	Remark            *string            `json:"remark"`
 }
 
 func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
@@ -281,6 +282,14 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.KeyCooldownReset != nil {
 		ch.KeyCooldownReset = *req.KeyCooldownReset
+	}
+	if req.KeyCooldownStatus != nil {
+		status, err := store.NormalizeStatusSet(*req.KeyCooldownStatus)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "触发 Key 冷却的状态码格式有误："+err.Error())
+			return
+		}
+		ch.KeyCooldownStatus = &status
 	}
 	if req.Models != nil {
 		models, err := normalizeModelNames(*req.Models)
