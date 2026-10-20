@@ -584,6 +584,54 @@ func (s *Store) RangeStats(from, to int64) ([]Bucket, error) {
 	return out, err
 }
 
+// RecentModelStats 返回指定模型最近 limit 次调用的请求数与失败数。
+// 日志按时间倒序存储，从最新一条往前扫；某个模型凑够 limit 条后就不再计入，
+// 所有模型都凑齐时提前结束。maxScan 限制最多扫描的日志条数，避免模型很多
+// 且长期没有调用时把整个日志桶翻一遍——此时按实际扫到的样本计算。
+func (s *Store) RecentModelStats(modelIDs []string, limit, maxScan int) (map[string]ModelRecent, error) {
+	out := make(map[string]ModelRecent, len(modelIDs))
+	if limit <= 0 || len(modelIDs) == 0 {
+		return out, nil
+	}
+	want := make(map[string]struct{}, len(modelIDs))
+	for _, id := range modelIDs {
+		if id != "" {
+			want[id] = struct{}{}
+		}
+	}
+	if len(want) == 0 {
+		return out, nil
+	}
+	err := s.db.View(func(tx *bolt.Tx) error {
+		scanned := 0
+		c := tx.Bucket(bLogs).Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			if scanned >= maxScan || len(want) == 0 {
+				break
+			}
+			scanned++
+			var l Log
+			if err := json.Unmarshal(v, &l); err != nil {
+				continue
+			}
+			if _, ok := want[l.ModelID]; !ok {
+				continue
+			}
+			r := out[l.ModelID]
+			r.Requests++
+			if !l.Canceled && (l.StatusCode >= 400 || l.Error != "") {
+				r.Errors++
+			}
+			out[l.ModelID] = r
+			if r.Requests >= int64(limit) {
+				delete(want, l.ModelID)
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
 // PurgeStatsBefore 清理过期统计桶。
 func (s *Store) PurgeStatsBefore(ts int64) error {
 	s.mu.Lock()

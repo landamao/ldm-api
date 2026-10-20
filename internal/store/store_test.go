@@ -50,7 +50,55 @@ func TestWithWriteLockBlocksWrites(t *testing.T) {
 	<-lockDone
 }
 
-// 日志状态筛选：「有重试」只看重试过的请求，和成功/失败是独立维度。
+// 近 N 次调用统计：按时间倒序取每个模型最新的 limit 条，取消的调用不算失败。
+func TestRecentModelStats(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "recent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	base := time.Now().UnixMilli()
+	logs := []Log{
+		{ID: "a-old-ok", Time: base - 5000, ModelID: "a", StatusCode: 200},
+		{ID: "a-mid-err", Time: base - 4000, ModelID: "a", StatusCode: 500, Error: "上游失败"},
+		{ID: "a-new-ok", Time: base - 3000, ModelID: "a", StatusCode: 200},
+		{ID: "b-canceled", Time: base - 2000, ModelID: "b", StatusCode: 200, Canceled: true},
+		{ID: "x-err", Time: base - 1000, ModelID: "x", StatusCode: 500},
+	}
+	for _, l := range logs {
+		if err := st.AppendLog(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := st.RecentModelStats([]string{"a", "b", "c"}, 2, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := got["a"]; r.Requests != 2 || r.Errors != 1 {
+		t.Fatalf("a 期望 2 次调用 / 1 次失败，得到 %+v", r)
+	}
+	if r := got["b"]; r.Requests != 1 || r.Errors != 0 {
+		t.Fatalf("b 期望 1 次调用 / 0 次失败，得到 %+v", r)
+	}
+	if _, ok := got["c"]; ok {
+		t.Fatal("没有日志的模型不应出现在结果里")
+	}
+	if _, ok := got["x"]; ok {
+		t.Fatal("未请求的模型不应出现在结果里")
+	}
+
+	// maxScan 限制回扫条数：最新 3 条里只有 a-new-ok 属于 a
+	got, err = st.RecentModelStats([]string{"a"}, 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := got["a"]; r.Requests != 1 || r.Errors != 0 {
+		t.Fatalf("maxScan=3 时 a 期望 1 次调用 / 0 次失败，得到 %+v", r)
+	}
+}
+
 func TestQueryLogsRetryStatusFilter(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "logs.db"))
 	if err != nil {

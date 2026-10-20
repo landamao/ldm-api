@@ -377,6 +377,12 @@ type Log struct {
 	Canceled bool `json:"canceled,omitempty"`
 }
 
+// ModelRecent 是某个模型最近若干次调用的结果。
+type ModelRecent struct {
+	Requests int64 `json:"requests"`
+	Errors   int64 `json:"errors"`
+}
+
 // Bucket 按小时聚合的统计。
 type Bucket struct {
 	Hour             int64 `json:"hour"`

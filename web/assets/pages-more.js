@@ -366,7 +366,7 @@
   // ======================================================================
   // 模型广场
   // ======================================================================
-  const plazaState = { keyword: '', filter: 'all', provider: 'all' };
+  const plazaState = { keyword: '', filter: 'all', provider: 'all', sort: '' };
 
   window.LDM.registerPage('plaza', {
     title: '模型广场',
@@ -410,6 +410,13 @@
               <button data-f="custom" class="${plazaState.filter === 'custom' ? 'is-on' : ''}">自定义模型</button>
               <button data-f="channel" class="${plazaState.filter === 'channel' ? 'is-on' : ''}">渠道模型</button>
             </div>
+            <select class="select" id="plaza-sort" style="width:auto;min-width:158px" title="按成功率排序">
+              <option value="">默认排序</option>
+              <option value="r24_desc">近 24h 成功率 降序</option>
+              <option value="r24_asc">近 24h 成功率 升序</option>
+              <option value="r200_desc">近 200 次成功率 降序</option>
+              <option value="r200_asc">近 200 次成功率 升序</option>
+            </select>
             <div class="toolbar__spacer"></div>
             <span class="muted fs-12" id="plaza-count"></span>
           </div>
@@ -442,6 +449,22 @@
           }
           return true;
         });
+        // 按成功率排序：没有调用记录的模型无论升降序都排在最后
+        if (plazaState.sort) {
+          const key = plazaState.sort.startsWith('r200') ? 'success_rate_200' : 'success_rate';
+          const countKey = key === 'success_rate_200' ? 'requests_200' : 'requests_24h';
+          const dir = plazaState.sort.endsWith('_asc') ? 1 : -1;
+          list = list.slice().sort((a, b) => {
+            const av = a[key] >= 0 ? a[key] : -1;
+            const bv = b[key] >= 0 ? b[key] : -1;
+            if (av < 0 && bv < 0) return 0;
+            if (av < 0) return 1;
+            if (bv < 0) return -1;
+            if (av !== bv) return (av - bv) * dir;
+            // 成功率相同时调用次数多的排前面，两个方向一致
+            return (b[countKey] || 0) - (a[countKey] || 0);
+          });
+        }
         countEl.textContent = `共 ${list.length} 个模型`;
 
         if (!list.length) {
@@ -484,11 +507,15 @@
               ${esc(m.routes.map((r) => r.model_id).join(' → '))}</div>` : ''}
             ${!isCustom && m.source ? `<div class="fs-12 muted">来源：${esc(m.source)}</div>` : ''}
             <div class="model-card__foot">
-              <div class="flex gap-12" style="flex:1;min-width:0">
-                <span class="model-card__stat">近 24h <b>${fmtInt(m.requests_24h)}</b> 次</span>
-                <span class="model-card__stat">成功率
+              <div class="model-card__stats">
+                <span class="model-card__stat">近 24h <b>${fmtInt(m.requests_24h)}</b> 次 · 成功率
                   ${m.success_rate >= 0
                     ? `<b style="color:${rateColor(m.success_rate)}">${m.success_rate.toFixed(1)}%</b>`
+                    : '<b class="muted">—</b>'}
+                </span>
+                <span class="model-card__stat" title="${m.requests_200 > 0 ? `按最近 ${fmtInt(m.requests_200)} 次调用计算` : '暂无调用记录'}">近 200 次成功率
+                  ${m.success_rate_200 >= 0
+                    ? `<b style="color:${rateColor(m.success_rate_200)}">${m.success_rate_200.toFixed(1)}%</b>`
                     : '<b class="muted">—</b>'}
                 </span>
               </div>
@@ -528,6 +555,12 @@
           renderGrid();
         };
       });
+      const sortEl = root.querySelector('#plaza-sort');
+      sortEl.value = plazaState.sort;
+      sortEl.onchange = () => {
+        plazaState.sort = sortEl.value;
+        renderGrid();
+      };
       root.querySelectorAll('#plaza-providers .provider-chip').forEach((b) => {
         b.onclick = () => {
           plazaState.provider = b.dataset.p;
@@ -681,6 +714,19 @@
                 : '0 次')}
               ${row('成功率', m.success_rate >= 0
                 ? `<b style="color:${rateColor(m.success_rate)}">${m.success_rate.toFixed(1)}%</b>`
+                : '<span class="muted">暂无调用记录</span>')}
+            </dl>
+          </div>
+
+          <div class="drawer__section">
+            <div class="section-title">近 200 次调用</div>
+            <dl class="kv">
+              ${row('样本数', `<b>${fmtInt(m.requests_200 || 0)}</b> 次`)}
+              ${row('失败次数', (m.errors_200 || 0) > 0
+                ? `<b style="color:var(--red-500)">${fmtInt(m.errors_200)}</b> 次`
+                : '0 次')}
+              ${row('成功率', m.success_rate_200 >= 0
+                ? `<b style="color:${rateColor(m.success_rate_200)}">${m.success_rate_200.toFixed(1)}%</b>`
                 : '<span class="muted">暂无调用记录</span>')}
             </dl>
           </div>

@@ -37,7 +37,19 @@ type plazaItem struct {
 	Requests24h int64   `json:"requests_24h"`
 	Errors24h   int64   `json:"errors_24h"`
 	SuccessRate float64 `json:"success_rate"`
+
+	// 最近 200 次调用的统计：Requests200 可能小于 200（日志不够或保留期较短）
+	Requests200    int64   `json:"requests_200"`
+	Errors200      int64   `json:"errors_200"`
+	SuccessRate200 float64 `json:"success_rate_200"`
 }
+
+const (
+	plazaRecentCalls = 200
+	// 最多回扫的日志条数。所有模型都凑够 200 条时会在中途结束，
+	// 这个上限只在模型多、调用稀疏时兜底，避免广场页扫描整个日志桶。
+	plazaRecentScanLimit = 50000
+)
 
 func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 	models, err := s.store.ListModels()
@@ -66,6 +78,13 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 每个模型最近 200 次调用的成功情况
+	modelIDs := make([]string, 0, len(models))
+	for _, m := range models {
+		modelIDs = append(modelIDs, m.ID)
+	}
+	recent, _ := s.store.RecentModelStats(modelIDs, plazaRecentCalls, plazaRecentScanLimit)
+
 	out := []plazaItem{}
 	for _, m := range models {
 		item := plazaItem{
@@ -74,6 +93,7 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 			ProviderID: m.ProviderID,
 			Affinity:   m.Affinity, CooldownSec: m.RouteCooldownSec(), CooldownReset: m.CooldownReset,
 			Requests24h: reqs[m.ID], Errors24h: errs[m.ID],
+			Requests200: recent[m.ID].Requests, Errors200: recent[m.ID].Errors,
 		}
 		if p, ok := providerByID[m.ProviderID]; ok {
 			item.ProviderName = p.Name
@@ -146,6 +166,11 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 			item.SuccessRate = float64(item.Requests24h-item.Errors24h) * 100 / float64(item.Requests24h)
 		} else {
 			item.SuccessRate = -1
+		}
+		if item.Requests200 > 0 {
+			item.SuccessRate200 = float64(item.Requests200-item.Errors200) * 100 / float64(item.Requests200)
+		} else {
+			item.SuccessRate200 = -1
 		}
 		out = append(out, item)
 	}

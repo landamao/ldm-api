@@ -1571,6 +1571,10 @@ html[data-theme="dark"] .chart-tip { background: rgba(50, 58, 74, .96); color: v
   padding-top: 10px; border-top: 1px solid var(--border-line);
   margin-top: auto;
 }
+.model-card__stats {
+  display: flex; flex-direction: column; gap: 2px;
+  flex: 1; min-width: 0;
+}
 .model-card__stat { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 /* ---------- 聊天试用 ---------- */
