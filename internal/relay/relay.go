@@ -94,6 +94,11 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 	}
 	res := &Resolved{Model: m}
 
+	// 「始终返回错误」不需要路由，提前返回，避免解析路由时触发冷却重置等副作用。
+	if m.CustomErrorEnabled() && m.CustomErrorAlways() {
+		return res, nil
+	}
+
 	switch m.Type {
 	case store.ModelTypeChannel:
 		ch, err := r.Store.GetChannel(m.ChannelID)
@@ -216,6 +221,33 @@ type ErrUpstream struct {
 
 func (e *ErrUpstream) Error() string { return fmt.Sprintf("upstream status %d", e.Status) }
 
+// customError 是模型配置的自定义错误返回。
+type customError struct {
+	status  int
+	message string
+}
+
+// customErrorOf 返回模型生效的自定义错误。总开关关闭或状态码无效时返回 false。
+func customErrorOf(m store.Model) (customError, bool) {
+	if !m.CustomErrorEnabled() || m.ErrorStatus < 400 || m.ErrorStatus > 599 {
+		return customError{}, false
+	}
+	msg := strings.TrimSpace(m.ErrorMessage)
+	if msg == "" {
+		msg = clientErrorMessage(m.ID)
+	}
+	return customError{status: m.ErrorStatus, message: msg}, true
+}
+
+// writeCustomError 按 OpenAI 兼容格式写出配置的错误。
+func writeCustomError(w http.ResponseWriter, ce customError) {
+	typ := "invalid_request_error"
+	if ce.status >= http.StatusInternalServerError {
+		typ = "server_error"
+	}
+	writeAPIError(w, ce.status, typ, ce.message)
+}
+
 // Do 执行转发。它会把响应写进 w，并返回用于记账的结果。
 func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Result {
 	start := time.Now()
@@ -259,8 +291,27 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
 	}
+	// 「始终返回错误」模式：不解析路由、不请求上游，直接把配置的
+	// 状态码和错误详情返回给调用方。
+	if ce, ok := customErrorOf(resolved.Model); ok && resolved.Model.CustomErrorAlways() {
+		writeCustomError(w, ce)
+		res.StatusCode = ce.status
+		res.ClientErr = ce.message
+		res.Err = fmt.Sprintf("模型配置了自定义错误返回（始终返回 %d）", ce.status)
+		res.LatencyMs = time.Since(start).Milliseconds()
+		return res
+	}
 	if len(resolved.Routes) == 0 {
 		// 客户端只看到笼统结论，具体原因（渠道已禁用等）只写进日志，避免泄露内部信息。
+		// 开启「失败时重写」后，这种失败也换成模型配置的错误。
+		if ce, ok := customErrorOf(resolved.Model); ok {
+			writeCustomError(w, ce)
+			res.StatusCode = ce.status
+			res.ClientErr = ce.message
+			res.Err = resolved.NoRoute
+			res.LatencyMs = time.Since(start).Milliseconds()
+			return res
+		}
 		msg := "模型「" + modelID + "」当前没有可用渠道"
 		writeAPIError(w, http.StatusServiceUnavailable, "server_error", msg)
 		res.StatusCode = http.StatusServiceUnavailable
@@ -379,7 +430,7 @@ outer:
 			if outcome.keyFailed {
 				MarkKeyFailure(route.Channel.ID, kc.key)
 			}
-			if !hasMoreKeys && (!outcome.wrote || outcome.upstreamBroken) {
+			if !hasMoreKeys && (!outcome.wrote || outcome.upstreamBroken) && !outcome.skipRouteCooldown {
 				MarkFailure(route.Channel.ID, route.Upstream)
 			}
 			if !outcome.retryable {
@@ -410,9 +461,16 @@ outer:
 		res.Usage = estimateUsage(req)
 		res.UsageEstimate = true
 	}
-	// 上游的原始响应已经透传过了，就不要再追加一层错误体
+	// 失败时重写：请求最终失败时，用模型配置的错误替代原始错误。
+	// 已经写出响应（流式中途断开）的请求无法改写状态码和响应体，保持原样。
+	rewritten := false
 	if lastErr != "" && !wrote {
-		if lastRaw != nil {
+		if ce, ok := customErrorOf(resolved.Model); ok {
+			writeCustomError(w, ce)
+			res.StatusCode = ce.status
+			res.ClientErr = ce.message
+			rewritten = true
+		} else if lastRaw != nil {
 			// 上游自己的错误响应原样返回，但不会带上网关的渠道信息。
 			writeUpstreamRawParts(w, lastRawHdr, lastStatus, lastRaw)
 		} else {
@@ -425,7 +483,8 @@ outer:
 	// 上游错误体无论是否已经写出，都是调用方实际收到的内容。
 	// 透传上游原始错误时，内部原因不再重复同一段内容，留空让日志显示 —；
 	// 渠道、状态码等信息已经记在日志摘要和重试明细里。
-	if lastRaw != nil {
+	// 重写模式下调用方看到的是配置的错误，内部失败原因要保留在日志里。
+	if lastRaw != nil && !rewritten {
 		res.ClientErr = string(lastRaw)
 		res.Err = ""
 	}
@@ -452,6 +511,10 @@ type attemptOutcome struct {
 	upstreamHdr http.Header
 	// upstreamBroken 表示上游在响应中途断开，即使已经写出响应也要标记失败。
 	upstreamBroken bool
+	// skipRouteCooldown 表示这次失败不该让路由进入冷却。
+	// 用于「失败时重写错误」：原本会直接透传、不写响应体的错误状态码
+	// 现在交给 Do 统一重写，不能因为改写了写出时机就改变冷却行为。
+	skipRouteCooldown bool
 }
 
 // retryHistory 只在真的发生过重试时保留尝试明细，单次请求不增加日志体积。
@@ -560,6 +623,12 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		// 不可重试状态码：上游错误原样返回，不记录 Key / 路由冷却，
 		// 也不再尝试后面的路由。是否命中由模型配置决定。
 		if resolved.Model.NoRetryStatusSet().Match(status) {
+			// 开启「失败时重写」时不在这里写出上游原始错误，
+			// 交给 Do 在最终失败时统一换成配置的错误。
+			if _, rewrite := customErrorOf(resolved.Model); rewrite {
+				return attemptOutcome{status: status, err: errors.New(msg), retryable: false,
+					upstreamRaw: raw, upstreamHdr: resp.Header, skipRouteCooldown: true}
+			}
 			writeUpstreamRaw(w, resp, raw)
 			return attemptOutcome{status: status, err: errors.New(msg), retryable: false, wrote: true,
 				upstreamRaw: raw, upstreamHdr: resp.Header}
@@ -567,6 +636,10 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		// 没有更多 Key 可换的 401/403 直接返回，不再把同一个认证错误
 		// 转发给其它模型。
 		if (status == http.StatusUnauthorized || status == http.StatusForbidden) && !hasMoreKeys {
+			if _, rewrite := customErrorOf(resolved.Model); rewrite {
+				return attemptOutcome{status: status, err: errors.New(msg), retryable: false,
+					upstreamRaw: raw, upstreamHdr: resp.Header, keyFailed: keyFailed, skipRouteCooldown: true}
+			}
 			writeUpstreamRaw(w, resp, raw)
 			return attemptOutcome{status: status, err: errors.New(msg), retryable: false, wrote: true,
 				upstreamRaw: raw, upstreamHdr: resp.Header, keyFailed: keyFailed}

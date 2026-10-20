@@ -2,10 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"ldmapi/internal/store"
 )
@@ -113,6 +116,179 @@ func TestSaveModelNoRetryStatus(t *testing.T) {
 	rec = put("smart", `{"no_retry_status":"abc"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("非法规则应返回 400，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSaveModelCustomError(t *testing.T) {
+	s, st := newTestServer(t, "model-custom-error")
+
+	put := func(id, payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/models/"+id, strings.NewReader(payload))
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		s.saveModel(rec, req)
+		return rec
+	}
+
+	// 两个开关都开：始终返回配置的错误
+	rec := put("smart", `{"id":"smart","type":"custom","routes":[],"error_enabled":true,"error_always":true,"error_status":503,"error_message":" 维护中，请稍后再试 "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, err := st.GetModel("smart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.CustomErrorEnabled() || !m.CustomErrorAlways() {
+		t.Fatalf("两个开关都应开启: %+v", m)
+	}
+	if m.ErrorStatus != http.StatusServiceUnavailable || m.ErrorMessage != "维护中，请稍后再试" {
+		t.Fatalf("自定义错误未正确保存: %+v", m)
+	}
+
+	// 只开总开关：失败时重写
+	rec = put("smart", `{"error_always":false,"error_status":429,"error_message":"限流"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("smart")
+	if !m.CustomErrorEnabled() || m.CustomErrorAlways() {
+		t.Fatalf("应只开启总开关: %+v", m)
+	}
+	if m.ErrorStatus != http.StatusTooManyRequests || m.ErrorMessage != "限流" {
+		t.Fatalf("错误状态码或详情未保存: %+v", m)
+	}
+
+	// 渠道模型同样支持
+	rec = put("A/a", `{"id":"A/a","type":"channel","channel_id":"A","upstream":"a","error_enabled":true,"error_always":true,"error_status":403,"error_message":"已下线"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("渠道模型保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("A/a")
+	if !m.CustomErrorEnabled() || !m.CustomErrorAlways() ||
+		m.ErrorStatus != http.StatusForbidden || m.ErrorMessage != "已下线" {
+		t.Fatalf("渠道模型的自定义错误未保存: %+v", m)
+	}
+
+	// 只提交 enabled 不能清空已有配置
+	rec = put("smart", `{"enabled":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("部分更新失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("smart")
+	if !m.CustomErrorEnabled() || m.CustomErrorAlways() || m.ErrorStatus != http.StatusTooManyRequests {
+		t.Fatalf("未提交自定义错误时不应被覆盖: %+v", m)
+	}
+
+	// 关闭总开关时子开关一起关闭，状态码保留
+	rec = put("smart", `{"error_enabled":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("关闭总开关失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("smart")
+	if m.CustomErrorEnabled() || m.CustomErrorAlways() {
+		t.Fatalf("总开关关闭后子开关不应生效: %+v", m)
+	}
+	if m.ErrorStatus != http.StatusTooManyRequests {
+		t.Fatalf("关闭总开关不应清空状态码: %+v", m)
+	}
+
+	// 只打开「始终返回错误」会一并打开总开关
+	rec = put("smart", `{"error_always":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("smart")
+	if !m.CustomErrorEnabled() || !m.CustomErrorAlways() {
+		t.Fatalf("打开始终返回错误时应一并打开总开关: %+v", m)
+	}
+
+	// 关闭状态下可以清空状态码与详情
+	rec = put("smart", `{"error_enabled":false,"error_status":0,"error_message":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("关闭并清空失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("smart")
+	if m.CustomErrorEnabled() || m.ErrorStatus != 0 || m.ErrorMessage != "" {
+		t.Fatalf("自定义错误应已关闭并清空: %+v", m)
+	}
+
+	// 开启总开关但没有状态码直接拒绝
+	rec = put("fresh", `{"id":"fresh","type":"custom","routes":[],"error_enabled":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("缺少状态码应返回 400，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 状态码超出错误范围直接拒绝
+	for _, payload := range []string{`{"error_status":200}`, `{"error_status":600}`} {
+		rec = put("smart", payload)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("非法状态码应返回 400，得到 %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// 通过完整 HTTP 入口验证：模型配置自定义错误后，调用方收到配置的状态码和文案，
+// 且不会向上游发起请求。
+func TestModelCustomErrorOverHTTP(t *testing.T) {
+	s, st := newTestServer(t, "model-custom-error-http")
+
+	var hits atomic.Int32
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok"}`)
+	}))
+	defer upstreamSrv.Close()
+
+	if err := st.SaveChannel(store.Channel{
+		ID: "C", Name: "C", Type: store.ChannelOpenAI, BaseURL: upstreamSrv.URL,
+		APIKey: "sk-upstream", Models: []string{"m"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	on := true
+	if err := st.SaveModel(store.Model{
+		ID: "C/m", Type: store.ModelTypeChannel, ChannelID: "C", Upstream: "m",
+		ErrorEnabled: &on, ErrorAlways: &on,
+		ErrorStatus: http.StatusForbidden, ErrorMessage: "该模型已下线",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveToken(store.Token{
+		ID: "t1", Name: "测试", Key: "sk-test-custom-error", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	body := `{"model":"C/m","messages":[{"role":"user","content":"hi"}]}`
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer sk-test-custom-error")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("应返回配置的 403，得到 %d: %s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "该模型已下线") {
+		t.Errorf("响应应包含配置的错误详情: %s", raw)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("配置自定义错误后不应请求上游，实际 %d 次", got)
 	}
 }
 

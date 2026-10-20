@@ -49,6 +49,7 @@ const (
 	statusModelMissing    = "model_missing"
 	statusNoRoutes        = "no_routes"
 	statusUnavailable     = "unavailable"
+	statusCustomError     = "custom_error"
 )
 
 // routeState 判断一条「渠道 + 上游模型」引用是否真的可用。
@@ -83,6 +84,12 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	out := make([]modelView, 0, len(models))
 	for _, m := range models {
 		v := modelView{Model: m, Status: statusOK}
+		// 回填两个开关的生效值：旧数据没有这两个字段，前端需要拿到
+		// 「有状态码即开启且始终返回」的兼容结果。
+		errorEnabled := m.CustomErrorEnabled()
+		errorAlways := m.CustomErrorAlways()
+		v.ErrorEnabled = &errorEnabled
+		v.ErrorAlways = &errorAlways
 		if p, ok := providerByID[m.ProviderID]; ok {
 			v.ProviderName = p.Name
 			v.ProviderIcon = p.Icon
@@ -129,6 +136,10 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		}
 		if !m.Enabled {
 			v.Status = statusDisabled
+		} else if m.CustomErrorEnabled() && m.CustomErrorAlways() {
+			// 始终返回错误的模型即使路由完好也不会真正转发，
+			// 列表状态单独标出来，避免显示成「可用」。
+			v.Status = statusCustomError
 		}
 		out = append(out, v)
 	}
@@ -210,6 +221,10 @@ type modelRequest struct {
 	CooldownSec   *int           `json:"cooldown_sec"`
 	CooldownReset *bool          `json:"cooldown_reset"`
 	NoRetryStatus *string        `json:"no_retry_status"`
+	ErrorEnabled  *bool          `json:"error_enabled"`
+	ErrorAlways   *bool          `json:"error_always"`
+	ErrorStatus   *int           `json:"error_status"`
+	ErrorMessage  *string        `json:"error_message"`
 	Timeout       *int           `json:"timeout"`
 }
 
@@ -395,6 +410,43 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		empty := ""
 		m.NoRetryStatus = &empty
 	}
+
+	// 自定义错误返回：总开关关闭时，子开关与状态码都不生效。
+	// 显式关闭总开关会同时关闭子开关；只打开子开关时一并打开总开关。
+	errorEnabled := m.CustomErrorEnabled()
+	errorAlways := m.CustomErrorAlways()
+	if req.ErrorEnabled != nil {
+		errorEnabled = *req.ErrorEnabled
+		if !errorEnabled {
+			errorAlways = false
+		}
+	}
+	if req.ErrorAlways != nil {
+		errorAlways = *req.ErrorAlways
+		if errorAlways {
+			errorEnabled = true
+		}
+	}
+	if !errorEnabled {
+		errorAlways = false
+	}
+	if req.ErrorStatus != nil {
+		status := *req.ErrorStatus
+		if status != 0 && (status < 400 || status > 599) {
+			writeErr(w, http.StatusBadRequest, "自定义错误状态码需在 400–599 之间")
+			return
+		}
+		m.ErrorStatus = status
+	}
+	if req.ErrorMessage != nil {
+		m.ErrorMessage = strings.TrimSpace(*req.ErrorMessage)
+	}
+	if errorEnabled && m.ErrorStatus == 0 {
+		writeErr(w, http.StatusBadRequest, "开启自定义错误返回时请填写 400–599 的状态码")
+		return
+	}
+	m.ErrorEnabled = &errorEnabled
+	m.ErrorAlways = &errorAlways
 
 	if isNew {
 		if _, err := s.store.GetModel(m.ID); err == nil {

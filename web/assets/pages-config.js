@@ -24,6 +24,12 @@
     <div style="margin-bottom:8px">命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。</div>
     <div style="margin-bottom:8px">留空表示所有状态码都可重试（未配置过的旧数据也按留空处理）；点击「填入模板」填入 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）。</div>
     <div>401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。</div>`;
+  const CUSTOM_ERROR_HELP_TEXT = '总开关关闭时以下配置都不生效。只开总开关：请求最终失败时，用这里的错误替代上游原始错误，成功请求不受影响；再开「始终返回错误」：所有调用都直接返回这里的错误，不再请求上游。状态码支持 400–599，错误详情留空时返回默认文案。';
+  const CUSTOM_ERROR_HELP_HTML = `
+    <div style="margin-bottom:8px"><b>总开关</b>：开启后才会读取下面的状态码和错误详情；关闭时以下配置都不生效。</div>
+    <div style="margin-bottom:8px"><b>只开总开关</b>：请求最终失败时（上游报错、超时、无可用路由等），用这里配置的错误替代原始错误；成功的请求不受影响。</div>
+    <div style="margin-bottom:8px"><b>始终返回错误</b>：总开关开启后才能使用。开启后不请求上游，所有调用都直接返回这里配置的错误。</div>
+    <div>状态码支持 <code>400–599</code>；错误详情留空时返回默认文案。流式响应一旦开始输出，中途失败无法改写已经发出的内容。</div>`;
 
   // 每个渠道 / 模型编辑弹窗的「高级设置」展开状态按实体 ID 记在本地。
   // 新建时统一用 __new，避免不同实体的状态互相影响。
@@ -1685,7 +1691,7 @@
       const statusCounts = { enabled: 0, disabled: 0, unavailable: 0 };
       models.forEach((m) => {
         if (!m.enabled) statusCounts.disabled += 1;
-        else if (m.channel_ready) statusCounts.enabled += 1;
+        else if (m.status === 'ok') statusCounts.enabled += 1;
         else statusCounts.unavailable += 1;
       });
       const statusOptions = [
@@ -1755,11 +1761,11 @@
             if (m.provider_id !== modelState.provider) return false;
           }
           if (modelState.status === 'enabled') {
-            if (!m.enabled || !m.channel_ready) return false;
+            if (!m.enabled || m.status !== 'ok') return false;
           } else if (modelState.status === 'disabled') {
             if (m.enabled) return false;
           } else if (modelState.status === 'unavailable') {
-            if (!m.enabled || m.channel_ready) return false;
+            if (!m.enabled || m.status === 'ok') return false;
           }
           if (kw) {
             const hay = (m.id + ' ' + (m.display_name || '') + ' ' + (m.channel_name || '') + ' ' + (m.provider_name || '')).toLowerCase();
@@ -2033,6 +2039,7 @@
     const provider = providerByID[m.provider_id];
     const statusHtml = (() => {
       if (!m.enabled) return statusBadge(false, '', '已禁用');
+      if (m.status === 'custom_error') return badge(`始终返回错误 ${m.error_status}`, 'red');
       if (m.status === 'channel_disabled') return badge('渠道已禁用', 'red');
       if (m.status === 'channel_missing' || m.status === 'model_missing') return badge('渠道模型不存在', 'red');
       if (m.status === 'ok') return statusBadge(true, '可用');
@@ -2934,6 +2941,23 @@
                    value="${esc(m.no_retry_status ?? '')}"
                    placeholder="${DEFAULT_NO_RETRY_STATUS}">
           </div>
+          <div class="field">
+            <div class="field__head">
+              <label class="field__label">自定义错误返回
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="m-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看自定义错误返回机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="m-error-enabled" ${m.error_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input class="input mono" id="m-error-status" type="number" min="400" max="599" step="1"
+                     value="${m.error_status || ''}" placeholder="状态码" style="width:130px" ${m.error_enabled ? '' : 'disabled'}>
+              <input class="input" id="m-error-message"
+                     value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试" ${m.error_enabled ? '' : 'disabled'}>
+            </div>
+            <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-always" ${m.error_always ? 'checked' : ''} ${m.error_enabled ? '' : 'disabled'}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
+            <div class="field__hint">只开总开关：调用失败时用这里的错误替代原始错误；再开「始终返回错误」则所有调用都直接返回这里的错误。</div>
+          </div>
         </div>
       </details>
       ${capsEditorHtml(m.caps || {})}
@@ -2952,6 +2976,22 @@
       onMount(mo) {
         bindCapsEditor(mo.body);
         bindAdvancedState(mo.body, 'model', m.id);
+        const errorEnabledEl = mo.body.querySelector('#m-error-enabled');
+        const errorAlwaysEl = mo.body.querySelector('#m-error-always');
+        const errorStatusEl = mo.body.querySelector('#m-error-status');
+        const errorMessageEl = mo.body.querySelector('#m-error-message');
+        const syncErrorFields = () => {
+          const on = errorEnabledEl.checked;
+          errorStatusEl.disabled = !on;
+          errorMessageEl.disabled = !on;
+          errorAlwaysEl.disabled = !on;
+          if (!on) errorAlwaysEl.checked = false;
+        };
+        errorEnabledEl.onchange = syncErrorFields;
+        syncErrorFields();
+        mo.body.querySelector('#m-error-help').onclick = () => {
+          openHelpModal('自定义错误返回', CUSTOM_ERROR_HELP_HTML);
+        };
         mo.body.querySelector('#m-no-retry-help').onclick = () => {
           openHelpModal('不可重试状态码', NO_RETRY_STATUS_HELP_HTML);
         };
@@ -2969,6 +3009,17 @@
             Toast.error(e.message, '能力参数格式有误');
             return;
           }
+          const errorEnabled = mo.body.querySelector('#m-error-enabled').checked;
+          const errorAlways = errorEnabled && mo.body.querySelector('#m-error-always').checked;
+          const errorStatus = Math.round(Number(mo.body.querySelector('#m-error-status').value) || 0);
+          if (errorStatus && (errorStatus < 400 || errorStatus > 599)) {
+            Toast.warn('自定义错误状态码需在 400–599 之间');
+            return;
+          }
+          if (errorEnabled && !errorStatus) {
+            Toast.warn('开启自定义错误返回时请填写 400–599 的状态码');
+            return;
+          }
           const btn = mo.foot.querySelector('[data-act=save]');
           btn.disabled = true;
           btn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';
@@ -2984,6 +3035,10 @@
               description: mo.body.querySelector('#m-desc').value.trim(),
               timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#m-timeout').value) || 300)),
               no_retry_status: mo.body.querySelector('#m-no-retry').value.trim(),
+              error_enabled: errorEnabled,
+              error_always: errorAlways,
+              error_status: errorStatus,
+              error_message: mo.body.querySelector('#m-error-message').value.trim(),
             });
             mo.close();
             Toast.success('模型配置已保存');
@@ -3222,7 +3277,7 @@
     const m = existing || {
       id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
       caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
-      no_retry_status: '',
+      no_retry_status: '', error_enabled: false, error_always: false, error_status: 0, error_message: '',
     };
     // 本地编辑态
     const draft = {
@@ -3304,6 +3359,23 @@
                    value="${esc(m.no_retry_status ?? '')}"
                    placeholder="${DEFAULT_NO_RETRY_STATUS}">
           </div>
+          <div class="field">
+            <div class="field__head">
+              <label class="field__label">自定义错误返回
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="cm-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看自定义错误返回机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="cm-error-enabled" ${m.error_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input class="input mono" id="cm-error-status" type="number" min="400" max="599" step="1"
+                     value="${m.error_status || ''}" placeholder="状态码" style="width:130px" ${m.error_enabled ? '' : 'disabled'}>
+              <input class="input" id="cm-error-message"
+                     value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试" ${m.error_enabled ? '' : 'disabled'}>
+            </div>
+            <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-always" ${m.error_always ? 'checked' : ''} ${m.error_enabled ? '' : 'disabled'}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
+            <div class="field__hint">只开总开关：调用失败时用这里的错误替代原始错误；再开「始终返回错误」则所有调用都直接返回这里的错误。</div>
+          </div>
         </div>
       </details>
 
@@ -3341,6 +3413,22 @@
         const routeHost = mo.body.querySelector('#route-host');
         const capsHost = mo.body.querySelector('#caps-host');
         bindAdvancedState(mo.body, 'model', m.id);
+        const errorEnabledEl = mo.body.querySelector('#cm-error-enabled');
+        const errorAlwaysEl = mo.body.querySelector('#cm-error-always');
+        const errorStatusEl = mo.body.querySelector('#cm-error-status');
+        const errorMessageEl = mo.body.querySelector('#cm-error-message');
+        const syncErrorFields = () => {
+          const on = errorEnabledEl.checked;
+          errorStatusEl.disabled = !on;
+          errorMessageEl.disabled = !on;
+          errorAlwaysEl.disabled = !on;
+          if (!on) errorAlwaysEl.checked = false;
+        };
+        errorEnabledEl.onchange = syncErrorFields;
+        syncErrorFields();
+        mo.body.querySelector('#cm-error-help').onclick = () => {
+          openHelpModal('自定义错误返回', CUSTOM_ERROR_HELP_HTML);
+        };
         mo.body.querySelector('#cm-no-retry-help').onclick = () => {
           openHelpModal('不可重试状态码', NO_RETRY_STATUS_HELP_HTML);
         };
@@ -4144,6 +4232,17 @@
             Toast.error(e.message, '能力参数格式有误');
             return;
           }
+          const errorEnabled = mo.body.querySelector('#cm-error-enabled').checked;
+          const errorAlways = errorEnabled && mo.body.querySelector('#cm-error-always').checked;
+          const errorStatus = Math.round(Number(mo.body.querySelector('#cm-error-status').value) || 0);
+          if (errorStatus && (errorStatus < 400 || errorStatus > 599)) {
+            Toast.warn('自定义错误状态码需在 400–599 之间');
+            return;
+          }
+          if (errorEnabled && !errorStatus) {
+            Toast.warn('开启自定义错误返回时请填写 400–599 的状态码');
+            return;
+          }
 
           const payload = {
             id: newID,
@@ -4154,6 +4253,10 @@
             cooldown_sec: Math.max(0, Math.min(86400, Math.round(Number(mo.body.querySelector('#cm-cooldown').value) || 0))),
             cooldown_reset: mo.body.querySelector('#cm-cooldown-reset').checked,
             no_retry_status: mo.body.querySelector('#cm-no-retry').value.trim(),
+            error_enabled: errorEnabled,
+            error_always: errorAlways,
+            error_status: errorStatus,
+            error_message: mo.body.querySelector('#cm-error-message').value.trim(),
             timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#cm-timeout').value) || 300)),
             caps,
             enabled: mo.body.querySelector('#cm-enabled').checked,

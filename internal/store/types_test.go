@@ -76,3 +76,28 @@ func TestChannelKeyList(t *testing.T) {
 		t.Errorf("未配置 Key 时应返回空字符串占位，得到 %v", keys)
 	}
 }
+
+func TestModelCustomErrorSwitches(t *testing.T) {
+	// 旧数据没有两个开关：有状态码即视为开启且始终返回。
+	legacy := Model{ErrorStatus: 503}
+	if !legacy.CustomErrorEnabled() || !legacy.CustomErrorAlways() {
+		t.Error("旧数据有状态码时应视为开启且始终返回")
+	}
+	if (Model{}).CustomErrorEnabled() || (Model{}).CustomErrorAlways() {
+		t.Error("没有状态码的旧数据应视为关闭")
+	}
+
+	on, off := true, false
+	rewrite := Model{ErrorEnabled: &on, ErrorAlways: &off, ErrorStatus: 429}
+	if !rewrite.CustomErrorEnabled() || rewrite.CustomErrorAlways() {
+		t.Error("只开总开关时应为失败时重写")
+	}
+	always := Model{ErrorEnabled: &on, ErrorAlways: &on, ErrorStatus: 429}
+	if !always.CustomErrorEnabled() || !always.CustomErrorAlways() {
+		t.Error("两个开关都开时应始终返回")
+	}
+	disabled := Model{ErrorEnabled: &off, ErrorAlways: &on, ErrorStatus: 429}
+	if disabled.CustomErrorEnabled() || disabled.CustomErrorAlways() {
+		t.Error("总开关关闭时子开关不应生效")
+	}
+}

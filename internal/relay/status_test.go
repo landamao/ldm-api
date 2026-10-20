@@ -15,6 +15,7 @@ import (
 )
 
 func strp(v string) *string { return &v }
+func boolp(v bool) *bool    { return &v }
 
 func statusTestRequest(model string) *Request {
 	body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, model))
@@ -271,5 +272,247 @@ func TestUnauthorizedWithoutKeyCooldownStopsFailover(t *testing.T) {
 	}
 	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 2 {
 		t.Errorf("401 不在冷却列表时不应冷却 Key，得到 %v（%s）", candidateIndexes(keys), reason)
+	}
+}
+
+// 模型配置自定义错误返回时，不请求任何上游渠道，直接返回配置的状态码和错误详情。
+func TestModelCustomErrorSkipsUpstream(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok"}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	ch := statusTestChannel(t, st, "ce", srv.URL, []string{"key-g-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "ce/a", Type: store.ModelTypeChannel, ChannelID: "ce", Upstream: "a",
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(true),
+		ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "维护中，请稍后再试",
+		NoRetryStatus: strp(""),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("ce/a"))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("应返回配置的 503，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "维护中，请稍后再试") {
+		t.Errorf("响应应包含配置的错误详情: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"type":"server_error"`) {
+		t.Errorf("5xx 错误的 type 应为 server_error: %s", rec.Body.String())
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("配置自定义错误后不应请求上游，实际 %d 次", got)
+	}
+	if res.StatusCode != http.StatusServiceUnavailable || res.ClientErr != "维护中，请稍后再试" {
+		t.Errorf("结果应记录实际返回给调用方的状态与文案: %+v", res)
+	}
+	if len(res.Attempts) != 0 {
+		t.Errorf("未请求上游时不应记录路由尝试: %+v", res.Attempts)
+	}
+	// 未真正调用上游，Key 不应进入冷却
+	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 1 {
+		t.Errorf("自定义错误不应冷却 Key，得到 %v（%s）", candidateIndexes(keys), reason)
+	}
+}
+
+// 自定义模型即使没有可用路由，自定义错误也优先于「没有可用渠道」返回。
+func TestModelCustomErrorWithoutRoutes(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "maint", Type: store.ModelTypeCustom, Routes: []store.Route{},
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(true),
+		ErrorStatus: http.StatusTooManyRequests,
+		Enabled:     true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("maint"))
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("应返回配置的 429，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "暂不可用") {
+		t.Errorf("未填写错误详情时应返回默认文案: %s", rec.Body.String())
+	}
+	if res.ClientErr == "" || !strings.Contains(res.Err, "自定义错误") {
+		t.Errorf("日志应区分自定义错误与普通无可用渠道: %+v", res)
+	}
+}
+
+// 只开总开关：请求成功时正常返回；上游报错时才用配置的错误替代原始错误。
+func TestModelCustomErrorRewritesUpstreamError(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, `{"error":{"message":"upstream boom"}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "rw", srv.URL, []string{"key-h-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "rw/a", Type: store.ModelTypeChannel, ChannelID: "rw", Upstream: "a",
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(false),
+		ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "维护中，请稍后再试",
+		NoRetryStatus: strp(""),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("rw/a"))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("应返回配置的 503，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "维护中，请稍后再试") {
+		t.Errorf("响应应包含配置的错误详情: %s", body)
+	}
+	if strings.Contains(body, "upstream boom") {
+		t.Errorf("上游原始错误不应透传给调用方: %s", body)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("失败时重写仍应先请求上游，实际 %d 次", got)
+	}
+	if res.StatusCode != http.StatusServiceUnavailable || res.ClientErr != "维护中，请稍后再试" {
+		t.Errorf("结果应记录实际返回给调用方的状态与文案: %+v", res)
+	}
+	if !strings.Contains(res.Err, "upstream boom") {
+		t.Errorf("内部失败原因应保留在日志里: %+v", res.Err)
+	}
+}
+
+// 失败时重写不能改变原有冷却规则：命中不可重试状态码时仍然不冷却 Key / 路由。
+func TestModelCustomErrorRewriteKeepsNoRetryRules(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, `{"error":{"message":"boom"}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	ch := statusTestChannel(t, st, "rwnr", srv.URL, []string{"key-i-000001", "key-i-000002"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "smart", Type: store.ModelTypeCustom,
+		Routes:       []store.Route{{ChannelID: "rwnr", Upstream: "a"}},
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(false),
+		ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "统一错误",
+		NoRetryStatus: strp("500"),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("smart"))
+
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "统一错误") {
+		t.Fatalf("应返回配置的错误，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("不可重试状态码只应尝试一次，实际 %d 次", got)
+	}
+	if res.Err == "" {
+		t.Error("内部失败原因不应为空")
+	}
+	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 2 {
+		t.Errorf("不可重试状态码不应冷却 Key，得到 %v（%s）", candidateIndexes(keys), reason)
+	}
+	m, _ := st.GetModel("smart")
+	chans, _ := st.ListChannels()
+	byID := map[string]store.Channel{}
+	for _, c := range chans {
+		byID[c.ID] = c
+	}
+	if plan, _ := PlanRoute(m, byID, func(string) bool { return true }); len(plan) != 1 {
+		t.Errorf("不可重试状态码不应冷却路由，得到 %d 条可用路由", len(plan))
+	}
+}
+
+// 只开总开关时，没有可用路由也属于失败，应返回配置的错误。
+func TestModelCustomErrorRewritesNoRoute(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "maint2", Type: store.ModelTypeCustom, Routes: []store.Route{},
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(false),
+		ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "维护中",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("maint2"))
+
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "维护中") {
+		t.Fatalf("应返回配置的错误，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(res.Err, "尚未配置路由") {
+		t.Errorf("日志应保留内部失败原因: %+v", res.Err)
+	}
+}
+
+// 只开总开关时，成功的请求保持原样，不受自定义错误影响。
+func TestModelCustomErrorRewriteLeavesSuccessUntouched(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "rws", srv.URL, []string{"key-j-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "rws/a", Type: store.ModelTypeChannel, ChannelID: "rws", Upstream: "a",
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(false),
+		ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "维护中",
+		NoRetryStatus: strp(""),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("rws/a"))
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"ok"`) {
+		t.Fatalf("成功请求应原样返回，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if res.Err != "" || res.ClientErr != "" {
+		t.Errorf("成功请求不应记录错误: %+v", res)
 	}
 }

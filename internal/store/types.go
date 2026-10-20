@@ -244,6 +244,17 @@ type Model struct {
 	// 显式空字符串表示所有状态码都可重试。
 	NoRetryStatus *string `json:"no_retry_status,omitempty"`
 
+	// 自定义错误返回。
+	// ErrorEnabled 是总开关：关闭时以下配置均不生效。
+	// ErrorAlways 开启后不请求上游，所有调用直接返回配置的错误；
+	// 关闭时只在请求最终失败（上游错误、超时、无可用路由等）时用它替代原始错误。
+	// ErrorStatus 是返回给调用方的状态码（400–599），ErrorMessage 是错误详情，
+	// 为空时使用默认文案。旧数据没有两个开关，按「有状态码即开启且始终返回」处理。
+	ErrorEnabled *bool  `json:"error_enabled,omitempty"`
+	ErrorAlways  *bool  `json:"error_always,omitempty"`
+	ErrorStatus  int    `json:"error_status,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
+
 	DisplayName string   `json:"display_name,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
@@ -266,6 +277,27 @@ func (m Model) RouteCooldownSec() int {
 		return DefaultCooldownSec
 	}
 	return *m.CooldownSec
+}
+
+// CustomErrorEnabled 返回自定义错误返回总开关。旧数据未设置时，
+// 有状态码即视为开启，与引入开关前的行为保持一致。
+func (m Model) CustomErrorEnabled() bool {
+	if m.ErrorEnabled != nil {
+		return *m.ErrorEnabled
+	}
+	return m.ErrorStatus > 0
+}
+
+// CustomErrorAlways 返回是否始终返回自定义错误。总开关关闭时永远为 false；
+// 旧数据未设置子开关时，有状态码即视为始终返回。
+func (m Model) CustomErrorAlways() bool {
+	if !m.CustomErrorEnabled() {
+		return false
+	}
+	if m.ErrorAlways != nil {
+		return *m.ErrorAlways
+	}
+	return m.ErrorStatus > 0
 }
 
 // Token 调用方使用的 API Key。
