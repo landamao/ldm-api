@@ -2636,7 +2636,7 @@
         <table class="tbl">
           <thead><tr>
             <th>名称</th><th style="min-width:250px">密钥</th><th>状态</th>
-            <th style="min-width:140px">用量</th><th>模型权限</th><th>最后使用</th><th style="width:150px"></th>
+            <th style="min-width:140px">用量</th><th>模型权限</th><th>IP 限制</th><th>最后使用</th><th style="width:150px"></th>
           </tr></thead>
           <tbody>${tokens.map((t) => {
             const pct = t.used_pct || 0;
@@ -2660,6 +2660,9 @@
               <td>${!t.allowed_models || !t.allowed_models.length
                 ? '<span class="muted fs-12">全部模型</span>'
                 : `<div class="badge-group">${t.allowed_models.slice(0, 2).map((m) => badge(m, 'gray')).join('')}${t.allowed_models.length > 2 ? badge('+' + (t.allowed_models.length - 2), 'gray') : ''}</div>`}</td>
+              <td>${!t.allowed_ips || !t.allowed_ips.length
+                ? '<span class="muted fs-12">全部 IP</span>'
+                : `<div class="badge-group">${t.allowed_ips.slice(0, 2).map((v) => badge(v, 'gray')).join('')}${t.allowed_ips.length > 2 ? badge('+' + (t.allowed_ips.length - 2), 'gray') : ''}</div>`}</td>
               <td class="muted fs-12 nowrap">${esc(relTime(t.last_used_at))}</td>
               <td>
                 <div class="row-actions">
@@ -2714,7 +2717,7 @@
 
   async function openTokenEditor(token) {
     const isNew = !token;
-    const t = token || { name: '', enabled: true, expires_at: 0, quota_limit: 0, allowed_models: [], remark: '' };
+    const t = token || { name: '', enabled: true, expires_at: 0, quota_limit: 0, allowed_models: [], allowed_ips: [], remark: '' };
     // 模型权限复用「模型管理 → 添加模型」的选择弹窗（支持搜索、按渠道/提供商分组）
     let allowedSet = new Set(t.allowed_models || []);
 
@@ -2741,6 +2744,11 @@
         <div class="field__hint" style="margin-top:0;margin-bottom:8px">不勾选表示可以使用全部模型；选中后点击模型名可复制。</div>
         <div id="t-model-summary"></div>
         <button class="btn btn--sm mt-8" id="t-pick-models">${icon('models', 13)}选择模型</button>
+      </div>
+      <div class="field">
+        <label class="field__label">IP 限制</label>
+        <textarea class="textarea" id="t-ips" rows="3" spellcheck="false" placeholder="每行一条，例如：&#10;192.168.1.10&#10;10.0.0.0/8&#10;203.0.113.*">${esc((t.allowed_ips || []).join('\n'))}</textarea>
+        <div class="field__hint">留空表示不限制来源 IP；支持单个 IP、CIDR 网段和 IPv4 尾部通配（如 192.168.*）。</div>
       </div>
       <div class="field">
         <label class="field__label">备注</label>
@@ -2803,6 +2811,7 @@
             expires_at: expireVal2 ? new Date(expireVal2 + 'T23:59:59').getTime() : 0,
             quota_limit: Number(mo.body.querySelector('#t-quota').value) || 0,
             allowed_models: Array.from(allowedSet),
+            allowed_ips: mo.body.querySelector('#t-ips').value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean),
             remark: mo.body.querySelector('#t-remark').value.trim(),
           };
           const btn = mo.foot.querySelector('[data-act=save]');

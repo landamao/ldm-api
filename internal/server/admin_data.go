@@ -50,6 +50,7 @@ func (s *Server) saveToken(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt     *int64    `json:"expires_at"`
 		QuotaLimit    *int64    `json:"quota_limit"`
 		AllowedModels *[]string `json:"allowed_models"`
+		AllowedIPs    *[]string `json:"allowed_ips"`
 		Remark        *string   `json:"remark"`
 	}
 	if err := readJSON(r, &req); err != nil {
@@ -109,6 +110,17 @@ func (s *Server) saveToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if t.AllowedModels == nil {
 		t.AllowedModels = []string{}
+	}
+	if req.AllowedIPs != nil {
+		rules, err := normalizeIPRules(*req.AllowedIPs)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		t.AllowedIPs = rules
+	}
+	if t.AllowedIPs == nil {
+		t.AllowedIPs = []string{}
 	}
 	if req.Remark != nil {
 		t.Remark = strings.TrimSpace(*req.Remark)

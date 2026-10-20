@@ -177,6 +177,137 @@ func TestTokenAllowsModel(t *testing.T) {
 	}
 }
 
+func TestTokenAllowsIP(t *testing.T) {
+	if !tokenAllowsIP(store.Token{}, "203.0.113.9") {
+		t.Error("未设置限制时应允许所有 IP")
+	}
+	cases := []struct {
+		name  string
+		rules []string
+		ip    string
+		want  bool
+	}{
+		{"精确 IPv4", []string{"203.0.113.9"}, "203.0.113.9", true},
+		{"精确 IPv4 不匹配", []string{"203.0.113.9"}, "203.0.113.10", false},
+		{"CIDR 命中", []string{"10.0.0.0/8"}, "10.24.5.6", true},
+		{"CIDR 未命中", []string{"10.0.0.0/8"}, "11.0.0.1", false},
+		{"尾部通配命中", []string{"192.168.1.*"}, "192.168.1.77", true},
+		{"尾部通配未命中", []string{"192.168.1.*"}, "192.168.2.77", false},
+		{"短通配", []string{"10.*"}, "10.1.2.3", true},
+		{"IPv6 精确", []string{"2001:db8::1"}, "2001:db8::1", true},
+		{"IPv6 CIDR", []string{"2001:db8::/32"}, "2001:db8::abcd", true},
+		{"IPv4 映射地址", []string{"203.0.113.9"}, "::ffff:203.0.113.9", true},
+		{"通配全部", []string{"*"}, "198.51.100.7", true},
+		{"多规则任一命中", []string{"192.168.1.0/24", "203.0.113.9"}, "203.0.113.9", true},
+		{"IPv6 不匹配 IPv4 通配", []string{"192.168.1.*"}, "2001:db8::1", false},
+		{"来源 IP 为空", []string{"192.168.1.*"}, "", false},
+		{"非法规则不匹配", []string{"not-an-ip"}, "203.0.113.9", false},
+		{"异常规则不越界", []string{"1.2.3.4.5"}, "1.2.3.4", false},
+	}
+	for _, c := range cases {
+		if got := tokenAllowsIP(store.Token{AllowedIPs: c.rules}, c.ip); got != c.want {
+			t.Errorf("%s: 期望 %v，得到 %v", c.name, c.want, got)
+		}
+	}
+}
+
+func TestNormalizeIPRules(t *testing.T) {
+	got, err := normalizeIPRules([]string{
+		" 192.168.1.10 ", "", "10.0.0.0/8", "192.168.1.10", "203.0.113.*", "2001:db8::/32", "*",
+	})
+	if err != nil {
+		t.Fatalf("合法规则不应报错: %v", err)
+	}
+	want := []string{"192.168.1.10", "10.0.0.0/8", "203.0.113.*", "2001:db8::/32", "*"}
+	if len(got) != len(want) {
+		t.Fatalf("规则数量不对，得到 %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("第 %d 条规则应为 %q，得到 %q", i, want[i], got[i])
+		}
+	}
+	for _, bad := range []string{"999.1.1.1", "192.168.1.*.2", "192.*.1.1", "abc", "10.0.0.0/33", "192.168.1.2*"} {
+		if _, err := normalizeIPRules([]string{bad}); err == nil {
+			t.Errorf("非法规则 %q 应被拒绝", bad)
+		}
+	}
+}
+
+func TestRequestIP(t *testing.T) {
+	cases := []struct {
+		name, remote, xff, xreal, want string
+	}{
+		{"公网直连忽略代理头", "8.8.8.8:1234", "1.1.1.1", "", "8.8.8.8"},
+		{"本机代理取 XFF 最后一跳", "127.0.0.1:1234", "1.1.1.1, 203.0.113.9", "", "203.0.113.9"},
+		{"内网代理使用 X-Real-IP", "172.17.0.1:1234", "", "203.0.113.10", "203.0.113.10"},
+		{"非法 XFF 回退直连地址", "127.0.0.1:1234", "not-an-ip", "", "127.0.0.1"},
+		{"没有端口", "203.0.113.9", "", "", "203.0.113.9"},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = c.remote
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if c.xreal != "" {
+			r.Header.Set("X-Real-Ip", c.xreal)
+		}
+		if got := requestIP(r); got != c.want {
+			t.Errorf("%s: 期望 %q，得到 %q", c.name, c.want, got)
+		}
+	}
+}
+
+// IP 白名单不命中时返回 403，命中时正常放行。
+func TestTokenIPRestriction(t *testing.T) {
+	s, st := newTestServer(t, "token-ip")
+	key, err := s.EnsureDefaultToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+
+	call := func() (int, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, gw.URL+"/v1/models", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+
+	tok, err := st.FindTokenByKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok.AllowedIPs = []string{"203.0.113.9"}
+	if err := st.SaveToken(tok); err != nil {
+		t.Fatal(err)
+	}
+	code, body := call()
+	if code != http.StatusForbidden || !strings.Contains(body, `"code":"ip_not_allowed"`) {
+		t.Errorf("白名单外应返回 403 ip_not_allowed，得到 %d（%s）", code, body)
+	}
+
+	tok.AllowedIPs = []string{"127.0.0.1"}
+	if err := st.SaveToken(tok); err != nil {
+		t.Fatal(err)
+	}
+	code, body = call()
+	if code != http.StatusOK {
+		t.Errorf("白名单内应正常返回，得到 %d（%s）", code, body)
+	}
+}
+
 // 管理接口只能由登录会话访问。API 密钥是调用方调模型用的，
 // 即使密钥有效（甚至被禁用）也不能获得任何管理权限。
 func TestAdminEndpointsRequireSessionCookie(t *testing.T) {
@@ -2482,7 +2613,7 @@ func TestTokenPartialUpdateKeepsFields(t *testing.T) {
 	}
 
 	resp := request(http.MethodPost, "/api/tokens",
-		`{"name":"测试","enabled":true,"expires_at":4102444800000,"quota_limit":123456,"allowed_models":["gpt-4o"],"remark":"重要"}`)
+		`{"name":"测试","enabled":true,"expires_at":4102444800000,"quota_limit":123456,"allowed_models":["gpt-4o"],"allowed_ips":[" 192.168.1.10 ","10.0.0.0/8","192.168.1.10"],"remark":"重要"}`)
 	var created store.Token
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
@@ -2509,8 +2640,25 @@ func TestTokenPartialUpdateKeepsFields(t *testing.T) {
 	if len(got.AllowedModels) != 1 || got.AllowedModels[0] != "gpt-4o" {
 		t.Errorf("模型权限不应被清空，得到 %v", got.AllowedModels)
 	}
+	if len(got.AllowedIPs) != 2 || got.AllowedIPs[0] != "192.168.1.10" || got.AllowedIPs[1] != "10.0.0.0/8" {
+		t.Errorf("IP 限制应去重去空白并保留，得到 %v", got.AllowedIPs)
+	}
 	if got.Remark != "重要" {
 		t.Errorf("备注不应被清空，得到 %q", got.Remark)
+	}
+
+	resp = request(http.MethodPut, "/api/tokens/"+created.ID,
+		`{"id":"`+created.ID+`","allowed_ips":["999.1.1.1"]}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("非法 IP 规则应返回 400，得到 %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	got, err = s.store.GetToken(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.AllowedIPs) != 2 {
+		t.Errorf("非法规则不应覆盖已保存的 IP 限制，得到 %v", got.AllowedIPs)
 	}
 }
 

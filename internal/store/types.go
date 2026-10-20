@@ -223,10 +223,13 @@ type Token struct {
 	QuotaLimit    int64    `json:"quota_limit"`
 	UsedQuota     int64    `json:"used_quota"`
 	AllowedModels []string `json:"allowed_models,omitempty"`
-	Remark        string   `json:"remark,omitempty"`
-	CreatedAt     int64    `json:"created_at"`
-	UpdatedAt     int64    `json:"updated_at"`
-	LastUsedAt    int64    `json:"last_used_at"`
+	// AllowedIPs 是允许调用该密钥的来源 IP 白名单。为空表示不限制；
+	// 支持单个 IP、CIDR 网段、IPv4 尾部通配（如 192.168.1.*）和 "*"。
+	AllowedIPs []string `json:"allowed_ips,omitempty"`
+	Remark     string   `json:"remark,omitempty"`
+	CreatedAt  int64    `json:"created_at"`
+	UpdatedAt  int64    `json:"updated_at"`
+	LastUsedAt int64    `json:"last_used_at"`
 }
 
 // LogAttempt 是一次路由尝试的明细。只在请求发生过重试时记录，

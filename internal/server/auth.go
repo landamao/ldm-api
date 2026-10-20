@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -211,6 +213,139 @@ func tokenAllowsModel(t store.Token, model string) bool {
 	for _, m := range t.AllowedModels {
 		if m == model || m == "*" {
 			return true
+		}
+	}
+	return false
+}
+
+// requestIP 返回用于 IP 白名单校验的客户端地址。
+// 只有直连方是本机或内网（同机 Nginx/Caddy、Docker 网关等）时才信任代理头，
+// 并取 X-Forwarded-For 的最后一跳，避免公网客户端直接伪造该头绕过白名单。
+func requestIP(r *http.Request) string {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	remote := net.ParseIP(host)
+	if remote == nil || !(remote.IsLoopback() || remote.IsPrivate()) {
+		return host
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if v := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(v) != nil {
+			return v
+		}
+	}
+	if xr := strings.TrimSpace(r.Header.Get("X-Real-Ip")); net.ParseIP(xr) != nil {
+		return xr
+	}
+	return host
+}
+
+// tokenAllowsIP 判断来源 IP 是否命中令牌的白名单。
+// 未配置规则表示不限制；配置了规则但地址无法解析时按拒绝处理。
+func tokenAllowsIP(t store.Token, ip string) bool {
+	if len(t.AllowedIPs) == 0 {
+		return true
+	}
+	addr := net.ParseIP(strings.TrimSpace(ip))
+	if addr == nil {
+		return false
+	}
+	for _, rule := range t.AllowedIPs {
+		if ipRuleMatches(rule, addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeIPRules 去空白、去重并校验白名单规则。
+func normalizeIPRules(in []string) ([]string, error) {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, raw := range in {
+		rule := strings.TrimSpace(raw)
+		if rule == "" {
+			continue
+		}
+		if !validIPRule(rule) {
+			return nil, fmt.Errorf("IP 规则「%s」格式不正确，支持单个 IP、CIDR 网段或 192.168.* 通配", rule)
+		}
+		if seen[rule] {
+			continue
+		}
+		seen[rule] = true
+		out = append(out, rule)
+	}
+	return out, nil
+}
+
+func validIPRule(rule string) bool {
+	if rule == "*" {
+		return true
+	}
+	if net.ParseIP(rule) != nil {
+		return true
+	}
+	if _, _, err := net.ParseCIDR(rule); err == nil {
+		return true
+	}
+	return validIPv4Wildcard(rule)
+}
+
+// validIPv4Wildcard 校验 192.168.1.* / 10.* 这类尾部通配。
+// 通配符只能出现一次且必须在末尾。
+func validIPv4Wildcard(rule string) bool {
+	if !strings.Contains(rule, "*") {
+		return false
+	}
+	parts := strings.Split(rule, ".")
+	if len(parts) > 4 {
+		return false
+	}
+	wildcard := false
+	for _, p := range parts {
+		if p == "*" {
+			wildcard = true
+			continue
+		}
+		if wildcard {
+			return false
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 || n > 255 {
+			return false
+		}
+	}
+	return wildcard
+}
+
+func ipRuleMatches(rule string, addr net.IP) bool {
+	if rule == "*" {
+		return true
+	}
+	if ip := net.ParseIP(rule); ip != nil {
+		return ip.Equal(addr)
+	}
+	if _, ipnet, err := net.ParseCIDR(rule); err == nil {
+		return ipnet.Contains(addr)
+	}
+	v4 := addr.To4()
+	if v4 == nil {
+		return false
+	}
+	parts := strings.Split(rule, ".")
+	if len(parts) > len(v4) {
+		return false
+	}
+	for i, p := range parts {
+		if p == "*" {
+			return true
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || int(v4[i]) != n {
+			return false
 		}
 	}
 	return false
