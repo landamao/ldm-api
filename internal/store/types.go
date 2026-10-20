@@ -255,6 +255,19 @@ type Model struct {
 	ErrorStatus  int    `json:"error_status,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 
+	// 自定义内容返回。
+	// ContentEnabled 开启后，所有调用都直接返回 ContentText，不再请求上游；
+	// 优先级高于自定义错误返回，两者同时开启时错误配置不生效。
+	// ContentReasoning 是可选的思考内容，为空时不输出思考字段。
+	// ContentFirstByteMs / ContentSpeed / ContentLatencyMs 用于模拟响应耗时：
+	// 首字等待（毫秒）、流式每秒输出字符数、非流式延迟（毫秒）。
+	ContentEnabled     *bool  `json:"content_enabled,omitempty"`
+	ContentText        string `json:"content_text,omitempty"`
+	ContentReasoning   string `json:"content_reasoning,omitempty"`
+	ContentFirstByteMs int    `json:"content_first_byte_ms,omitempty"`
+	ContentSpeed       int    `json:"content_speed,omitempty"`
+	ContentLatencyMs   int    `json:"content_latency_ms,omitempty"`
+
 	DisplayName string   `json:"display_name,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
@@ -287,6 +300,11 @@ func (m Model) CustomErrorEnabled() bool {
 // CustomErrorAlways 返回是否始终返回自定义错误。总开关关闭时永远为 false。
 func (m Model) CustomErrorAlways() bool {
 	return m.CustomErrorEnabled() && m.ErrorAlways != nil && *m.ErrorAlways
+}
+
+// CustomContentEnabled 返回自定义内容返回总开关。
+func (m Model) CustomContentEnabled() bool {
+	return m.ContentEnabled != nil && *m.ContentEnabled
 }
 
 // Token 调用方使用的 API Key。

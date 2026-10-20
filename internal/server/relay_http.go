@@ -128,7 +128,8 @@ func (s *Server) serveModelList(w http.ResponseWriter, token store.Token) {
 		if !tokenAllowsModel(token, m.ID) {
 			continue
 		}
-		if m.Type == store.ModelTypeCustom && len(m.Routes) == 0 {
+		// 自定义内容返回不需要路由，也应当出现在可调用模型列表里。
+		if m.Type == store.ModelTypeCustom && len(m.Routes) == 0 && !m.CustomContentEnabled() {
 			continue
 		}
 		entry := map[string]any{

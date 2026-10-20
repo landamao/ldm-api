@@ -50,6 +50,7 @@ const (
 	statusNoRoutes        = "no_routes"
 	statusUnavailable     = "unavailable"
 	statusCustomError     = "custom_error"
+	statusCustomContent   = "custom_content"
 )
 
 // routeState 判断一条「渠道 + 上游模型」引用是否真的可用。
@@ -84,11 +85,13 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	out := make([]modelView, 0, len(models))
 	for _, m := range models {
 		v := modelView{Model: m, Status: statusOK}
-		// 回填两个开关的生效值，前端直接按布尔值渲染（nil 表示未配置）。
+		// 回填开关的生效值，前端直接按布尔值渲染（nil 表示未配置）。
 		errorEnabled := m.CustomErrorEnabled()
 		errorAlways := m.CustomErrorAlways()
+		contentEnabled := m.CustomContentEnabled()
 		v.ErrorEnabled = &errorEnabled
 		v.ErrorAlways = &errorAlways
+		v.ContentEnabled = &contentEnabled
 		if p, ok := providerByID[m.ProviderID]; ok {
 			v.ProviderName = p.Name
 			v.ProviderIcon = p.Icon
@@ -135,6 +138,9 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		}
 		if !m.Enabled {
 			v.Status = statusDisabled
+		} else if m.CustomContentEnabled() {
+			// 自定义内容返回不依赖路由，即使没有可用路由也能正常调用。
+			v.Status = statusCustomContent
 		} else if m.CustomErrorEnabled() && m.CustomErrorAlways() {
 			// 始终返回错误的模型即使路由完好也不会真正转发，
 			// 列表状态单独标出来，避免显示成「可用」。
@@ -205,26 +211,32 @@ func (s *Server) availableChannelModels(w http.ResponseWriter, r *http.Request) 
 }
 
 type modelRequest struct {
-	ID            string         `json:"id"`
-	Type          string         `json:"type"`
-	ChannelID     string         `json:"channel_id"`
-	Upstream      string         `json:"upstream"`
-	Routes        *[]store.Route `json:"routes"`
-	ProviderID    *string        `json:"provider_id"`
-	Caps          *store.Caps    `json:"caps"`
-	Enabled       *bool          `json:"enabled"`
-	DisplayName   *string        `json:"display_name"`
-	Description   *string        `json:"description"`
-	Tags          *[]string      `json:"tags"`
-	Affinity      *bool          `json:"affinity"`
-	CooldownSec   *int           `json:"cooldown_sec"`
-	CooldownReset *bool          `json:"cooldown_reset"`
-	NoRetryStatus *string        `json:"no_retry_status"`
-	ErrorEnabled  *bool          `json:"error_enabled"`
-	ErrorAlways   *bool          `json:"error_always"`
-	ErrorStatus   *int           `json:"error_status"`
-	ErrorMessage  *string        `json:"error_message"`
-	Timeout       *int           `json:"timeout"`
+	ID                 string         `json:"id"`
+	Type               string         `json:"type"`
+	ChannelID          string         `json:"channel_id"`
+	Upstream           string         `json:"upstream"`
+	Routes             *[]store.Route `json:"routes"`
+	ProviderID         *string        `json:"provider_id"`
+	Caps               *store.Caps    `json:"caps"`
+	Enabled            *bool          `json:"enabled"`
+	DisplayName        *string        `json:"display_name"`
+	Description        *string        `json:"description"`
+	Tags               *[]string      `json:"tags"`
+	Affinity           *bool          `json:"affinity"`
+	CooldownSec        *int           `json:"cooldown_sec"`
+	CooldownReset      *bool          `json:"cooldown_reset"`
+	NoRetryStatus      *string        `json:"no_retry_status"`
+	ErrorEnabled       *bool          `json:"error_enabled"`
+	ErrorAlways        *bool          `json:"error_always"`
+	ErrorStatus        *int           `json:"error_status"`
+	ErrorMessage       *string        `json:"error_message"`
+	ContentEnabled     *bool          `json:"content_enabled"`
+	ContentText        *string        `json:"content_text"`
+	ContentReasoning   *string        `json:"content_reasoning"`
+	ContentFirstByteMs *int           `json:"content_first_byte_ms"`
+	ContentSpeed       *int           `json:"content_speed"`
+	ContentLatencyMs   *int           `json:"content_latency_ms"`
+	Timeout            *int           `json:"timeout"`
 }
 
 func (s *Server) clearModelCooldowns(w http.ResponseWriter, r *http.Request) {
@@ -410,6 +422,34 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		m.NoRetryStatus = &empty
 	}
 
+	// 自定义内容返回：开启后所有调用都直接返回配置内容，优先于自定义错误。
+	contentEnabled := m.CustomContentEnabled()
+	if req.ContentEnabled != nil {
+		contentEnabled = *req.ContentEnabled
+	}
+	if req.ContentText != nil {
+		m.ContentText = *req.ContentText
+	}
+	if req.ContentReasoning != nil {
+		m.ContentReasoning = *req.ContentReasoning
+	}
+	// 时间模拟参数做范围保护：首字/非流式延迟最长 10 分钟，
+	// 速度上限 100000 字/秒，避免配置异常值长时间占用连接。
+	if req.ContentFirstByteMs != nil {
+		m.ContentFirstByteMs = clampInt(*req.ContentFirstByteMs, 0, 600000)
+	}
+	if req.ContentSpeed != nil {
+		m.ContentSpeed = clampInt(*req.ContentSpeed, 0, 100000)
+	}
+	if req.ContentLatencyMs != nil {
+		m.ContentLatencyMs = clampInt(*req.ContentLatencyMs, 0, 600000)
+	}
+	if contentEnabled && strings.TrimSpace(m.ContentText) == "" {
+		writeErr(w, http.StatusBadRequest, "开启自定义内容返回时请填写返回内容")
+		return
+	}
+	m.ContentEnabled = &contentEnabled
+
 	// 自定义错误返回：总开关关闭时，子开关与状态码都不生效。
 	// 显式关闭总开关会同时关闭子开关；只打开子开关时一并打开总开关。
 	errorEnabled := m.CustomErrorEnabled()
@@ -429,6 +469,11 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	if !errorEnabled {
 		errorAlways = false
 	}
+	// 内容返回开启时自动关闭自定义错误，与前端行为保持一致。
+	if contentEnabled {
+		errorEnabled = false
+		errorAlways = false
+	}
 	if req.ErrorStatus != nil {
 		status := *req.ErrorStatus
 		if status != 0 && (status < 400 || status > 599) {
@@ -440,7 +485,8 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	if req.ErrorMessage != nil {
 		m.ErrorMessage = strings.TrimSpace(*req.ErrorMessage)
 	}
-	if errorEnabled && m.ErrorStatus == 0 {
+	// 内容返回开启时错误配置不生效，允许暂时没有有效状态码。
+	if errorEnabled && m.ErrorStatus == 0 && !contentEnabled {
 		writeErr(w, http.StatusBadRequest, "开启自定义错误返回时请填写 400–599 的状态码")
 		return
 	}
@@ -746,4 +792,14 @@ func containsString(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }

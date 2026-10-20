@@ -160,6 +160,16 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// 自定义内容返回不依赖路由，开启后模型始终可调用；
+		// 同时它优先于自定义错误，广场状态以内容返回为准。
+		if m.Enabled && m.CustomContentEnabled() {
+			item.Available = true
+			item.Status = statusCustomContent
+			if m.Type == store.ModelTypeCustom && len(m.Routes) == 0 {
+				item.Source = "自定义内容返回"
+			}
+		}
+
 		// 一次调用都没有时标记成「无数据」，前端显示为 —，
 		// 而不是伪造一个 100% 让人误以为跑得很健康
 		if item.Requests24h > 0 {

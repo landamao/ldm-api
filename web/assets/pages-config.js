@@ -24,8 +24,17 @@
     <div style="margin-bottom:8px">命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。</div>
     <div style="margin-bottom:8px">留空表示所有状态码都可重试（未配置过的旧数据也按留空处理）；点击「填入模板」填入 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）。</div>
     <div>401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。</div>`;
-  const CUSTOM_ERROR_HELP_TEXT = '总开关关闭时以下配置都不生效。只开总开关：请求最终失败时，用这里的错误替代上游原始错误，成功请求不受影响；再开「始终返回错误」：所有调用都直接返回这里的错误，不再请求上游。状态码支持 400–599，错误详情留空时返回默认文案。';
+  const CUSTOM_CONTENT_HELP_TEXT = '开启后自定义错误功能将不可用。每次请求都直接返回这里填写的内容，不再请求上游；可附加思考内容并模拟首字、速度和延迟。关闭后恢复正常路由。';
+  const CUSTOM_CONTENT_HELP_HTML = `
+    <div style="margin-bottom:8px"><b>开启后自定义错误功能将不可用。</b></div>
+    <div style="margin-bottom:8px"><b>总开关</b>：开启后所有调用都直接返回这里填写的内容，不请求上游，也不解析路由。</div>
+    <div style="margin-bottom:8px">返回内容按 OpenAI 兼容格式输出：流式请求返回 SSE，非流式请求返回完整 JSON；对话、补全、Responses 等端点会按各自的响应结构返回。</div>
+    <div style="margin-bottom:8px"><b>思考内容</b>：填写后会在正文前输出思考内容；留空时响应里不会出现思考字段。</div>
+    <div style="margin-bottom:8px"><b>耗时模拟</b>：流式首字是发送第一块数据前的等待（毫秒）；流式速度是每秒输出的字符数，按这个速度分块发送；非流式延迟是返回完整 JSON 前的等待（毫秒）。填 0 表示不模拟。</div>
+    <div><b>优先级</b>：开启自定义内容返回会自动关闭自定义错误返回；关闭内容返回后，可以重新打开错误返回，之前填写的状态码和详情仍会保留。</div>`;
+  const CUSTOM_ERROR_HELP_TEXT = '开启自定义内容返回后，此功能将不可用。总开关关闭时以下配置都不生效。只开总开关：请求最终失败时，用这里的错误替代上游原始错误，成功请求不受影响；再开「始终返回错误」：所有调用都直接返回这里的错误，不再请求上游。状态码支持 400–599，错误详情留空时返回默认文案。';
   const CUSTOM_ERROR_HELP_HTML = `
+    <div style="margin-bottom:8px"><b>开启自定义内容返回后，此功能将不可用。</b></div>
     <div style="margin-bottom:8px"><b>总开关</b>：开启后才会读取下面的状态码和错误详情；关闭时以下配置都不生效。</div>
     <div style="margin-bottom:8px"><b>只开总开关</b>：请求最终失败时（上游报错、超时、无可用路由等），用这里配置的错误替代原始错误；成功的请求不受影响。</div>
     <div style="margin-bottom:8px"><b>始终返回错误</b>：总开关开启后才能使用。开启后不请求上游，所有调用都直接返回这里配置的错误。</div>
@@ -1691,7 +1700,7 @@
       const statusCounts = { enabled: 0, disabled: 0, unavailable: 0 };
       models.forEach((m) => {
         if (!m.enabled) statusCounts.disabled += 1;
-        else if (m.status === 'ok') statusCounts.enabled += 1;
+        else if (m.status === 'ok' || m.status === 'custom_content') statusCounts.enabled += 1;
         else statusCounts.unavailable += 1;
       });
       const statusOptions = [
@@ -1761,11 +1770,11 @@
             if (m.provider_id !== modelState.provider) return false;
           }
           if (modelState.status === 'enabled') {
-            if (!m.enabled || m.status !== 'ok') return false;
+            if (!m.enabled || (m.status !== 'ok' && m.status !== 'custom_content')) return false;
           } else if (modelState.status === 'disabled') {
             if (m.enabled) return false;
           } else if (modelState.status === 'unavailable') {
-            if (!m.enabled || m.status === 'ok') return false;
+            if (!m.enabled || m.status === 'ok' || m.status === 'custom_content') return false;
           }
           if (kw) {
             const hay = (m.id + ' ' + (m.display_name || '') + ' ' + (m.channel_name || '') + ' ' + (m.provider_name || '')).toLowerCase();
@@ -2039,6 +2048,7 @@
     const provider = providerByID[m.provider_id];
     const statusHtml = (() => {
       if (!m.enabled) return statusBadge(false, '', '已禁用');
+      if (m.status === 'custom_content') return badge('始终返回内容', 'green');
       if (m.status === 'custom_error') return badge(`始终错误 (${m.error_status})`, 'red');
       if (m.status === 'channel_disabled') return badge('渠道已禁用', 'red');
       if (m.status === 'channel_missing' || m.status === 'model_missing') return badge('渠道模型不存在', 'red');
@@ -2050,6 +2060,8 @@
       if (m.routes && m.routes.length) {
         const routeStr = m.routes.map((r) => r.model_id).join(' → ');
         sourceHtml = `<div class="truncate" style="max-width:280px;font-family:var(--mono);font-size:11.5px" title="${esc(routeStr)}">${esc(routeStr)}</div>`;
+      } else if (m.status === 'custom_content') {
+        sourceHtml = badge('始终返回内容', 'green');
       } else {
         sourceHtml = '<span class="badge badge--red">未配置路由</span>';
       }
@@ -2109,10 +2121,10 @@
       item = {
         ...m,
         caps: m.caps || {},
-        available: m.enabled && m.channel_ready,
+        available: m.enabled && (m.channel_ready || m.status === 'custom_content'),
         source: m.type === 'channel'
           ? m.channel_id + (m.channel_name ? `（${m.channel_name}）` : '')
-          : (m.routes || []).map((r) => r.model_id).join(' → '),
+          : ((m.routes || []).map((r) => r.model_id).join(' → ') || (m.status === 'custom_content' ? '始终返回内容' : '')),
         requests_24h: 0,
         errors_24h: 0,
         success_rate: -1,
@@ -2206,7 +2218,8 @@
           channel_id: m.channel_id || '',
           channel_name: m.channel_name || '',
           upstream: m.upstream || '',
-          channel_ready: m.channel_ready !== false,
+          // 自定义内容返回不依赖路由，不按「渠道未就绪」标记为不可用。
+          channel_ready: m.channel_ready !== false || m.status === 'custom_content',
           provider_id: m.provider_id || '',
           provider_name: m.provider_name || '',
           provider_icon: m.provider_icon || '',
@@ -2943,20 +2956,54 @@
           </div>
           <div class="field">
             <div class="field__head">
+              <label class="field__label">自定义内容返回
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="m-content-help" title="${esc(CUSTOM_CONTENT_HELP_TEXT)}" aria-label="查看自定义内容返回机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="m-content-enabled" ${m.content_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div id="m-content-detail" style="${m.content_enabled ? '' : 'display:none'}">
+              <textarea class="textarea" id="m-content-text" spellcheck="false"
+                        style="min-height:72px;font-family:inherit;font-size:13px"
+                        placeholder="例如：好的">${esc(m.content_text || '')}</textarea>
+              <textarea class="textarea" id="m-content-reasoning" spellcheck="false"
+                        style="min-height:56px;margin-top:8px"
+                        placeholder="思考内容（可选，留空则不输出思考内容）">${esc(m.content_reasoning || '')}</textarea>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:8px">
+                <label class="field__hint" style="margin:0">流式首字（毫秒）
+                  <input class="input" id="m-content-first-byte" type="number" min="0" max="600000" step="1"
+                         value="${m.content_first_byte_ms || 0}" style="margin-top:4px">
+                </label>
+                <label class="field__hint" style="margin:0">流式速度（字/秒）
+                  <input class="input" id="m-content-speed" type="number" min="0" max="100000" step="1"
+                         value="${m.content_speed || 0}" style="margin-top:4px">
+                </label>
+                <label class="field__hint" style="margin:0">非流式延迟（毫秒）
+                  <input class="input" id="m-content-latency" type="number" min="0" max="600000" step="1"
+                         value="${m.content_latency_ms || 0}" style="margin-top:4px">
+                </label>
+              </div>
+              <div class="field__hint">开启后自定义错误功能将不可用。每次请求都直接返回这段内容，不请求上游。思考内容留空时不输出；流式速度按每秒输出字符数模拟，0 表示不模拟。</div>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field__head">
               <label class="field__label">自定义错误返回
                 <button type="button" class="badge badge--blue badge--click field__help"
                         id="m-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看自定义错误返回机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="m-error-enabled" ${m.error_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <input class="input mono" id="m-error-status" type="number" min="400" max="599" step="1"
-                     value="${m.error_status || ''}" placeholder="状态码" style="width:130px" ${m.error_enabled ? '' : 'disabled'}>
-              <input class="input" id="m-error-message"
-                     value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试" ${m.error_enabled ? '' : 'disabled'}>
+            <div id="m-error-detail" style="${m.error_enabled && !m.content_enabled ? '' : 'display:none'}">
+              <div style="display:flex;gap:8px;align-items:center">
+                <input class="input mono" id="m-error-status" type="number" min="400" max="599" step="1"
+                       value="${m.error_status || ''}" placeholder="状态码" style="width:130px">
+                <input class="input" id="m-error-message"
+                       value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试">
+              </div>
+              <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-always" ${m.error_always ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
+              <div class="field__hint">开启自定义内容返回后此功能将不可用。只开总开关：调用失败时用这里的错误替代原始错误；再开「始终返回错误」则所有调用都直接返回这里的错误。</div>
             </div>
-            <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-always" ${m.error_always ? 'checked' : ''} ${m.error_enabled ? '' : 'disabled'}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
-            <div class="field__hint">只开总开关：调用失败时用这里的错误替代原始错误；再开「始终返回错误」则所有调用都直接返回这里的错误。</div>
           </div>
         </div>
       </details>
@@ -2976,19 +3023,52 @@
       onMount(mo) {
         bindCapsEditor(mo.body);
         bindAdvancedState(mo.body, 'model', m.id);
+        const contentEnabledEl = mo.body.querySelector('#m-content-enabled');
+        const contentDetailEl = mo.body.querySelector('#m-content-detail');
+        const contentTextEl = mo.body.querySelector('#m-content-text');
+        const contentReasoningEl = mo.body.querySelector('#m-content-reasoning');
+        const contentFirstByteEl = mo.body.querySelector('#m-content-first-byte');
+        const contentSpeedEl = mo.body.querySelector('#m-content-speed');
+        const contentLatencyEl = mo.body.querySelector('#m-content-latency');
         const errorEnabledEl = mo.body.querySelector('#m-error-enabled');
+        const errorDetailEl = mo.body.querySelector('#m-error-detail');
         const errorAlwaysEl = mo.body.querySelector('#m-error-always');
         const errorStatusEl = mo.body.querySelector('#m-error-status');
         const errorMessageEl = mo.body.querySelector('#m-error-message');
         const syncErrorFields = () => {
+          const contentOn = contentEnabledEl.checked;
+          // 开启内容返回时自动关闭自定义错误，避免两套配置同时生效。
+          if (contentOn) {
+            errorEnabledEl.checked = false;
+            errorAlwaysEl.checked = false;
+          }
           const on = errorEnabledEl.checked;
-          errorStatusEl.disabled = !on;
-          errorMessageEl.disabled = !on;
-          errorAlwaysEl.disabled = !on;
+          const errorActive = on && !contentOn;
+          errorStatusEl.disabled = !errorActive;
+          errorMessageEl.disabled = !errorActive;
+          errorAlwaysEl.disabled = !errorActive;
+          errorEnabledEl.disabled = contentOn;
+          contentTextEl.disabled = !contentOn;
+          contentReasoningEl.disabled = !contentOn;
+          contentFirstByteEl.disabled = !contentOn;
+          contentSpeedEl.disabled = !contentOn;
+          contentLatencyEl.disabled = !contentOn;
+          // 详细配置只在开启时显示，关闭时只保留总开关。
+          contentDetailEl.style.display = contentOn ? '' : 'none';
+          errorDetailEl.style.display = errorActive ? '' : 'none';
+          // 开关本身用 is-disabled 变灰，避免看起来还能点。
+          const errorSwitch = errorEnabledEl.closest('.switch');
+          if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
+          const alwaysSwitch = errorAlwaysEl.closest('.switch');
+          if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
           if (!on) errorAlwaysEl.checked = false;
         };
+        contentEnabledEl.onchange = syncErrorFields;
         errorEnabledEl.onchange = syncErrorFields;
         syncErrorFields();
+        mo.body.querySelector('#m-content-help').onclick = () => {
+          openHelpModal('自定义内容返回', CUSTOM_CONTENT_HELP_HTML);
+        };
         mo.body.querySelector('#m-error-help').onclick = () => {
           openHelpModal('自定义错误返回', CUSTOM_ERROR_HELP_HTML);
         };
@@ -3009,16 +3089,29 @@
             Toast.error(e.message, '能力参数格式有误');
             return;
           }
+          const contentEnabled = mo.body.querySelector('#m-content-enabled').checked;
+          const contentText = mo.body.querySelector('#m-content-text').value;
+          const contentReasoning = mo.body.querySelector('#m-content-reasoning').value;
+          const contentFirstByte = Math.max(0, Math.min(600000, Math.round(Number(mo.body.querySelector('#m-content-first-byte').value) || 0)));
+          const contentSpeed = Math.max(0, Math.min(100000, Math.round(Number(mo.body.querySelector('#m-content-speed').value) || 0)));
+          const contentLatency = Math.max(0, Math.min(600000, Math.round(Number(mo.body.querySelector('#m-content-latency').value) || 0)));
+          if (contentEnabled && !contentText.trim()) {
+            Toast.warn('开启自定义内容返回时请填写返回内容');
+            return;
+          }
           const errorEnabled = mo.body.querySelector('#m-error-enabled').checked;
           const errorAlways = errorEnabled && mo.body.querySelector('#m-error-always').checked;
           const errorStatus = Math.round(Number(mo.body.querySelector('#m-error-status').value) || 0);
-          if (errorStatus && (errorStatus < 400 || errorStatus > 599)) {
-            Toast.warn('自定义错误状态码需在 400–599 之间');
-            return;
-          }
-          if (errorEnabled && !errorStatus) {
-            Toast.warn('开启自定义错误返回时请填写 400–599 的状态码');
-            return;
+          // 内容返回开启时错误配置不生效，不再校验错误状态码。
+          if (!contentEnabled) {
+            if (errorStatus && (errorStatus < 400 || errorStatus > 599)) {
+              Toast.warn('自定义错误状态码需在 400–599 之间');
+              return;
+            }
+            if (errorEnabled && !errorStatus) {
+              Toast.warn('开启自定义错误返回时请填写 400–599 的状态码');
+              return;
+            }
           }
           const btn = mo.foot.querySelector('[data-act=save]');
           btn.disabled = true;
@@ -3035,6 +3128,12 @@
               description: mo.body.querySelector('#m-desc').value.trim(),
               timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#m-timeout').value) || 300)),
               no_retry_status: mo.body.querySelector('#m-no-retry').value.trim(),
+              content_enabled: contentEnabled,
+              content_text: contentText,
+              content_reasoning: contentReasoning,
+              content_first_byte_ms: contentFirstByte,
+              content_speed: contentSpeed,
+              content_latency_ms: contentLatency,
               error_enabled: errorEnabled,
               error_always: errorAlways,
               error_status: errorStatus,
@@ -3277,7 +3376,8 @@
     const m = existing || {
       id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
       caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
-      no_retry_status: '', error_enabled: false, error_always: false, error_status: 0, error_message: '',
+      no_retry_status: '', content_enabled: false, content_text: '',
+      error_enabled: false, error_always: false, error_status: 0, error_message: '',
     };
     // 本地编辑态
     const draft = {
@@ -3300,7 +3400,7 @@
 
       <div class="field">
         <div class="field__label" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
-          <span>目标路由模型<span class="req">*</span><button type="button" class="badge badge--blue badge--click field__help" id="cm-route-help" title="${esc(routeHelpText)}" aria-label="查看路由规则">?</button></span>
+          <span>目标路由模型（可选）<button type="button" class="badge badge--blue badge--click field__help" id="cm-route-help" title="${esc(routeHelpText)}" aria-label="查看路由规则">?</button></span>
           <div class="pill-toggle" id="cm-route-mode" style="margin-left:auto">
             <button type="button" data-route-mode="visual" class="is-on">可视化</button>
             <button type="button" data-route-mode="json">JSON</button>
@@ -3320,6 +3420,7 @@
           </div>
           <div class="field__hint">可直接复制粘贴复用。channel_id + upstream 定位渠道模型；相同 group 且相邻的条目自动成组；weight 决定组内尝试顺序（按权重随机排序，权重越高越可能靠前，全部相等时等概率）。</div>
         </div>
+        <div class="field__hint">路由可以不配置。留空时按「高级设置」里的自定义内容返回 / 始终返回错误处理；都没有配置时，调用会返回「没有可用渠道」。</div>
       </div>
 
       <div class="field">
@@ -3361,20 +3462,54 @@
           </div>
           <div class="field">
             <div class="field__head">
+              <label class="field__label">自定义内容返回
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="cm-content-help" title="${esc(CUSTOM_CONTENT_HELP_TEXT)}" aria-label="查看自定义内容返回机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="cm-content-enabled" ${m.content_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div id="cm-content-detail" style="${m.content_enabled ? '' : 'display:none'}">
+              <textarea class="textarea" id="cm-content-text" spellcheck="false"
+                        style="min-height:72px;font-family:inherit;font-size:13px"
+                        placeholder="例如：好的">${esc(m.content_text || '')}</textarea>
+              <textarea class="textarea" id="cm-content-reasoning" spellcheck="false"
+                        style="min-height:56px;margin-top:8px"
+                        placeholder="思考内容（可选，留空则不输出思考内容）">${esc(m.content_reasoning || '')}</textarea>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:8px">
+                <label class="field__hint" style="margin:0">流式首字（毫秒）
+                  <input class="input" id="cm-content-first-byte" type="number" min="0" max="600000" step="1"
+                         value="${m.content_first_byte_ms || 0}" style="margin-top:4px">
+                </label>
+                <label class="field__hint" style="margin:0">流式速度（字/秒）
+                  <input class="input" id="cm-content-speed" type="number" min="0" max="100000" step="1"
+                         value="${m.content_speed || 0}" style="margin-top:4px">
+                </label>
+                <label class="field__hint" style="margin:0">非流式延迟（毫秒）
+                  <input class="input" id="cm-content-latency" type="number" min="0" max="600000" step="1"
+                         value="${m.content_latency_ms || 0}" style="margin-top:4px">
+                </label>
+              </div>
+              <div class="field__hint">开启后自定义错误功能将不可用。每次请求都直接返回这段内容，不请求上游。思考内容留空时不输出；流式速度按每秒输出字符数模拟，0 表示不模拟。</div>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field__head">
               <label class="field__label">自定义错误返回
                 <button type="button" class="badge badge--blue badge--click field__help"
                         id="cm-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看自定义错误返回机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="cm-error-enabled" ${m.error_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <input class="input mono" id="cm-error-status" type="number" min="400" max="599" step="1"
-                     value="${m.error_status || ''}" placeholder="状态码" style="width:130px" ${m.error_enabled ? '' : 'disabled'}>
-              <input class="input" id="cm-error-message"
-                     value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试" ${m.error_enabled ? '' : 'disabled'}>
+            <div id="cm-error-detail" style="${m.error_enabled && !m.content_enabled ? '' : 'display:none'}">
+              <div style="display:flex;gap:8px;align-items:center">
+                <input class="input mono" id="cm-error-status" type="number" min="400" max="599" step="1"
+                       value="${m.error_status || ''}" placeholder="状态码" style="width:130px">
+                <input class="input" id="cm-error-message"
+                       value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试">
+              </div>
+              <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-always" ${m.error_always ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
+              <div class="field__hint">开启自定义内容返回后此功能将不可用。只开总开关：调用失败时用这里的错误替代原始错误；再开「始终返回错误」则所有调用都直接返回这里的错误。</div>
             </div>
-            <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-always" ${m.error_always ? 'checked' : ''} ${m.error_enabled ? '' : 'disabled'}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
-            <div class="field__hint">只开总开关：调用失败时用这里的错误替代原始错误；再开「始终返回错误」则所有调用都直接返回这里的错误。</div>
           </div>
         </div>
       </details>
@@ -3413,19 +3548,52 @@
         const routeHost = mo.body.querySelector('#route-host');
         const capsHost = mo.body.querySelector('#caps-host');
         bindAdvancedState(mo.body, 'model', m.id);
+        const contentEnabledEl = mo.body.querySelector('#cm-content-enabled');
+        const contentDetailEl = mo.body.querySelector('#cm-content-detail');
+        const contentTextEl = mo.body.querySelector('#cm-content-text');
+        const contentReasoningEl = mo.body.querySelector('#cm-content-reasoning');
+        const contentFirstByteEl = mo.body.querySelector('#cm-content-first-byte');
+        const contentSpeedEl = mo.body.querySelector('#cm-content-speed');
+        const contentLatencyEl = mo.body.querySelector('#cm-content-latency');
         const errorEnabledEl = mo.body.querySelector('#cm-error-enabled');
+        const errorDetailEl = mo.body.querySelector('#cm-error-detail');
         const errorAlwaysEl = mo.body.querySelector('#cm-error-always');
         const errorStatusEl = mo.body.querySelector('#cm-error-status');
         const errorMessageEl = mo.body.querySelector('#cm-error-message');
         const syncErrorFields = () => {
+          const contentOn = contentEnabledEl.checked;
+          // 开启内容返回时自动关闭自定义错误，避免两套配置同时生效。
+          if (contentOn) {
+            errorEnabledEl.checked = false;
+            errorAlwaysEl.checked = false;
+          }
           const on = errorEnabledEl.checked;
-          errorStatusEl.disabled = !on;
-          errorMessageEl.disabled = !on;
-          errorAlwaysEl.disabled = !on;
+          const errorActive = on && !contentOn;
+          errorStatusEl.disabled = !errorActive;
+          errorMessageEl.disabled = !errorActive;
+          errorAlwaysEl.disabled = !errorActive;
+          errorEnabledEl.disabled = contentOn;
+          contentTextEl.disabled = !contentOn;
+          contentReasoningEl.disabled = !contentOn;
+          contentFirstByteEl.disabled = !contentOn;
+          contentSpeedEl.disabled = !contentOn;
+          contentLatencyEl.disabled = !contentOn;
+          // 详细配置只在开启时显示，关闭时只保留总开关。
+          contentDetailEl.style.display = contentOn ? '' : 'none';
+          errorDetailEl.style.display = errorActive ? '' : 'none';
+          // 开关本身用 is-disabled 变灰，避免看起来还能点。
+          const errorSwitch = errorEnabledEl.closest('.switch');
+          if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
+          const alwaysSwitch = errorAlwaysEl.closest('.switch');
+          if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
           if (!on) errorAlwaysEl.checked = false;
         };
+        contentEnabledEl.onchange = syncErrorFields;
         errorEnabledEl.onchange = syncErrorFields;
         syncErrorFields();
+        mo.body.querySelector('#cm-content-help').onclick = () => {
+          openHelpModal('自定义内容返回', CUSTOM_CONTENT_HELP_HTML);
+        };
         mo.body.querySelector('#cm-error-help').onclick = () => {
           openHelpModal('自定义错误返回', CUSTOM_ERROR_HELP_HTML);
         };
@@ -3490,6 +3658,8 @@
 
         // 接受纯数组，也接受包含 routes 数组的对象；只认配置字段，model_id 仅用于兼容导入
         const parseRoutesJSON = (text) => {
+          // 路由不是必填项，空内容表示不配置路由。
+          if (!String(text || '').trim()) return [];
           let parsed;
           try {
             parsed = JSON.parse(text);
@@ -4224,7 +4394,18 @@
               return;
             }
           }
-          if (!draft.routes.length) { Toast.warn('请至少选择一个目标路由模型'); return; }
+          const contentEnabled = mo.body.querySelector('#cm-content-enabled').checked;
+          const contentText = mo.body.querySelector('#cm-content-text').value;
+          const contentReasoning = mo.body.querySelector('#cm-content-reasoning').value;
+          const contentFirstByte = Math.max(0, Math.min(600000, Math.round(Number(mo.body.querySelector('#cm-content-first-byte').value) || 0)));
+          const contentSpeed = Math.max(0, Math.min(100000, Math.round(Number(mo.body.querySelector('#cm-content-speed').value) || 0)));
+          const contentLatency = Math.max(0, Math.min(600000, Math.round(Number(mo.body.querySelector('#cm-content-latency').value) || 0)));
+          if (contentEnabled && !contentText.trim()) {
+            Toast.warn('开启自定义内容返回时请填写返回内容');
+            return;
+          }
+          // 路由不是必填项：留空时由高级设置里的内容返回 / 始终错误兜底，
+          // 都没有配置时调用会返回「没有可用渠道」。
           let caps;
           try {
             caps = readCapsEditor(capsHost);
@@ -4235,13 +4416,16 @@
           const errorEnabled = mo.body.querySelector('#cm-error-enabled').checked;
           const errorAlways = errorEnabled && mo.body.querySelector('#cm-error-always').checked;
           const errorStatus = Math.round(Number(mo.body.querySelector('#cm-error-status').value) || 0);
-          if (errorStatus && (errorStatus < 400 || errorStatus > 599)) {
-            Toast.warn('自定义错误状态码需在 400–599 之间');
-            return;
-          }
-          if (errorEnabled && !errorStatus) {
-            Toast.warn('开启自定义错误返回时请填写 400–599 的状态码');
-            return;
+          // 内容返回开启时错误配置不生效，不再校验错误状态码。
+          if (!contentEnabled) {
+            if (errorStatus && (errorStatus < 400 || errorStatus > 599)) {
+              Toast.warn('自定义错误状态码需在 400–599 之间');
+              return;
+            }
+            if (errorEnabled && !errorStatus) {
+              Toast.warn('开启自定义错误返回时请填写 400–599 的状态码');
+              return;
+            }
           }
 
           const payload = {
@@ -4253,6 +4437,12 @@
             cooldown_sec: Math.max(0, Math.min(86400, Math.round(Number(mo.body.querySelector('#cm-cooldown').value) || 0))),
             cooldown_reset: mo.body.querySelector('#cm-cooldown-reset').checked,
             no_retry_status: mo.body.querySelector('#cm-no-retry').value.trim(),
+            content_enabled: contentEnabled,
+            content_text: contentText,
+            content_reasoning: contentReasoning,
+            content_first_byte_ms: contentFirstByte,
+            content_speed: contentSpeed,
+            content_latency_ms: contentLatency,
             error_enabled: errorEnabled,
             error_always: errorAlways,
             error_status: errorStatus,

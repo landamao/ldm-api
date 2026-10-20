@@ -101,3 +101,20 @@ func TestModelCustomErrorSwitches(t *testing.T) {
 		t.Error("总开关关闭时子开关不应生效")
 	}
 }
+
+func TestModelCustomContentSwitch(t *testing.T) {
+	if (Model{}).CustomContentEnabled() {
+		t.Error("未配置开关时应为关闭")
+	}
+	textOnly := Model{ContentText: "好的"}
+	if textOnly.CustomContentEnabled() {
+		t.Error("只有内容、没有开关时应视为关闭")
+	}
+	on, off := true, false
+	if !(Model{ContentEnabled: &on}).CustomContentEnabled() {
+		t.Error("开启后应生效")
+	}
+	if (Model{ContentEnabled: &off}).CustomContentEnabled() {
+		t.Error("关闭后不应生效")
+	}
+}

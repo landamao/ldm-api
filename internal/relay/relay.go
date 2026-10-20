@@ -94,7 +94,12 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 	}
 	res := &Resolved{Model: m}
 
-	// 「始终返回错误」不需要路由，提前返回，避免解析路由时触发冷却重置等副作用。
+	// 「始终返回内容 / 始终返回错误」不需要路由，提前返回，
+	// 避免解析路由时触发冷却重置等副作用。
+	// 内容返回优先级更高：同时开启时按内容返回处理。
+	if m.CustomContentEnabled() {
+		return res, nil
+	}
 	if m.CustomErrorEnabled() && m.CustomErrorAlways() {
 		return res, nil
 	}
@@ -248,6 +253,417 @@ func writeCustomError(w http.ResponseWriter, ce customError) {
 	writeAPIError(w, ce.status, typ, ce.message)
 }
 
+// customContent 是模型配置的自定义内容返回。
+type customContent struct {
+	text      string
+	reasoning string
+	firstByte time.Duration
+	speed     int // 每秒输出字符数
+	latency   time.Duration
+}
+
+// customContentOf 返回模型生效的自定义内容。总开关关闭时返回 false。
+func customContentOf(m store.Model) (customContent, bool) {
+	if !m.CustomContentEnabled() {
+		return customContent{}, false
+	}
+	return customContent{
+		text:      m.ContentText,
+		reasoning: m.ContentReasoning,
+		firstByte: time.Duration(m.ContentFirstByteMs) * time.Millisecond,
+		speed:     m.ContentSpeed,
+		latency:   time.Duration(m.ContentLatencyMs) * time.Millisecond,
+	}, true
+}
+
+// customContentUsage 估算一次自定义内容返回的 token 用量。
+func customContentUsage(req *Request, cc customContent) upstream.Usage {
+	usage := estimateUsage(req)
+	usage.CompletionTokens = estimateTokens(cc.reasoning + cc.text)
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	return usage
+}
+
+func customContentUsageMap(usage upstream.Usage) map[string]any {
+	return map[string]any{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+	}
+}
+
+// writeCustomContent 按 OpenAI 兼容格式写出配置的内容。
+// 网关对外的响应统一是 OpenAI 结构，因此 /v1/messages 等端点也按对话响应返回。
+func writeCustomContent(w http.ResponseWriter, req *Request, model string, cc customContent, usage upstream.Usage) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write(mustJSON(customContentObject(req.Path, model, cc, usage)))
+}
+
+// customContentObject 按请求端点返回对应的非流式响应体。
+func customContentObject(path, model string, cc customContent, usage upstream.Usage) map[string]any {
+	created := time.Now().Unix()
+	usageMap := customContentUsageMap(usage)
+	path = strings.TrimSuffix(path, "/")
+	switch {
+	case strings.HasSuffix(path, "/completions") && !strings.HasSuffix(path, "/chat/completions"):
+		choice := map[string]any{
+			"text": cc.text, "index": 0, "logprobs": nil, "finish_reason": "stop",
+		}
+		if cc.reasoning != "" {
+			choice["reasoning_content"] = cc.reasoning
+		}
+		return map[string]any{
+			"id":      "cmpl-" + customContentID(),
+			"object":  "text_completion",
+			"created": created,
+			"model":   model,
+			"choices": []any{choice},
+			"usage":   usageMap,
+		}
+	case strings.HasSuffix(path, "/responses") || strings.HasSuffix(path, "/responses/compact"):
+		output := make([]any, 0, 2)
+		if cc.reasoning != "" {
+			output = append(output, map[string]any{
+				"id": "rs_" + customContentID(), "type": "reasoning",
+				"summary": []any{map[string]any{
+					"type": "summary_text", "text": cc.reasoning,
+				}},
+			})
+		}
+		output = append(output, map[string]any{
+			"id": "msg_" + customContentID(), "type": "message", "status": "completed",
+			"role": "assistant",
+			"content": []any{map[string]any{
+				"type": "output_text", "text": cc.text, "annotations": []any{},
+			}},
+		})
+		return map[string]any{
+			"id":         "resp_" + customContentID(),
+			"object":     "response",
+			"created_at": created,
+			"status":     "completed",
+			"model":      model,
+			"output":     output,
+			"usage": map[string]any{
+				"input_tokens": usage.PromptTokens, "output_tokens": usage.CompletionTokens,
+				"total_tokens": usage.TotalTokens,
+			},
+		}
+	default:
+		message := map[string]any{"role": "assistant", "content": cc.text}
+		if cc.reasoning != "" {
+			message["reasoning_content"] = cc.reasoning
+		}
+		return map[string]any{
+			"id":      "chatcmpl-" + customContentID(),
+			"object":  "chat.completion",
+			"created": created,
+			"model":   model,
+			"choices": []any{map[string]any{
+				"index": 0, "message": message, "finish_reason": "stop",
+			}},
+			"usage": usageMap,
+		}
+	}
+}
+
+// customContentChunks 把文本按速度切成小块。speed <= 0 时整段返回。
+func customContentChunks(text string, speed int) []string {
+	if text == "" {
+		return nil
+	}
+	if speed <= 0 {
+		return []string{text}
+	}
+	runes := []rune(text)
+	// 每块大约 50ms，块太大时限制到 200 字，避免单块延迟过长。
+	chunk := speed / 20
+	if chunk < 1 {
+		chunk = 1
+	}
+	if chunk > 200 {
+		chunk = 200
+	}
+	out := make([]string, 0, (len(runes)+chunk-1)/chunk)
+	for len(runes) > 0 {
+		n := chunk
+		if n > len(runes) {
+			n = len(runes)
+		}
+		out = append(out, string(runes[:n]))
+		runes = runes[n:]
+	}
+	return out
+}
+
+// customContentChunkDelay 返回按速度输出一块文本所需的等待时间。
+func customContentChunkDelay(chunk string, speed int) time.Duration {
+	if speed <= 0 {
+		return 0
+	}
+	n := len([]rune(chunk))
+	if n == 0 {
+		return 0
+	}
+	return time.Duration(int64(n) * int64(time.Second) / int64(speed))
+}
+
+// waitCtx 等待指定时长；客户端提前断开时返回 false。
+func waitCtx(ctx context.Context, d time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if d <= 0 {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// writeCustomContentStream 写出流式响应。返回首字耗时（毫秒）和是否被客户端取消。
+func writeCustomContentStream(ctx context.Context, w http.ResponseWriter, req *Request, model string,
+	cc customContent, usage upstream.Usage, started time.Time) (int64, bool) {
+
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream; charset=utf-8")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	flush := func() {
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	writeData := func(v any) {
+		w.Write([]byte("data: "))
+		w.Write(mustJSON(v))
+		w.Write([]byte("\n\n"))
+		flush()
+	}
+	// 首字等待：连接已建立，但第一块数据按配置延迟发送。
+	if !waitCtx(ctx, cc.firstByte) {
+		return 0, true
+	}
+	firstByteMs := time.Since(started).Milliseconds()
+
+	path := strings.TrimSuffix(req.Path, "/")
+	created := time.Now().Unix()
+	switch {
+	case strings.HasSuffix(path, "/completions") && !strings.HasSuffix(path, "/chat/completions"):
+		if writeCustomContentCompletionsStream(ctx, writeData, model, cc, created) {
+			return firstByteMs, true
+		}
+	case strings.HasSuffix(path, "/responses") || strings.HasSuffix(path, "/responses/compact"):
+		if writeCustomContentResponsesStream(ctx, w, writeData, model, cc, usage, created) {
+			return firstByteMs, true
+		}
+		return firstByteMs, false
+	default:
+		if writeCustomContentChatStream(ctx, writeData, model, cc, usage, created) {
+			return firstByteMs, true
+		}
+	}
+	w.Write([]byte("data: [DONE]\n\n"))
+	flush()
+	return firstByteMs, false
+}
+
+// writeCustomContentChatStream 写出 chat.completion.chunk 流。
+func writeCustomContentChatStream(ctx context.Context, writeData func(any), model string,
+	cc customContent, usage upstream.Usage, created int64) bool {
+
+	id := "chatcmpl-" + customContentID()
+	roleSent := false
+	send := func(delta map[string]any, finish any) {
+		writeData(map[string]any{
+			"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
+			"choices": []any{map[string]any{
+				"index": 0, "delta": delta, "finish_reason": finish,
+			}},
+		})
+	}
+	for _, chunk := range customContentChunks(cc.reasoning, cc.speed) {
+		delta := map[string]any{"reasoning_content": chunk}
+		if !roleSent {
+			delta["role"] = "assistant"
+			roleSent = true
+		}
+		send(delta, nil)
+		if !waitCtx(ctx, customContentChunkDelay(chunk, cc.speed)) {
+			return true
+		}
+	}
+	for _, chunk := range customContentChunks(cc.text, cc.speed) {
+		delta := map[string]any{"content": chunk}
+		if !roleSent {
+			delta["role"] = "assistant"
+			roleSent = true
+		}
+		send(delta, nil)
+		if !waitCtx(ctx, customContentChunkDelay(chunk, cc.speed)) {
+			return true
+		}
+	}
+	writeData(map[string]any{
+		"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
+		"choices": []any{map[string]any{
+			"index": 0, "delta": map[string]any{}, "finish_reason": "stop",
+		}},
+		"usage": customContentUsageMap(usage),
+	})
+	return false
+}
+
+// writeCustomContentCompletionsStream 写出旧版 text_completion 流。
+func writeCustomContentCompletionsStream(ctx context.Context, writeData func(any), model string,
+	cc customContent, created int64) bool {
+
+	id := "cmpl-" + customContentID()
+	send := func(text, reasoning string, finish any) {
+		choice := map[string]any{"text": text, "index": 0, "logprobs": nil, "finish_reason": finish}
+		if reasoning != "" {
+			choice["reasoning_content"] = reasoning
+		}
+		writeData(map[string]any{
+			"id": id, "object": "text_completion", "created": created, "model": model,
+			"choices": []any{choice},
+		})
+	}
+	for _, chunk := range customContentChunks(cc.reasoning, cc.speed) {
+		send("", chunk, nil)
+		if !waitCtx(ctx, customContentChunkDelay(chunk, cc.speed)) {
+			return true
+		}
+	}
+	for _, chunk := range customContentChunks(cc.text, cc.speed) {
+		send(chunk, "", nil)
+		if !waitCtx(ctx, customContentChunkDelay(chunk, cc.speed)) {
+			return true
+		}
+	}
+	send("", "", "stop")
+	return false
+}
+
+// writeCustomContentResponsesStream 写出 Responses API 的流式事件序列。
+func writeCustomContentResponsesStream(ctx context.Context, w http.ResponseWriter, writeData func(any),
+	model string, cc customContent, usage upstream.Usage, created int64) bool {
+
+	respID := "resp_" + customContentID()
+	seq := 0
+	event := func(name string, v map[string]any) {
+		v["type"] = name
+		v["sequence_number"] = seq
+		seq++
+		w.Write([]byte("event: " + name + "\n"))
+		writeData(v)
+	}
+	inProgress := map[string]any{
+		"id": respID, "object": "response", "created_at": created, "status": "in_progress",
+		"model": model, "output": []any{},
+	}
+	event("response.created", map[string]any{"response": inProgress})
+	event("response.in_progress", map[string]any{"response": inProgress})
+
+	output := make([]any, 0, 2)
+	outputIndex := 0
+
+	// 思考内容作为独立的 reasoning 条目输出；没有配置时完全不出现。
+	if cc.reasoning != "" {
+		rsID := "rs_" + customContentID()
+		reasoningItem := map[string]any{
+			"id": rsID, "type": "reasoning", "status": "in_progress",
+			"summary": []any{},
+		}
+		event("response.output_item.added", map[string]any{
+			"output_index": outputIndex, "item": reasoningItem,
+		})
+		for _, chunk := range customContentChunks(cc.reasoning, cc.speed) {
+			event("response.reasoning_summary_text.delta", map[string]any{
+				"item_id": rsID, "output_index": outputIndex, "summary_index": 0, "delta": chunk,
+			})
+			if !waitCtx(ctx, customContentChunkDelay(chunk, cc.speed)) {
+				return true
+			}
+		}
+		event("response.reasoning_summary_text.done", map[string]any{
+			"item_id": rsID, "output_index": outputIndex, "summary_index": 0, "text": cc.reasoning,
+		})
+		reasoningItem["status"] = "completed"
+		reasoningItem["summary"] = []any{map[string]any{"type": "summary_text", "text": cc.reasoning}}
+		event("response.output_item.done", map[string]any{
+			"output_index": outputIndex, "item": reasoningItem,
+		})
+		output = append(output, reasoningItem)
+		outputIndex++
+	}
+
+	msgID := "msg_" + customContentID()
+	event("response.output_item.added", map[string]any{
+		"output_index": outputIndex,
+		"item": map[string]any{
+			"id": msgID, "type": "message", "status": "in_progress",
+			"role": "assistant", "content": []any{},
+		},
+	})
+	event("response.content_part.added", map[string]any{
+		"item_id": msgID, "output_index": outputIndex, "content_index": 0,
+		"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+	})
+	for _, chunk := range customContentChunks(cc.text, cc.speed) {
+		event("response.output_text.delta", map[string]any{
+			"item_id": msgID, "output_index": outputIndex, "content_index": 0,
+			"delta": chunk, "logprobs": []any{},
+		})
+		if !waitCtx(ctx, customContentChunkDelay(chunk, cc.speed)) {
+			return true
+		}
+	}
+	event("response.output_text.done", map[string]any{
+		"item_id": msgID, "output_index": outputIndex, "content_index": 0,
+		"text": cc.text, "logprobs": []any{},
+	})
+	event("response.content_part.done", map[string]any{
+		"item_id": msgID, "output_index": outputIndex, "content_index": 0,
+		"part": map[string]any{"type": "output_text", "text": cc.text, "annotations": []any{}},
+	})
+	messageItem := map[string]any{
+		"id": msgID, "type": "message", "status": "completed", "role": "assistant",
+		"content": []any{map[string]any{
+			"type": "output_text", "text": cc.text, "annotations": []any{},
+		}},
+	}
+	event("response.output_item.done", map[string]any{
+		"output_index": outputIndex, "item": messageItem,
+	})
+	output = append(output, messageItem)
+
+	final := map[string]any{
+		"id": respID, "object": "response", "created_at": created, "status": "completed",
+		"model": model, "output": output,
+		"usage": map[string]any{
+			"input_tokens": usage.PromptTokens, "output_tokens": usage.CompletionTokens,
+			"total_tokens": usage.TotalTokens,
+		},
+	}
+	event("response.completed", map[string]any{"response": final})
+	return false
+}
+
+// customContentID 生成自定义内容返回里使用的随机标识。
+func customContentID() string {
+	return fmt.Sprintf("%016x", randUint64())
+}
+
 // Do 执行转发。它会把响应写进 w，并返回用于记账的结果。
 func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Result {
 	start := time.Now()
@@ -288,6 +704,37 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		res.StatusCode = code
 		res.ClientErr = msg
 		res.Err = err.Error()
+		res.LatencyMs = time.Since(start).Milliseconds()
+		return res
+	}
+	// 「自定义内容返回」优先级最高：开启后每次请求都直接返回配置的内容，
+	// 不解析路由、不请求上游，自定义错误返回也不再生效。
+	if cc, ok := customContentOf(resolved.Model); ok {
+		usage := customContentUsage(req, cc)
+		res.Usage = usage
+		res.UsageEstimate = true
+		res.ReasoningChars = len([]rune(cc.reasoning))
+		if req.Stream {
+			firstByte, canceled := writeCustomContentStream(ctx, w, req, resolved.Model.ID, cc, usage, start)
+			res.StatusCode = http.StatusOK
+			res.FirstByteMs = firstByte
+			res.LatencyMs = time.Since(start).Milliseconds()
+			if canceled {
+				res.Canceled = true
+				res.Err = "客户端已断开连接"
+			}
+			return res
+		}
+		// 非流式延迟：等待期间客户端断开就不再写响应。
+		if !waitCtx(ctx, cc.latency) {
+			res.StatusCode = http.StatusOK
+			res.Canceled = true
+			res.Err = "客户端已断开连接"
+			res.LatencyMs = time.Since(start).Milliseconds()
+			return res
+		}
+		writeCustomContent(w, req, resolved.Model.ID, cc, usage)
+		res.StatusCode = http.StatusOK
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
 	}

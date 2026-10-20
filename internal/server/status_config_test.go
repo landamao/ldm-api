@@ -292,6 +292,194 @@ func TestModelCustomErrorOverHTTP(t *testing.T) {
 	}
 }
 
+func TestSaveModelCustomContent(t *testing.T) {
+	s, st := newTestServer(t, "model-custom-content")
+
+	put := func(id, payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/models/"+id, strings.NewReader(payload))
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		s.saveModel(rec, req)
+		return rec
+	}
+
+	// 开启内容返回，正文原样保存（保留首尾空白），同时保存思考内容与耗时参数
+	rec := put("smart", `{"id":"smart","type":"custom","routes":[],"content_enabled":true,
+		"content_text":" 好的 ","content_reasoning":"先想一想",
+		"content_first_byte_ms":123,"content_speed":45,"content_latency_ms":67}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, err := st.GetModel("smart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.CustomContentEnabled() || m.ContentText != " 好的 " ||
+		m.ContentReasoning != "先想一想" ||
+		m.ContentFirstByteMs != 123 || m.ContentSpeed != 45 || m.ContentLatencyMs != 67 {
+		t.Fatalf("自定义内容未正确保存: %+v", m)
+	}
+
+	// 部分更新不能清空已有配置
+	rec = put("smart", `{"enabled":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("部分更新失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("smart")
+	if !m.CustomContentEnabled() || m.ContentText != " 好的 " ||
+		m.ContentReasoning != "先想一想" || m.ContentFirstByteMs != 123 ||
+		m.ContentSpeed != 45 || m.ContentLatencyMs != 67 {
+		t.Fatalf("未提交内容配置时不应被覆盖: %+v", m)
+	}
+
+	// 超出范围的时间参数会被夹到安全区间
+	rec = put("smart", `{"content_first_byte_ms":999999,"content_speed":-5,"content_latency_ms":-1}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("smart")
+	if m.ContentFirstByteMs != 600000 || m.ContentSpeed != 0 || m.ContentLatencyMs != 0 {
+		t.Fatalf("时间参数应被限制在合法范围: %+v", m)
+	}
+
+	// 内容返回开启时提交自定义错误会自动关闭错误返回，但状态码和详情保留
+	rec = put("smart", `{"error_enabled":true,"error_always":true,"error_status":503,"error_message":"维护中"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("smart")
+	if !m.CustomContentEnabled() || m.CustomErrorEnabled() || m.CustomErrorAlways() {
+		t.Fatalf("内容返回开启时应自动关闭自定义错误: %+v", m)
+	}
+	if m.ErrorStatus != http.StatusServiceUnavailable || m.ErrorMessage != "维护中" {
+		t.Fatalf("错误配置本身应保留，便于之后恢复: %+v", m)
+	}
+
+	// 关闭内容返回后可以清空正文
+	rec = put("smart", `{"content_enabled":false,"content_text":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("关闭失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("smart")
+	if m.CustomContentEnabled() || m.ContentText != "" {
+		t.Fatalf("自定义内容应已关闭并清空: %+v", m)
+	}
+
+	// 开启内容返回但没有正文直接拒绝
+	rec = put("fresh", `{"id":"fresh","type":"custom","routes":[],"content_enabled":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("缺少正文应返回 400，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	// 只有空白同样拒绝
+	rec = put("fresh", `{"id":"fresh","type":"custom","routes":[],"content_enabled":true,"content_text":"   "}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("空白正文应返回 400，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 通过完整 HTTP 入口验证：内容返回优先于自定义错误，且不请求上游；
+// 没有路由的自定义内容模型也能出现在 /v1/models 并正常调用。
+func TestModelCustomContentOverHTTP(t *testing.T) {
+	s, st := newTestServer(t, "model-custom-content-http")
+
+	var hits atomic.Int32
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok"}`)
+	}))
+	defer upstreamSrv.Close()
+
+	if err := st.SaveChannel(store.Channel{
+		ID: "C", Name: "C", Type: store.ChannelOpenAI, BaseURL: upstreamSrv.URL,
+		APIKey: "sk-upstream", Models: []string{"m"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	on := true
+	if err := st.SaveModel(store.Model{
+		ID: "C/m", Type: store.ModelTypeChannel, ChannelID: "C", Upstream: "m",
+		ContentEnabled: &on, ContentText: "好的", ContentReasoning: "先想一想",
+		ErrorEnabled: &on, ErrorAlways: &on, ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "维护中",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "fixed", Type: store.ModelTypeCustom, Routes: []store.Route{},
+		ContentEnabled: &on, ContentText: "好的",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveToken(store.Token{
+		ID: "t1", Name: "测试", Key: "sk-test-custom-content", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	post := func(model string) (int, string) {
+		t.Helper()
+		body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer sk-test-custom-content")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(raw)
+	}
+
+	for _, id := range []string{"C/m", "fixed"} {
+		code, raw := post(id)
+		if code != http.StatusOK {
+			t.Fatalf("模型 %s 应返回 200，得到 %d: %s", id, code, raw)
+		}
+		if !strings.Contains(raw, `"content":"好的"`) {
+			t.Errorf("模型 %s 应返回配置的内容: %s", id, raw)
+		}
+		if strings.Contains(raw, "维护中") {
+			t.Errorf("模型 %s 不应返回自定义错误: %s", id, raw)
+		}
+		if id == "C/m" && !strings.Contains(raw, `"reasoning_content":"先想一想"`) {
+			t.Errorf("模型 %s 应返回思考内容: %s", id, raw)
+		}
+		if id == "fixed" && strings.Contains(raw, "reasoning_content") {
+			t.Errorf("模型 %s 未配置思考内容，不应输出思考字段: %s", id, raw)
+		}
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("配置自定义内容后不应请求上游，实际 %d 次", got)
+	}
+
+	// 无路由的内容模型也要出现在可调用模型列表里
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer sk-test-custom-content")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), `"id":"fixed"`) {
+		t.Errorf("/v1/models 应包含无路由的自定义内容模型: %s", raw)
+	}
+}
+
 func TestNewEntitiesDefaultToEmptyStatusRules(t *testing.T) {
 	s, st := newTestServer(t, "status-defaults-empty")
 

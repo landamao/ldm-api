@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -573,5 +574,318 @@ func TestModelCustomErrorRewriteLeavesSuccessUntouched(t *testing.T) {
 	}
 	if res.Err != "" || res.ClientErr != "" {
 		t.Errorf("成功请求不应记录错误: %+v", res)
+	}
+}
+
+// 模型配置自定义内容返回时，不请求任何上游渠道，直接返回配置的内容。
+func TestModelCustomContentSkipsUpstream(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok"}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "cc", srv.URL, []string{"key-cc-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "cc/a", Type: store.ModelTypeChannel, ChannelID: "cc", Upstream: "a",
+		ContentEnabled: boolp(true), ContentText: "好的",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("cc/a"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应返回 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Object  string `json:"object"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v: %s", err, rec.Body.String())
+	}
+	if body.Object != "chat.completion" || body.Model != "cc/a" {
+		t.Errorf("响应结构不正确: %+v", body)
+	}
+	if len(body.Choices) != 1 || body.Choices[0].Message.Role != "assistant" ||
+		body.Choices[0].Message.Content != "好的" || body.Choices[0].FinishReason != "stop" {
+		t.Errorf("应返回配置的正文: %+v", body.Choices)
+	}
+	if body.Usage.CompletionTokens == 0 {
+		t.Errorf("应估算输出 token: %+v", body.Usage)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("配置自定义内容后不应请求上游，实际 %d 次", got)
+	}
+	if res.StatusCode != http.StatusOK || res.Err != "" || res.ClientErr != "" {
+		t.Errorf("结果应记为成功: %+v", res)
+	}
+	if res.ChannelID != "" || res.UpstreamModel != "" {
+		t.Errorf("未请求上游时不应记录渠道: %+v", res)
+	}
+}
+
+// 自定义内容返回优先于自定义错误返回：两者同时开启时只返回内容。
+func TestModelCustomContentWinsOverCustomError(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	on := true
+	if err := st.SaveModel(store.Model{
+		ID: "both", Type: store.ModelTypeCustom,
+		ContentEnabled: &on, ContentText: "好的",
+		ErrorEnabled: &on, ErrorAlways: &on, ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "维护中",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("both"))
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"content":"好的"`) {
+		t.Fatalf("内容返回应优先于自定义错误，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "维护中") {
+		t.Errorf("自定义错误不应生效: %s", rec.Body.String())
+	}
+	if res.Err != "" || res.ClientErr != "" {
+		t.Errorf("结果应记为成功: %+v", res)
+	}
+}
+
+// 自定义模型没有路由时，开启自定义内容返回也能正常调用。
+func TestModelCustomContentWithoutRoutes(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	on := true
+	if err := st.SaveModel(store.Model{
+		ID: "fixed", Type: store.ModelTypeCustom,
+		ContentEnabled: &on, ContentText: "好的",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := New(st).Resolve("fixed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.NoRoute != "" || len(resolved.Routes) != 0 {
+		t.Errorf("自定义内容模型不需要解析路由: %+v", resolved)
+	}
+
+	rec := httptest.NewRecorder()
+	New(st).Do(context.Background(), rec, statusTestRequest("fixed"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"content":"好的"`) {
+		t.Fatalf("无路由的内容模型应正常返回，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 自定义模型没有路由、也没有内容/错误返回时，返回普通的「没有可用渠道」错误。
+func TestModelCustomWithoutRoutesFallsBackToNoChannel(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "empty", Type: store.ModelTypeCustom, Routes: []store.Route{},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("empty"))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("应返回 503，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "没有可用渠道") {
+		t.Errorf("应返回普通的没有可用渠道错误: %s", rec.Body.String())
+	}
+	if !strings.Contains(res.Err, "尚未配置路由目标") {
+		t.Errorf("日志应保留内部原因: %+v", res.Err)
+	}
+}
+
+// 流式请求按 SSE 返回配置的内容。
+func TestModelCustomContentStream(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	on := true
+	if err := st.SaveModel(store.Model{
+		ID: "fixed", Type: store.ModelTypeCustom,
+		ContentEnabled: &on, ContentText: "好的",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := statusTestRequest("fixed")
+	req.Stream = true
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应返回 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("流式响应应使用 SSE，得到 %q", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"content":"好的"`) || !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Errorf("SSE 应包含正文与结束标记: %s", body)
+	}
+	if !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Errorf("SSE 应以 [DONE] 结束: %s", body)
+	}
+	if !res.Stream || res.StatusCode != http.StatusOK {
+		t.Errorf("结果应记录为流式成功: %+v", res)
+	}
+}
+
+// 自定义内容可以附带思考内容；留空时响应里不出现思考字段。
+func TestModelCustomContentReasoning(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	on := true
+	save := func(id, text, reasoning string) {
+		t.Helper()
+		if err := st.SaveModel(store.Model{
+			ID: id, Type: store.ModelTypeCustom,
+			ContentEnabled: &on, ContentText: text, ContentReasoning: reasoning,
+			Enabled: true, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("think", "好的", "先想一想")
+	save("plain", "好的", "")
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("think"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应返回 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Choices []struct {
+			Message struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v: %s", err, rec.Body.String())
+	}
+	if len(body.Choices) != 1 || body.Choices[0].Message.Content != "好的" ||
+		body.Choices[0].Message.ReasoningContent != "先想一想" {
+		t.Errorf("非流式响应应包含思考内容与正文: %+v", body.Choices)
+	}
+	if res.ReasoningChars != len([]rune("先想一想")) {
+		t.Errorf("应记录思考内容字符数，得到 %d", res.ReasoningChars)
+	}
+
+	// 没有思考内容时，响应里不应出现 reasoning_content。
+	rec = httptest.NewRecorder()
+	New(st).Do(context.Background(), rec, statusTestRequest("plain"))
+	if strings.Contains(rec.Body.String(), "reasoning_content") {
+		t.Errorf("思考内容为空时不应输出字段: %s", rec.Body.String())
+	}
+
+	// 流式：思考内容先于正文输出。
+	req := statusTestRequest("think")
+	req.Stream = true
+	rec = httptest.NewRecorder()
+	New(st).Do(context.Background(), rec, req)
+	raw := rec.Body.String()
+	thinkIdx := strings.Index(raw, `"reasoning_content":"先想一想"`)
+	contentIdx := strings.Index(raw, `"content":"好的"`)
+	if thinkIdx < 0 || contentIdx < 0 || thinkIdx > contentIdx {
+		t.Errorf("流式响应应先输出思考内容再输出正文: %s", raw)
+	}
+}
+
+// 首字时间、流式速度和非流式延迟按配置模拟。
+func TestModelCustomContentTiming(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	on := true
+	if err := st.SaveModel(store.Model{
+		ID: "slow", Type: store.ModelTypeCustom,
+		ContentEnabled: &on, ContentText: "好的",
+		ContentFirstByteMs: 40, ContentSpeed: 50, ContentLatencyMs: 60,
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 非流式：返回前等待配置的延迟。
+	started := time.Now()
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("slow"))
+	elapsed := time.Since(started).Milliseconds()
+	if elapsed < 50 {
+		t.Errorf("非流式应等待约 60ms，实际 %dms", elapsed)
+	}
+	if res.LatencyMs < 50 {
+		t.Errorf("日志应记录实际延迟，得到 %dms", res.LatencyMs)
+	}
+	if res.FirstByteMs != 0 {
+		t.Errorf("非流式不应记录首字耗时，得到 %dms", res.FirstByteMs)
+	}
+
+	// 流式：首字等待 40ms，再按 50 字/秒输出 2 个字（约 40ms）。
+	req := statusTestRequest("slow")
+	req.Stream = true
+	started = time.Now()
+	rec = httptest.NewRecorder()
+	res = New(st).Do(context.Background(), rec, req)
+	elapsed = time.Since(started).Milliseconds()
+	if res.FirstByteMs < 30 {
+		t.Errorf("应记录首字耗时约 40ms，得到 %dms", res.FirstByteMs)
+	}
+	if elapsed < 65 {
+		t.Errorf("流式总耗时应约 80ms，实际 %dms", elapsed)
+	}
+	if res.LatencyMs < 65 {
+		t.Errorf("日志应记录流式总耗时，得到 %dms", res.LatencyMs)
+	}
+}
+
+func TestCustomContentChunks(t *testing.T) {
+	if got := customContentChunks("", 10); got != nil {
+		t.Errorf("空文本不应分块: %v", got)
+	}
+	if got := customContentChunks("好的", 0); len(got) != 1 || got[0] != "好的" {
+		t.Errorf("速度为 0 时应整段返回: %v", got)
+	}
+	chunks := customContentChunks("你好世界", 2)
+	if len(chunks) != 4 {
+		t.Errorf("每秒 2 字应逐字分块，得到 %d 块: %v", len(chunks), chunks)
+	}
+	if d := customContentChunkDelay("好", 20); d != 50*time.Millisecond {
+		t.Errorf("每秒 20 字时每个字应等待 50ms，得到 %v", d)
+	}
+	if d := customContentChunkDelay("好", 0); d != 0 {
+		t.Errorf("速度为 0 时不应等待，得到 %v", d)
 	}
 }

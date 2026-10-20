@@ -497,6 +497,7 @@
             </div>
             ${m.description ? `<div class="model-card__desc">${esc(m.description)}</div>` : ''}
             <div class="model-card__caps">
+              ${m.status === 'custom_content' ? badge('始终返回内容', 'green') : ''}
               ${m.caps && m.caps.context_length ? badge('上下文 ' + fmtContext(m.caps.context_length), 'gray') : ''}
               ${m.caps && m.caps.tool_calling === true ? badge('工具调用', 'green') : ''}
               ${m.caps && m.caps.thinking === true ? badge('思考', 'violet') : ''}
@@ -590,6 +591,7 @@
       : '<span class="muted">未设置</span>';
     const statusHtml = (() => {
       if (m.status === 'disabled') return statusBadge(false, '', '已禁用');
+      if (m.status === 'custom_content') return badge('始终返回内容', 'green');
       if (m.status === 'channel_disabled') return badge('渠道已禁用', 'red');
       if (m.status === 'channel_missing' || m.status === 'model_missing') return badge('渠道模型不存在', 'red');
       if (m.status === 'not_added') return badge('未接入模型管理', 'red');
@@ -644,7 +646,9 @@
       });
       sourceHtml = `<div class="route-list">${units.join('')}</div>`;
     } else if (isCustom) {
-      sourceHtml = badge('未配置路由目标', 'red');
+      sourceHtml = m.status === 'custom_content'
+        ? badge('始终返回内容', 'green')
+        : badge('未配置路由目标', 'red');
     } else {
       sourceHtml = `<span class="code">${esc(m.source || m.channel_id || '—')}</span>`
         + `<span class="muted fs-12"> → 上游模型 ${esc(m.upstream || '—')}</span>`;
@@ -846,7 +850,8 @@
     desc: '在线和可用模型聊天',
     async render(root, actions) {
       const all = await State.loadModels(true);
-      const usable = all.filter((m) => m.enabled && m.channel_ready);
+      // 自定义内容返回不依赖路由，即使没有可用渠道也能在在线聊天里选择。
+      const usable = all.filter((m) => m.enabled && (m.channel_ready || m.status === 'custom_content'));
 
       actions.innerHTML = `<button class="btn" id="chat-reload">${icon('refresh', 14)}刷新模型</button>`;
       actions.querySelector('#chat-reload').onclick = () => window.LDM.navigate();
