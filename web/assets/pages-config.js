@@ -2039,7 +2039,7 @@
     const provider = providerByID[m.provider_id];
     const statusHtml = (() => {
       if (!m.enabled) return statusBadge(false, '', '已禁用');
-      if (m.status === 'custom_error') return badge(`始终返回错误 ${m.error_status}`, 'red');
+      if (m.status === 'custom_error') return badge(`始终错误 (${m.error_status})`, 'red');
       if (m.status === 'channel_disabled') return badge('渠道已禁用', 'red');
       if (m.status === 'channel_missing' || m.status === 'model_missing') return badge('渠道模型不存在', 'red');
       if (m.status === 'ok') return statusBadge(true, '可用');
