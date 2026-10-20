@@ -72,7 +72,7 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 			ID: m.ID, Type: m.Type, DisplayName: m.DisplayName, Description: m.Description,
 			Tags: m.Tags, Caps: m.Caps, Available: m.Enabled,
 			ProviderID: m.ProviderID,
-			Affinity:   m.Affinity, CooldownSec: m.CooldownSec, CooldownReset: m.CooldownReset,
+			Affinity:   m.Affinity, CooldownSec: m.RouteCooldownSec(), CooldownReset: m.CooldownReset,
 			Requests24h: reqs[m.ID], Errors24h: errs[m.ID],
 		}
 		if p, ok := providerByID[m.ProviderID]; ok {

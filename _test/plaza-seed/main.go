@@ -185,7 +185,7 @@ func main() {
 		},
 		ProviderID: "", Caps: store.Caps{ContextLength: intp(262144), MaxOutput: intp(32768), ToolCalling: boolp(true)},
 		Enabled: true, Description: "自定义路由示例：主线路优先，失败后切备用。", Tags: []string{"自定义"},
-		Affinity: true, CooldownSec: 300, CooldownReset: true,
+		Affinity: true, CooldownSec: intp(300), CooldownReset: true,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := st.SaveModel(custom); err != nil {

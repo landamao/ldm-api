@@ -1055,14 +1055,14 @@
           </label>
           <span class="muted fs-12">失败冷却</span>
           <input class="input" id="f-key-cooldown" type="number" min="0" max="86400"
-                 value="${esc(String(data.key_cooldown_sec || 0))}" style="width:92px;height:30px;font-size:12.5px">
+                 value="${esc(String(data.key_cooldown_sec ?? 300))}" style="width:92px;height:30px;font-size:12.5px">
           <span class="muted fs-12">秒</span>
         </div>
         <div class="field__hint">
           <b>顺序</b>：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。
           <b>随机</b>：每次请求完整打乱可用 Key 后再依次尝试。
           <b>Key 亲和</b>：上次成功的 Key 优先：顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。
-          <b>失败冷却</b>：Key 失败后在设定时间内跳过（0 = 默认 300 秒）。
+          <b>失败冷却</b>：Key 失败后在设定时间内跳过（0 = 不冷却）。
           <b>全部冷却时重置</b>：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。
         </div>
       </div>
@@ -3135,11 +3135,11 @@
           <div class="field__hint" style="margin-top:2px">开启后：本轮哪个路由成功了，下一轮请求就优先从它开始（提到最前）。</div>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
             <span class="muted fs-12">失败冷却</span>
-            <input class="input" id="cm-cooldown" type="number" min="0" max="86400" value="${m.cooldown_sec || 0}" style="width:90px;height:30px;font-size:12.5px">
+            <input class="input" id="cm-cooldown" type="number" min="0" max="86400" value="${m.cooldown_sec ?? 300}" style="width:90px;height:30px;font-size:12.5px">
             <span class="muted fs-12">秒</span>
             <label class="switch" style="margin-left:auto"><input type="checkbox" id="cm-cooldown-reset" ${m.cooldown_reset ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">全冷却时自动重置</span></label>
           </div>
-          <div class="field__hint" style="margin-top:2px">条目失败后在冷却时长内视为不可用直接跳过（0 = 默认 300 秒）。「自动重置」决定全部条目都在冷却中时的行为：关=直接返回不可用；开=清空所有冷却再路由一遍。</div>
+          <div class="field__hint" style="margin-top:2px">条目失败后在冷却时长内视为不可用直接跳过（0 = 不冷却）。「自动重置」决定全部条目都在冷却中时的行为：关=直接返回不可用；开=清空所有冷却再路由一遍。</div>
         </div>
       </div>
 

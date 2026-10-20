@@ -13,10 +13,9 @@ import (
 // 渠道多 Key 调度：按配置顺序或随机选起始 Key，支持 Key 亲和与失败冷却。
 // 冷却状态按「渠道 ID + Key 指纹」记录，指纹只用于内存索引，不保存明文。
 
-const (
-	defaultKeyCooldownSec = 300
-	maxKeyCooldownSec     = 86400
-)
+// 冷却时长配置上限（与后台保存时的限制一致）。超过这个时长的失败记录
+// 对任何配置都已过期，可以安全清理。
+const maxKeyCooldownSec = 86400
 
 // keyCandidate 是一次 Key 调度里的候选项。
 type keyCandidate struct {
@@ -75,10 +74,7 @@ func PlanKeys(ch store.Channel) ([]keyCandidate, string) {
 		return []keyCandidate{{key: "", index: 1}}, ""
 	}
 
-	cooldown := time.Duration(ch.KeyCooldownSec) * time.Second
-	if cooldown <= 0 {
-		cooldown = defaultKeyCooldownSec * time.Second
-	}
+	cooldown := ch.KeyCooldown()
 	now := time.Now()
 
 	all := make([]keyCandidate, 0, len(list))
@@ -90,13 +86,16 @@ func PlanKeys(ch store.Channel) ([]keyCandidate, string) {
 	keyStates.Lock()
 	for _, c := range all {
 		id := keyStateID(ch.ID, c.key)
-		if failedAt, failed := keyStates.failedAt[id]; failed {
-			elapsed := now.Sub(failedAt)
-			if elapsed < cooldown {
-				continue
-			}
-			if elapsed >= time.Duration(maxKeyCooldownSec)*time.Second {
-				delete(keyStates.failedAt, id)
+		// 冷却时长显式为 0：不跳过任何 Key（失败记录保留，之后改回正数仍会生效）。
+		if cooldown > 0 {
+			if failedAt, failed := keyStates.failedAt[id]; failed {
+				elapsed := now.Sub(failedAt)
+				if elapsed < cooldown {
+					continue
+				}
+				if elapsed >= time.Duration(maxKeyCooldownSec)*time.Second {
+					delete(keyStates.failedAt, id)
+				}
 			}
 		}
 		live = append(live, c)

@@ -1,6 +1,12 @@
 package store
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
+
+// DefaultCooldownSec 是冷却时长未设置（旧数据）时的默认值。
+const DefaultCooldownSec = 300
 
 // Caps 描述一个模型的能力参数，仅用于模型广场 / 模型列表的展示。
 // 所有字段都是可空的：nil 表示“未声明”，网关不会据此校验或改写请求，
@@ -78,8 +84,9 @@ type Channel struct {
 	// KeyAffinity 开启后，上次成功使用的 Key 优先尝试：
 	// 顺序模式从它的位置开始顺延，随机模式先试它、其余洗牌。
 	KeyAffinity bool `json:"key_affinity,omitempty"`
-	// KeyCooldownSec 是 Key 失败后的冷却时长（秒），0 表示默认 300。
-	KeyCooldownSec int `json:"key_cooldown_sec,omitempty"`
+	// KeyCooldownSec 是 Key 失败后的冷却时长（秒）。nil 表示旧数据未设置，
+	// 按默认 300 秒；显式 0 表示不冷却。
+	KeyCooldownSec *int `json:"key_cooldown_sec,omitempty"`
 	// KeyCooldownReset 控制全部 Key 都在冷却中时是否自动清空冷却再调度一遍。
 	KeyCooldownReset bool `json:"key_cooldown_reset,omitempty"`
 	// AppendV1 控制是否在接口地址后补全 /v1。nil 表示旧数据，按默认开启处理。
@@ -96,6 +103,15 @@ type Channel struct {
 // ShouldAppendV1 返回是否自动补全 /v1；旧数据未设置时默认开启。
 func (c Channel) ShouldAppendV1() bool {
 	return c.AppendV1 == nil || *c.AppendV1
+}
+
+// KeyCooldown 返回 Key 失败冷却时长。nil 表示旧数据未设置，按默认 300 秒；
+// 显式 0 表示不冷却。
+func (c Channel) KeyCooldown() time.Duration {
+	if c.KeyCooldownSec == nil {
+		return DefaultCooldownSec * time.Second
+	}
+	return time.Duration(*c.KeyCooldownSec) * time.Second
 }
 
 // KeyList 返回去重后的 Key 和备注列表，保持配置顺序。
@@ -194,11 +210,12 @@ type Model struct {
 	Enabled    bool    `json:"enabled"`
 
 	// Affinity 开启后：某条路由本次请求成功，下一次请求优先从它开始。
-	// CooldownSec 是路由失败后的不可用冷却时长（秒），0 表示默认 300。
+	// CooldownSec 是路由失败后的不可用冷却时长（秒）。nil 表示旧数据未设置，
+	// 按默认 300 秒；显式 0 表示不冷却。
 	// CooldownReset 控制「全部路由都在冷却中」时的行为：true 自动重置所有冷却再路由一遍，
 	// false 直接返回不可用。
 	Affinity      bool `json:"affinity,omitempty"`
-	CooldownSec   int  `json:"cooldown_sec,omitempty"`
+	CooldownSec   *int `json:"cooldown_sec,omitempty"`
 	CooldownReset bool `json:"cooldown_reset,omitempty"`
 
 	// Timeout 是模型级超时（秒），0 表示默认 300。
@@ -211,6 +228,22 @@ type Model struct {
 
 	CreatedAt int64 `json:"created_at"`
 	UpdatedAt int64 `json:"updated_at"`
+}
+
+// RouteCooldown 返回路由失败冷却时长，语义同 Channel.KeyCooldown。
+func (m Model) RouteCooldown() time.Duration {
+	if m.CooldownSec == nil {
+		return DefaultCooldownSec * time.Second
+	}
+	return time.Duration(*m.CooldownSec) * time.Second
+}
+
+// RouteCooldownSec 返回秒数形式的有效冷却时长（nil 按默认 300，0 表示不冷却）。
+func (m Model) RouteCooldownSec() int {
+	if m.CooldownSec == nil {
+		return DefaultCooldownSec
+	}
+	return *m.CooldownSec
 }
 
 // Token 调用方使用的 API Key。

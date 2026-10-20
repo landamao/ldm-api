@@ -18,6 +18,8 @@ import (
 	"ldmapi/internal/store"
 )
 
+func intp(v int) *int { return &v }
+
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.Open(t.TempDir() + "/test.db")
@@ -542,6 +544,32 @@ func TestCooldownSkipsFailedRoute(t *testing.T) {
 	}
 }
 
+// 显式把冷却设为 0 表示不冷却：失败记录不应让条目被跳过。
+func TestCooldownZeroDisablesCooldown(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+	st := newTestStore(t)
+	seedChannels(t, st)
+	now := time.Now().UnixMilli()
+	_ = st.SaveModel(store.Model{
+		ID: "CD0", Type: store.ModelTypeCustom,
+		Routes: []store.Route{
+			{ChannelID: "A", Upstream: "a"},
+			{ChannelID: "B", Upstream: "d"},
+		},
+		CooldownSec: intp(0),
+		Enabled:     true, CreatedAt: now, UpdatedAt: now,
+	})
+	MarkFailure("A", "a")
+	res, err := New(st).Resolve("CD0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Routes) != 2 {
+		t.Fatalf("冷却为 0 时不应跳过失败路由，得到 %d 条", len(res.Routes))
+	}
+}
+
 func TestClearAllCooldowns(t *testing.T) {
 	MarkFailure("CLR-A", "a")
 	MarkFailure("CLR-B", "b")
@@ -624,7 +652,7 @@ func TestCooldownUsesCurrentConfigDuration(t *testing.T) {
 	m := store.Model{
 		ID: "CDYN", Type: store.ModelTypeCustom,
 		Routes:      []store.Route{{ChannelID: "A", Upstream: "a"}, {ChannelID: "B", Upstream: "d"}},
-		CooldownSec: 1,
+		CooldownSec: intp(1),
 		Enabled:     true, CreatedAt: now, UpdatedAt: now,
 	}
 	_ = st.SaveModel(m)
@@ -638,7 +666,7 @@ func TestCooldownUsesCurrentConfigDuration(t *testing.T) {
 		t.Fatalf("冷却 1 秒，2 秒前失败应已恢复，得到 %d 条", len(res.Routes))
 	}
 	// 调大到 10 秒后，同一条失败记录应立即重新生效
-	m.CooldownSec = 10
+	m.CooldownSec = intp(10)
 	if err := st.SaveModel(m); err != nil {
 		t.Fatal(err)
 	}
@@ -661,11 +689,11 @@ func TestCooldownSharedAcrossModelsUsesOwnDuration(t *testing.T) {
 	routes := []store.Route{{ChannelID: "A", Upstream: "a"}, {ChannelID: "B", Upstream: "d"}}
 	_ = st.SaveModel(store.Model{
 		ID: "CD-LONG", Type: store.ModelTypeCustom, Routes: routes,
-		CooldownSec: 600, Enabled: true, CreatedAt: now, UpdatedAt: now,
+		CooldownSec: intp(600), Enabled: true, CreatedAt: now, UpdatedAt: now,
 	})
 	_ = st.SaveModel(store.Model{
 		ID: "CD-SHORT", Type: store.ModelTypeCustom, Routes: routes,
-		CooldownSec: 1, Enabled: true, CreatedAt: now, UpdatedAt: now,
+		CooldownSec: intp(1), Enabled: true, CreatedAt: now, UpdatedAt: now,
 	})
 	markFailureAt("A", "a", time.Now().Add(-2*time.Second))
 	// 长冷却模型：仍应跳过 A/a
@@ -1754,7 +1782,7 @@ func TestMultiKeyRetriesWithinChannel(t *testing.T) {
 			{Key: "bad-key-000002"},
 			{Key: "good-key-00003", Note: "可用账号"},
 		},
-		KeyMode: store.KeyModeSequential, KeyAffinity: true, KeyCooldownSec: 300,
+		KeyMode: store.KeyModeSequential, KeyAffinity: true, KeyCooldownSec: intp(300),
 		Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := st.SaveChannel(ch); err != nil {
@@ -1849,6 +1877,29 @@ func TestPlanKeysCooldownReset(t *testing.T) {
 	}
 }
 
+// 显式把 Key 冷却设为 0 表示不冷却：失败过的 Key 仍应参与调度。
+func TestPlanKeysCooldownZeroDisablesCooldown(t *testing.T) {
+	const chID = "plan-zero"
+	ClearChannelKeyState(chID)
+	defer ClearChannelKeyState(chID)
+
+	ch := store.Channel{
+		ID: chID,
+		APIKeys: []store.ChannelKey{
+			{Key: "k1-12345678"},
+			{Key: "k2-12345678"},
+		},
+		KeyMode:        store.KeyModeSequential,
+		KeyCooldownSec: intp(0),
+	}
+	MarkKeyFailure(chID, "k1-12345678")
+	MarkKeyFailure(chID, "k2-12345678")
+	keys, reason := PlanKeys(ch)
+	if reason != "" || len(keys) != 2 {
+		t.Fatalf("冷却为 0 时不应跳过任何 Key，得到 %v（%q）", candidateIndexes(keys), reason)
+	}
+}
+
 // 全部 Key 冷却时请求不会打到上游，但日志仍要保留已经命中的渠道。
 func TestAllKeysCoolingKeepsChannelInfo(t *testing.T) {
 	const chID = "cool-all"
@@ -1861,7 +1912,7 @@ func TestAllKeysCoolingKeepsChannelInfo(t *testing.T) {
 		ID: chID, Name: "冷却线路", Type: store.ChannelOpenAI,
 		BaseURL:        "http://127.0.0.1:1",
 		APIKeys:        []store.ChannelKey{{Key: "k1-12345678"}, {Key: "k2-12345678"}},
-		KeyCooldownSec: 300, Models: []string{"m"},
+		KeyCooldownSec: intp(300), Models: []string{"m"},
 		Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)

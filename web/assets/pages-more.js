@@ -2965,7 +2965,7 @@
           </tr>`).join('');
         openModal({
           title: 'Key 重试信息',
-          desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 渠道 <span class="mono">${esc(group.label)}</span> · 共 ${group.attempts.length} 次尝试`,
+          desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 渠道 <span class="mono">${esc(group.label)}</span> · 上游模型 <span class="mono">${esc(group.upstream)}</span> · 共 ${group.attempts.length} 次尝试`,
           size: 'xl',
           top: true,
           body: `<div class="table-wrap" style="border:none;border-radius:0">
@@ -2983,25 +2983,25 @@
 
       function showRetryHistory(l) {
         const attempts = l.attempts || [];
-        // 按渠道聚合，保持第一次出现的顺序。同一渠道可能因为自定义路由
-        // 出现多次，这里合并成一行，再按不同 Key 的数量决定是否下钻。
+        // 按「渠道 + 上游模型」聚合，保持第一次出现的顺序。同一渠道的不同上游
+        // 模型分别成行；同一条路由内的多次 Key 尝试才合并，再按不同 Key 的数量下钻。
         const groups = [];
-        const byChannel = new Map();
+        const byRoute = new Map();
         attempts.forEach((a) => {
           const id = a.channel_id || '';
-          let g = byChannel.get(id);
+          const routeKey = id + '\u0000' + (a.upstream_model || '');
+          let g = byRoute.get(routeKey);
           if (!g) {
             g = {
               label: id ? `${id}${a.channel_name ? '（' + a.channel_name + '）' : ''}` : '—',
-              upstreams: [],
+              upstream: a.upstream_model || '—',
               attempts: [],
               keyIds: new Set(),
             };
-            byChannel.set(id, g);
+            byRoute.set(routeKey, g);
             groups.push(g);
           }
           g.attempts.push(a);
-          if (a.upstream_model && !g.upstreams.includes(a.upstream_model)) g.upstreams.push(a.upstream_model);
           if (a.key_masked) g.keyIds.add(`${a.key_index || 1}|${a.key_masked}`);
         });
         const rows = groups.map((g, i) => {
@@ -3011,20 +3011,20 @@
           return `<tr>
             <td class="muted num">${i + 1}</td>
             <td class="mono" style="white-space:nowrap">${esc(g.label)}</td>
-            <td class="mono fs-12" style="white-space:nowrap">${esc(g.upstreams.join(', ') || '—')}</td>
+            <td class="mono fs-12" style="white-space:nowrap">${esc(g.upstream)}</td>
             <td class="num">${g.attempts.length}</td>
             <td>${attemptBadge(last)}</td>
             <td class="right num">${esc(fmtDuration(totalMs))}</td>
             <td class="fs-12" style="white-space:pre-wrap;word-break:break-word;min-width:300px">${last.error ? esc(last.error) : '<span class="muted">—</span>'}</td>
             <td>${canDrill
-              ? `<button type="button" class="badge badge--amber badge--click" data-key-retry="${i}" title="查看该渠道的 Key 重试明细">${icon('refresh', 11)}Key 重试 ${g.attempts.length - 1}</button>`
+              ? `<button type="button" class="badge badge--amber badge--click" data-key-retry="${i}" title="查看该渠道模型的 Key 重试明细">${icon('refresh', 11)}Key 重试 ${g.attempts.length - 1}</button>`
               : '<span class="muted">—</span>'}</td>
           </tr>`;
         }).join('');
         const finalOK = logOK(l);
         openModal({
           title: '渠道重试信息',
-          desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 共 ${groups.length} 个渠道 · ${finalOK ? '最终成功' : '最终失败'}`,
+          desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 共 ${groups.length} 条路由 · ${finalOK ? '最终成功' : '最终失败'}`,
           size: 'xl',
           body: attempts.length ? `<div class="table-wrap" style="border:none;border-radius:0">
             <table class="tbl">

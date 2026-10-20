@@ -344,7 +344,7 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		}
 		m.Routes = nil
 		m.Affinity = false
-		m.CooldownSec = 0
+		m.CooldownSec = nil
 		m.CooldownReset = false
 	} else {
 		// 只更新请求里出现的字段：启停等部分更新不能把路由、参数和描述清空。
@@ -364,13 +364,14 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 			m.Affinity = *req.Affinity
 		}
 		if req.CooldownSec != nil {
-			m.CooldownSec = *req.CooldownSec
-			if m.CooldownSec < 0 {
-				m.CooldownSec = 0
+			v := *req.CooldownSec
+			if v < 0 {
+				v = 0
 			}
-			if m.CooldownSec > 86400 {
-				m.CooldownSec = 86400
+			if v > 86400 {
+				v = 86400
 			}
+			m.CooldownSec = &v
 		}
 		if req.CooldownReset != nil {
 			m.CooldownReset = *req.CooldownReset

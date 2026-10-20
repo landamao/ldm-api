@@ -19,6 +19,8 @@ import (
 	"ldmapi/internal/upstream"
 )
 
+func intp(v int) *int { return &v }
+
 func TestPasswordHashAndVerify(t *testing.T) {
 	salt := randomHex(16)
 	h1 := hashPassword("hunter2", salt)
@@ -503,7 +505,7 @@ func TestSaveChannelKeyRowsTwoColumns(t *testing.T) {
 		store.ChannelKey{Key: "sk-backup-12345678"},
 	)
 	ch, _ := st.GetChannel("c")
-	if ch.APIKey != "sk-main-12345678" || ch.KeyMode != store.KeyModeRandom || !ch.KeyAffinity || ch.KeyCooldownSec != 60 || !ch.KeyCooldownReset {
+	if ch.APIKey != "sk-main-12345678" || ch.KeyMode != store.KeyModeRandom || !ch.KeyAffinity || ch.KeyCooldownSec == nil || *ch.KeyCooldownSec != 60 || !ch.KeyCooldownReset {
 		t.Errorf("Key 配置保存错误: %+v", ch)
 	}
 
@@ -520,7 +522,7 @@ func TestSaveChannelKeyRowsTwoColumns(t *testing.T) {
 		t.Errorf("响应里的备注未更新: %+v", view.KeyRows)
 	}
 	ch, _ = st.GetChannel("c")
-	if ch.KeyMode != store.KeyModeSequential || !ch.KeyAffinity || ch.KeyCooldownSec != 60 || !ch.KeyCooldownReset {
+	if ch.KeyMode != store.KeyModeSequential || !ch.KeyAffinity || ch.KeyCooldownSec == nil || *ch.KeyCooldownSec != 60 || !ch.KeyCooldownReset {
 		t.Errorf("未提交的调度字段不应被覆盖: %+v", ch)
 	}
 
@@ -1533,7 +1535,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 		Routes:      []store.Route{{ChannelID: "A", Upstream: "a"}},
 		DisplayName: "路由模型", Description: "自定义描述", Tags: []string{"tag-b"},
 		Caps:     store.Caps{MaxOutput: &ctx},
-		Affinity: true, CooldownSec: 120, CooldownReset: true, Timeout: 60,
+		Affinity: true, CooldownSec: intp(120), CooldownReset: true, Timeout: 60,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1584,7 +1586,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	if m.DisplayName != "路由模型" || m.Description != "自定义描述" || len(m.Tags) != 1 {
 		t.Errorf("自定义模型的配置被清空: %+v", m)
 	}
-	if !m.Affinity || m.CooldownSec != 120 || !m.CooldownReset {
+	if !m.Affinity || m.CooldownSec == nil || *m.CooldownSec != 120 || !m.CooldownReset {
 		t.Errorf("自定义模型的调度配置被清空: %+v", m)
 	}
 	if m.Caps.MaxOutput == nil || *m.Caps.MaxOutput != ctx {
@@ -1609,7 +1611,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	if m.Caps.ContextLength != nil || m.Caps.MaxOutput != nil {
 		t.Errorf("显式空 caps 应清空能力参数: %+v", m.Caps)
 	}
-	if m.Affinity || m.CooldownSec != 0 || m.CooldownReset {
+	if m.Affinity || m.CooldownSec == nil || *m.CooldownSec != 0 || m.CooldownReset {
 		t.Errorf("显式空值应清空调度配置: %+v", m)
 	}
 	if m.Timeout != 0 {

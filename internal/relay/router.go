@@ -13,8 +13,6 @@ import (
 // 冷却状态按「渠道ID/上游模型」全局共享，但时长取当前请求模型的 CooldownSec，
 // 修改配置后对已存在的冷却立即生效。
 
-const defaultCooldownSec = 300
-
 // 冷却时长配置上限（与后台保存时的限制一致）。超过这个时长的失败记录对所有模型
 // 都已过期，可以安全清理；不能按当前模型的时长清理，否则短冷却模型会删掉
 // 长冷却模型还需要共享的记录。
@@ -213,10 +211,7 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 	if len(m.Routes) == 0 {
 		return nil, false
 	}
-	cooldown := time.Duration(m.CooldownSec) * time.Second
-	if cooldown <= 0 {
-		cooldown = defaultCooldownSec * time.Second
-	}
+	cooldown := m.RouteCooldown()
 
 	var all, live []planCandidate
 	now := time.Now()
@@ -229,14 +224,17 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 		c := planCandidate{cfgIdx: i, rt: rt, ch: ch}
 		all = append(all, c)
 		k := routeKey(rt.ChannelID, rt.Upstream)
-		if failedAt, failed := routeStates.failedAt[k]; failed {
-			elapsed := now.Sub(failedAt)
-			if elapsed < cooldown {
-				c.cooling = true
-				continue
-			}
-			if elapsed >= time.Duration(maxCooldownSec)*time.Second {
-				delete(routeStates.failedAt, k)
+		// 冷却时长显式为 0：不跳过任何路由（失败记录保留，之后改回正数仍会生效）。
+		if cooldown > 0 {
+			if failedAt, failed := routeStates.failedAt[k]; failed {
+				elapsed := now.Sub(failedAt)
+				if elapsed < cooldown {
+					c.cooling = true
+					continue
+				}
+				if elapsed >= time.Duration(maxCooldownSec)*time.Second {
+					delete(routeStates.failedAt, k)
+				}
 			}
 		}
 		live = append(live, c)

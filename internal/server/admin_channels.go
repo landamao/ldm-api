@@ -277,7 +277,7 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 		if v > 86400 {
 			v = 86400
 		}
-		ch.KeyCooldownSec = v
+		ch.KeyCooldownSec = &v
 	}
 	if req.KeyCooldownReset != nil {
 		ch.KeyCooldownReset = *req.KeyCooldownReset
