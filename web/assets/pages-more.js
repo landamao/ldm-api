@@ -2259,6 +2259,19 @@
 
       const finishRun = (run, res) => {
         if (res && res.entry && !run.discarded && !run.unloadSaved) {
+          // 自定义请求体模式下编辑器里的 JSON 是下一次请求的唯一来源，
+          // 回复必须写回它的 messages，否则下一轮会用旧请求体覆盖本地历史。
+          if (res.ok && run.customBody && res.entry.content) {
+            const msgs = run.customBody.messages;
+            if (Array.isArray(msgs)) {
+              msgs.push({ role: 'assistant', content: res.entry.content });
+              // 页面切走时编辑器已经不在文档里，回来会按历史重新生成
+              if (customEditor.isConnected) {
+                customEditor.value = JSON.stringify(run.customBody, null, 2);
+                updateCustomHint();
+              }
+            }
+          }
           history.push(res.entry);
           persistChatHistory();
         }
