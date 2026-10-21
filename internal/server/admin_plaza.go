@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"ldmapi/internal/relay"
@@ -214,6 +215,10 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		MaxTok  *int            `json:"max_tokens"`
 		Seed    *int64          `json:"seed"`
 		Raw     json.RawMessage `json:"raw"` // 自定义请求体：原样转发，不再由网关拼装
+
+		// 临时测试：填写后直接请求该上游，不经过渠道与模型路由，也不写调用日志。
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
 	}
 	// 在线聊天可能带上 base64 图片或附件，单独放宽到 64MB。
 	if err := readJSONLimit(r, &req, 64<<20); err != nil {
@@ -269,6 +274,13 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	body, _ := json.Marshal(payload)
+
+	// 临时测试：请求里带了上游地址就直连，不解析模型路由，也不记录日志。
+	// 这是管理端的调试入口，和「渠道测试」一样只对已登录的管理员开放。
+	if strings.TrimSpace(req.BaseURL) != "" {
+		s.chatDirect(w, r, body, stream, req.BaseURL, req.APIKey)
+		return
+	}
 
 	source := store.Token{ID: "playground", Name: "在线聊天"}
 	relayReq := &relay.Request{

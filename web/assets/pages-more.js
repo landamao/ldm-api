@@ -853,25 +853,43 @@
       const all = await State.loadModels(true);
       // 自定义内容返回不依赖路由，即使没有可用渠道也能在在线聊天里选择。
       const usable = all.filter((m) => m.enabled && (m.channel_ready || m.status === 'custom_content'));
+      // 「临时测试」不是一个真实模型：选中后直接请求临时填写的上游，
+      // 不查渠道和模型配置，后端也不会写调用日志。
+      const TEST_MODEL_ID = '__test__';
 
       actions.innerHTML = `<button class="btn" id="chat-reload">${icon('refresh', 14)}刷新模型</button>`;
       actions.querySelector('#chat-reload').onclick = () => window.LDM.navigate();
 
-      if (!usable.length) {
-        root.innerHTML = `<div class="card">${emptyState(
-          '还没有可用的模型',
-          '先到「渠道管理」配置上游服务商，再到「模型管理」把模型添加进来，就能在这里对话了。',
-          `<button class="btn btn--primary" id="go-models">${icon('plus', 15)}去添加模型</button>`,
-          'chat'
-        )}</div>`;
-        root.querySelector('#go-models').onclick = () => { location.hash = '#/models'; };
-        return;
-      }
-
+      // 没有可用模型时也进入页面：临时测试不需要任何渠道或模型配置。
       const preset = window.LDM.routeParam('model') || chatStore.model || loadChatModel();
-      const initial = usable.some((m) => m.id === preset) ? preset : usable[0].id;
+      const initial = preset === TEST_MODEL_ID
+        ? TEST_MODEL_ID
+        : (usable.some((m) => m.id === preset) ? preset : (usable.length ? usable[0].id : TEST_MODEL_ID));
       chatStore.model = initial;
       persistChatModel(initial);
+
+      // 临时测试的地址与模型记在本地，Key 只放 sessionStorage：
+      // 关掉标签页就清掉，避免长期留在浏览器里。
+      const TEST_STORE_KEY = 'ldmapi.chat.test';
+      const TEST_KEY_STORE = 'ldmapi.chat.test.key';
+      const testCfg = { url: '', key: '', model: '' };
+      try {
+        const saved = JSON.parse(localStorage.getItem(TEST_STORE_KEY) || 'null');
+        if (saved && typeof saved === 'object') {
+          if (typeof saved.url === 'string') testCfg.url = saved.url;
+          if (typeof saved.model === 'string') testCfg.model = saved.model;
+        }
+        testCfg.key = sessionStorage.getItem(TEST_KEY_STORE) || '';
+      } catch (e) { /* 存储不可用时使用空配置 */ }
+      const persistTestCfg = () => {
+        try {
+          localStorage.setItem(TEST_STORE_KEY, JSON.stringify({ url: testCfg.url, model: testCfg.model }));
+        } catch (e) { /* 忽略配额错误 */ }
+        try {
+          if (testCfg.key) sessionStorage.setItem(TEST_KEY_STORE, testCfg.key);
+          else sessionStorage.removeItem(TEST_KEY_STORE);
+        } catch (e) { /* 忽略配额错误 */ }
+      };
 
       // 采样参数：每一项都能单独开关，关闭后不会出现在请求体里。
       // 默认值与 NewAPI 保持一致，减少迁移时的落差。
@@ -944,14 +962,36 @@
                     <label class="chat-field__label" for="chat-model">模型</label>
                     <select class="select" id="chat-model">
                       ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
+                      <option value="${TEST_MODEL_ID}"${initial === TEST_MODEL_ID ? ' selected' : ''}>临时测试（直连上游）</option>
                     </select>
-                    <div class="chat-model-meta">
+                    <div class="chat-model-meta" id="chat-model-meta">
                       <span class="badge badge--pink" id="chat-kind"></span>
                       <span class="chat-route-row">
                         <span class="muted fs-12 chat-route-text" id="chat-route"></span>
                         <button class="btn btn--ghost btn--icon btn--sm chat-route-toggle" id="chat-route-toggle" title="展开" aria-label="展开" aria-expanded="false" hidden>${icon('chevron', 12)}</button>
                       </span>
                     </div>
+                  </div>
+                  <div class="chat-field chat-test" id="chat-test-panel" hidden>
+                    <div class="chat-field__head">
+                      <div class="chat-field__label">临时测试</div>
+                      <span class="badge badge--pink">不记录日志</span>
+                    </div>
+                    <input class="input input--sm" id="chat-test-url" value="${esc(testCfg.url)}" placeholder="API 地址，例如 https://api.openai.com/v1" autocomplete="off" spellcheck="false">
+                    <div class="chat-test__key">
+                      <input class="input input--sm mono key-field key-masked" id="chat-test-key" value="${esc(testCfg.key)}" placeholder="API Key（本地模型可留空）" autocomplete="off" spellcheck="false" name="ldm-upstream-credential" data-1p-ignore data-lpignore="true">
+                      <button class="btn btn--ghost btn--icon btn--sm" id="chat-test-eye" type="button" title="显示 Key">${icon('eye', 13)}</button>
+                    </div>
+                    <div class="chat-test__row">
+                      <button class="btn btn--sm" id="chat-test-fetch" type="button">${icon('refresh', 12)}获取模型</button>
+                      <span class="muted fs-12 chat-test__status" id="chat-test-status"></span>
+                    </div>
+                    <div class="chat-test__model">
+                      <input class="input input--sm" id="chat-test-model" list="chat-test-models" value="${esc(testCfg.model)}" placeholder="选择或手动填写模型 ID" autocomplete="off" spellcheck="false">
+                      <button class="btn btn--sm" id="chat-test-pick" type="button" hidden>选择</button>
+                    </div>
+                    <datalist id="chat-test-models"></datalist>
+                    <div class="muted fs-12" id="chat-test-hint">临时直连上游（OpenAI 兼容），不经过渠道和模型配置，也不写入调用日志。地址与模型保存在本机，Key 只在当前标签页有效。</div>
                   </div>
                   <div class="chat-field">
                     <div class="chat-field__label">生成</div>
@@ -991,6 +1031,7 @@
                 <button class="btn btn--ghost btn--icon" id="chat-side-toggle" title="展开设置" aria-label="展开设置">${icon('settings', 16)}</button>
                 <select class="select chat-mobile-bar__model" id="chat-mobile-model" aria-label="模型">
                   ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
+                  <option value="${TEST_MODEL_ID}"${initial === TEST_MODEL_ID ? ' selected' : ''}>临时测试（直连上游）</option>
                 </select>
                 ${switchEl(true, '流式', 'id="chat-stream-top" title="流式输出"')}
               </div>
@@ -1019,6 +1060,16 @@
       const modelSel = root.querySelector('#chat-model');
       const kindEl = root.querySelector('#chat-kind');
       const modelMeta = root.querySelector('.chat-model-meta');
+      const testPanel = root.querySelector('#chat-test-panel');
+      const testUrlInput = root.querySelector('#chat-test-url');
+      const testKeyInput = root.querySelector('#chat-test-key');
+      const testModelInput = root.querySelector('#chat-test-model');
+      const testModelsList = root.querySelector('#chat-test-models');
+      const testPickBtn = root.querySelector('#chat-test-pick');
+      const testFetchBtn = root.querySelector('#chat-test-fetch');
+      const testStatus = root.querySelector('#chat-test-status');
+      const testHint = root.querySelector('#chat-test-hint');
+      const testEye = root.querySelector('#chat-test-eye');
       const routeEl = root.querySelector('#chat-route');
       const routeToggle = root.querySelector('#chat-route-toggle');
       const log = root.querySelector('#chat-log');
@@ -1138,7 +1189,40 @@
         if (localStorage.getItem(SIDE_KEY) === '0') layout.classList.add('is-settings-collapsed');
       } catch (e) { /* 存储不可用时保持展开 */ }
 
-      const currentModel = () => usable.find((m) => m.id === modelSel.value) || usable[0];
+      const isTestMode = () => modelSel.value === TEST_MODEL_ID;
+      const testModelID = () => (testModelInput.value || testCfg.model || '').trim();
+      // 发送时直接读输入框，避免用户粘贴后立刻点发送时拿到旧值
+      const testParams = () => (isTestMode() ? {
+        base_url: testUrlInput.value.trim(),
+        api_key: testKeyInput.value.trim(),
+      } : {});
+      const ensureTestReady = () => {
+        if (!isTestMode()) return true;
+        if (!testUrlInput.value.trim()) {
+          Toast.error('请填写临时测试的 API 地址');
+          testUrlInput.focus();
+          return false;
+        }
+        return true;
+      };
+      const ensureTestModel = () => {
+        if (isTestMode() && !testModelID()) {
+          Toast.error('请填写临时测试的模型 ID');
+          testModelInput.focus();
+          return false;
+        }
+        return true;
+      };
+
+      const currentModel = () => {
+        if (isTestMode()) {
+          return {
+            id: testModelID() || '（未填写模型）',
+            provider_icon: '', type: 'test', channel_id: '', channel_name: '',
+          };
+        }
+        return usable.find((m) => m.id === modelSel.value) || usable[0] || { id: '', provider_icon: '', type: '' };
+      };
 
       let routeExpanded = false;
       const setRouteExpanded = (on) => {
@@ -1173,6 +1257,16 @@
       };
 
       const refreshMeta = () => {
+        const test = isTestMode();
+        testPanel.hidden = !test;
+        modelMeta.hidden = test;
+        if (test) {
+          mobileModelSel.value = TEST_MODEL_ID;
+          testHint.textContent = usable.length
+            ? '临时直连上游（OpenAI 兼容），不经过渠道和模型配置，也不写入调用日志。地址与模型保存在本机，Key 只在当前标签页有效。'
+            : '当前没有可用的渠道模型，已切换到临时测试（OpenAI 兼容）。地址与模型保存在本机，Key 只在当前标签页有效，不写入调用日志。';
+          return;
+        }
         const m = currentModel();
         const isCustom = m.type === 'custom';
         kindEl.textContent = isCustom ? '自定义模型' : '渠道模型';
@@ -1680,7 +1774,13 @@
         // 后台请求还在跑：重建一个气泡，把流重新接上来
         const run = chatStore.run;
         if (run) {
-          if (usable.some((m) => m.id === run.sentModel.id)) {
+          if (run.sentModel.type === 'test') {
+            chatStore.model = TEST_MODEL_ID;
+            persistChatModel(TEST_MODEL_ID);
+            modelSel.value = TEST_MODEL_ID;
+            mobileModelSel.value = TEST_MODEL_ID;
+            refreshMeta();
+          } else if (usable.some((m) => m.id === run.sentModel.id)) {
             chatStore.model = run.sentModel.id;
             persistChatModel(run.sentModel.id);
             modelSel.value = run.sentModel.id;
@@ -1715,6 +1815,7 @@
         customEditor.disabled = busy;
         pickImage.disabled = busy || customMode;
         pickFile.disabled = busy || customMode;
+        [testUrlInput, testKeyInput, testModelInput, testFetchBtn, testPickBtn].forEach((el) => { el.disabled = busy; });
         log.querySelectorAll('[data-retry], [data-delete]').forEach((b) => { b.disabled = busy; });
       };
 
@@ -2136,13 +2237,14 @@
 
         try {
           const payload = customBody
-            ? { raw: customBody }
+            ? { raw: customBody, ...testParams() }
             : {
                 model: sentModel.id,
                 // 只发正文，思考内容和错误提示都不参与上下文
                 messages: run.messages,
                 stream: streaming,
                 ...collectParams(),
+                ...testParams(),
               };
           const res = await fetch('/api/chat', {
             method: 'POST',
@@ -2350,7 +2452,13 @@
           entry: null, discarded: false, unloadSaved: false,
         };
         chatStore.run = run;
-        if (usable.some((m) => m.id === sentModel.id)) {
+        if (sentModel.type === 'test') {
+          chatStore.model = TEST_MODEL_ID;
+          persistChatModel(TEST_MODEL_ID);
+          modelSel.value = TEST_MODEL_ID;
+          mobileModelSel.value = TEST_MODEL_ID;
+          refreshMeta();
+        } else if (usable.some((m) => m.id === sentModel.id)) {
           chatStore.model = sentModel.id;
           persistChatModel(sentModel.id);
           modelSel.value = sentModel.id;
@@ -2367,6 +2475,7 @@
 
       const retryAssistant = async (entry, msgEl) => {
         if (sending || chatStore.run) return;
+        if (!ensureTestReady()) return;
         if (customMode) {
           if (!entry.custom) {
             Toast.info('自定义请求体模式下请直接编辑 JSON 后发送');
@@ -2384,6 +2493,7 @@
         }
         const idx = history.indexOf(entry);
         if (idx < 0) return;
+        if (!ensureTestModel()) return;
         // 用当前选中的模型重试，而不是这条消息生成时的模型
         const sentModel = currentModel();
         // 重试点之后的消息全部丢弃，保证上下文连续
@@ -2402,6 +2512,7 @@
         }
         const v = text.value.trim();
         if ((!v && !staged.length) || sending || chatStore.run) return;
+        if (!ensureTestReady() || !ensureTestModel()) return;
         // 先固定本轮使用的模型，避免流式过程中切换模型导致头像/统计错位
         const sentModel = currentModel();
         const content = buildContent(v);
@@ -2419,6 +2530,7 @@
       // 自定义模式：编辑器里的 JSON 是唯一事实来源；输入框有文字时追加成一条 user 消息
       const doSendCustom = async (retry) => {
         if (sending || chatStore.run) return;
+        if (!ensureTestReady()) return;
         let payload;
         try {
           payload = JSON.parse(customEditor.value);
@@ -2444,8 +2556,10 @@
           customEditor.value = JSON.stringify(payload, null, 2);
           updateCustomHint();
         }
-        const sentModel = usable.find((m) => m.id === payload.model)
-          || { id: payload.model, provider_icon: '', type: 'custom' };
+        const sentModel = isTestMode()
+          ? { id: payload.model, provider_icon: '', type: 'test' }
+          : (usable.find((m) => m.id === payload.model)
+            || { id: payload.model, provider_icon: '', type: 'custom' });
         const shown = typed || lastUserContent(payload.messages) || '（自定义请求体）';
         text.value = '';
         text.style.height = 'auto';
@@ -2523,6 +2637,140 @@
         refreshMeta();
         focusText();
       };
+
+      // ---------- 临时测试 ----------
+
+      testUrlInput.addEventListener('input', () => {
+        testCfg.url = testUrlInput.value.trim();
+        persistTestCfg();
+      });
+      testKeyInput.addEventListener('input', () => {
+        testCfg.key = testKeyInput.value;
+        persistTestCfg();
+      });
+      testModelInput.addEventListener('input', () => {
+        testCfg.model = testModelInput.value.trim();
+        persistTestCfg();
+      });
+      testEye.onclick = () => {
+        // 和渠道的 Key 输入一致：用文本遮罩隐藏，不用 password 类型，
+        // 避免浏览器把它当成登录密码并提示保存。
+        const masked = testKeyInput.classList.toggle('key-masked');
+        testEye.title = masked ? '显示 Key' : '隐藏 Key';
+      };
+
+      // 获取到模型后弹窗单选，确认后直接填入模型输入框。
+      let testModelChoices = [];
+      const openTestModelPicker = (models) => {
+        const list = Array.from(new Set(models || []));
+        if (!list.length) return;
+        const current = testModelInput.value.trim();
+        let selected = list.includes(current) ? current : list[0];
+        openModal({
+          title: '选择模型',
+          desc: `上游返回 ${list.length} 个模型，选择一个用于临时测试。`,
+          body: `
+            <div class="search mb-12">
+              <span class="search__icon">${icon('search', 15)}</span>
+              <input class="input" id="test-model-search" placeholder="搜索模型名…" autocomplete="off">
+            </div>
+            <div class="pick-list pick-list--flat" id="test-model-list">
+              ${list.map((m) => `<label class="pick-item" data-search="${esc(m.toLowerCase())}">
+                <input type="radio" name="test-model-choice" value="${esc(m)}"${m === selected ? ' checked' : ''}>
+                <span class="pick-item__name">${esc(m)}</span>
+              </label>`).join('')}
+            </div>
+            <div class="disc-empty" id="test-model-empty" style="display:none">没有匹配的模型</div>`,
+          size: 'lg',
+          footer: `<div class="spacer"></div>
+            <button class="btn" data-close>取消</button>
+            <button class="btn btn--primary" data-act="use">使用选中模型</button>`,
+          onMount(mo) {
+            const search = mo.body.querySelector('#test-model-search');
+            const empty = mo.body.querySelector('#test-model-empty');
+            const use = () => {
+              testModelInput.value = selected;
+              testCfg.model = selected;
+              persistTestCfg();
+              mo.close();
+              Toast.success('已选择模型 ' + selected);
+            };
+            mo.body.querySelectorAll('input[name="test-model-choice"]').forEach((input) => {
+              input.addEventListener('change', () => {
+                if (input.checked) selected = input.value;
+              });
+            });
+            // 双击模型名直接使用，少点一次确认
+            mo.body.querySelectorAll('.pick-item').forEach((item) => {
+              item.addEventListener('dblclick', () => {
+                const input = item.querySelector('input');
+                if (!input) return;
+                selected = input.value;
+                use();
+              });
+            });
+            search.addEventListener('input', () => {
+              const q = search.value.trim().toLowerCase();
+              let visible = 0;
+              mo.body.querySelectorAll('.pick-item').forEach((item) => {
+                const hit = !q || item.dataset.search.includes(q);
+                item.style.display = hit ? '' : 'none';
+                if (hit) visible += 1;
+              });
+              empty.style.display = visible ? 'none' : '';
+            });
+            mo.foot.querySelector('[data-act="use"]').onclick = use;
+          },
+        });
+      };
+
+      // 复用渠道的「探测」接口拉模型列表：同样不需要先保存渠道。
+      const fetchTestModels = async () => {
+        let url = testUrlInput.value.trim();
+        if (!url) {
+          Toast.error('请先填写 API 地址');
+          testUrlInput.focus();
+          return;
+        }
+        if (!url.includes('://')) url = 'https://' + url;
+        // 用户可能直接填了完整端点，拉列表时回到基础地址
+        const base = url.replace(/\/chat\/completions\/?$/i, '').replace(/\/+$/, '');
+        // 地址末尾已经带版本段（/v1、/api/v3、/v1beta）时，不再自动补 /v1
+        const appendV1 = !/\/v\d+[a-z0-9]*$/i.test(base);
+        testFetchBtn.disabled = true;
+        testStatus.textContent = '获取中…';
+        try {
+          const j = await API.post('/api/channels/discover', {
+            type: 'openai',
+            base_url: base,
+            api_key: testKeyInput.value.trim(),
+            append_v1: appendV1,
+          });
+          const models = (j && j.models) || [];
+          testModelChoices = models;
+          testPickBtn.hidden = !models.length;
+          testModelsList.innerHTML = models.map((id) => `<option value="${esc(id)}"></option>`).join('');
+          testStatus.textContent = models.length ? `上游返回 ${models.length} 个模型` : '上游没有返回模型，请手动填写';
+          if (models.length) {
+            Toast.success(`已获取 ${models.length} 个模型`);
+            // 拉取成功后直接弹窗选择，选中的模型写入输入框
+            openTestModelPicker(models);
+          } else {
+            Toast.info('上游没有返回模型，请手动填写模型 ID');
+          }
+        } catch (e) {
+          testStatus.textContent = '';
+          Toast.error(e.message);
+        } finally {
+          testFetchBtn.disabled = sending;
+        }
+      };
+      testFetchBtn.onclick = fetchTestModels;
+      testPickBtn.onclick = () => {
+        if (testModelChoices.length) openTestModelPicker(testModelChoices);
+        else fetchTestModels();
+      };
+
       sendBtn.onclick = () => {
         if (sending) stopStream();
         else doSend();
