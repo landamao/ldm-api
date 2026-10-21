@@ -500,9 +500,12 @@
             <div class="model-card__caps">
               ${m.status === 'custom_content' ? badge('始终返回内容', 'green') : ''}
               ${m.caps && m.caps.context_length ? badge('上下文 ' + fmtContext(m.caps.context_length), 'gray') : ''}
-              ${m.caps && m.caps.tool_calling === true ? badge('工具调用', 'green') : ''}
-              ${m.caps && m.caps.thinking === true ? badge('思考', 'violet') : ''}
-              ${m.caps && m.caps.vision === true ? badge('图片', 'pink') : ''}
+              ${m.caps && m.caps.tool_calling === true ? badge('工具调用', 'green')
+                : m.caps && m.caps.tool_calling === false ? badge('不支持工具', 'gray') : ''}
+              ${m.caps && m.caps.thinking === true ? badge('思考', 'violet')
+                : m.caps && m.caps.thinking === false ? badge('不支持思考', 'gray') : ''}
+              ${m.caps && m.caps.vision === true ? badge('图片', 'pink')
+                : m.caps && m.caps.vision === false ? badge('不支持图片', 'gray') : ''}
               ${(m.tags || []).map((t) => badge(t, 'gray')).join('')}
             </div>
             ${isCustom && m.routes && m.routes.length ? `<div class="fs-12 muted truncate" style="font-family:var(--mono)" title="${esc(m.routes.map((r) => r.model_id).join(' → '))}">
