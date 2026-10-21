@@ -78,22 +78,25 @@ func clearCooldowns(keys []string) {
 	}
 }
 
-// ClearAllCooldowns 清空内存中所有路由与 Key 的失败冷却，返回被清除的条目数。
+// ClearAllCooldowns 清空内存中所有路由与 Key 的失败冷却及亲和记录，返回被清除的冷却条目数。
 func ClearAllCooldowns() int {
 	routeStates.Lock()
 	n := len(routeStates.failedAt)
 	clear(routeStates.failedAt)
+	clear(routeStates.lastRoute)
 	routeStates.Unlock()
 
 	keyStates.Lock()
 	n += len(keyStates.failedAt)
 	clear(keyStates.failedAt)
+	clear(keyStates.lastKey)
 	keyStates.Unlock()
 	return n
 }
 
 // ClearCooldownsForModel 清掉该模型路由涉及的失败冷却，返回清除条数。
 // 冷却按「渠道ID/上游模型」全局共享，因此会同时解除其他引用同一条路由的模型的冷却。
+// 该模型的亲和记录也一并清掉：否则刚解除冷却的条目会因上次成功记录被优先命中。
 func ClearCooldownsForModel(m store.Model) int {
 	var keys []string
 	if m.Type == store.ModelTypeChannel {
@@ -112,10 +115,12 @@ func ClearCooldownsForModel(m store.Model) int {
 			n++
 		}
 	}
+	delete(routeStates.lastRoute, m.ID)
 	return n
 }
 
 // ClearCooldownsForChannel 清掉某个渠道下所有上游模型与 Key 的冷却，返回清除条数。
+// 指向该渠道的模型亲和与 Key 亲和也一并清掉，避免下次请求又优先回到刚解除冷却的渠道。
 func ClearCooldownsForChannel(channelID string) int {
 	prefix := channelID + "/"
 	routeStates.Lock()
@@ -124,6 +129,11 @@ func ClearCooldownsForChannel(channelID string) int {
 		if strings.HasPrefix(k, prefix) {
 			delete(routeStates.failedAt, k)
 			n++
+		}
+	}
+	for modelID, k := range routeStates.lastRoute {
+		if strings.HasPrefix(k, prefix) {
+			delete(routeStates.lastRoute, modelID)
 		}
 	}
 	routeStates.Unlock()

@@ -204,6 +204,7 @@
     file: '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/>',
     paperclip: '<path d="M21.4 11.6l-8.5 8.5a6 6 0 01-8.5-8.5l8.5-8.5a4 4 0 015.7 5.7l-8.5 8.5a2 2 0 01-2.8-2.8l7.8-7.8"/>',
     code: '<path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/>',
+    expand: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
   };
 
   function icon(name, size) {
@@ -925,6 +926,128 @@
     });
   }
 
+  // ---------- 多行文本域扩大编辑 ----------
+  // 给所有 textarea 右上角加一个扩大按钮，点击后在独立大窗口中编辑。
+  // 页面和弹窗里的文本域都是动态渲染的，这里用 MutationObserver 自动补齐。
+  const EXPAND_EDITOR_ID = 'ldm-expand-editor';
+
+  // 优先用字段标签作为大窗口标题，避免只显示一个笼统的「编辑文本」。
+  function textareaExpandTitle(ta) {
+    const field = ta.closest('.field');
+    const label = field && field.querySelector('.field__label');
+    if (label) {
+      const clone = label.cloneNode(true);
+      clone.querySelectorAll('.field__help, .req, button, .badge').forEach((el) => el.remove());
+      const text = clone.textContent.replace(/\s+/g, ' ').trim();
+      if (text) return text;
+    }
+    return ta.getAttribute('aria-label') || '编辑文本';
+  }
+
+  function openExpandedEditor(ta) {
+    if (!ta || ta.disabled) return;
+    const readOnly = ta.readOnly;
+    openModal({
+      title: textareaExpandTitle(ta),
+      desc: readOnly ? '只读内容，可放大查看和复制。' : '在更大的窗口中编辑，点击「确定」写回原输入框（Ctrl + Enter 也可以确定）。',
+      size: 'xl',
+      body: `<textarea class="textarea textarea-expand__editor" id="${EXPAND_EDITOR_ID}"
+                data-no-expand="1" spellcheck="false" placeholder="${esc(ta.placeholder || '')}"></textarea>`,
+      footer: `<div class="spacer"></div>
+        <button class="btn" data-act="cancel">${readOnly ? '关闭' : '取消'}</button>
+        ${readOnly ? '' : '<button class="btn btn--primary" data-act="ok">确定</button>'}`,
+      onMount(mo) {
+        const ed = mo.body.querySelector('#' + EXPAND_EDITOR_ID);
+        ed.value = ta.value;
+        ed.readOnly = readOnly;
+        ed.spellcheck = ta.spellcheck;
+        // 跟随原输入框的字体：JSON / 代码类文本域保持等宽字体。
+        const cs = getComputedStyle(ta);
+        ed.style.fontFamily = cs.fontFamily;
+        ed.style.fontSize = cs.fontSize;
+        ed.style.lineHeight = cs.lineHeight;
+        const save = () => {
+          if (!readOnly && ed.value !== ta.value) {
+            ta.value = ed.value;
+            // 触发原输入框的监听，保持自动高度、校验和联动逻辑正常工作。
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            ta.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          mo.close();
+        };
+        mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
+        const ok = mo.foot.querySelector('[data-act=ok]');
+        if (ok) ok.onclick = save;
+        ed.addEventListener('keydown', (e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            save();
+          }
+        });
+        setTimeout(() => {
+          ed.focus();
+          ed.setSelectionRange(ed.value.length, ed.value.length);
+        }, 50);
+      },
+    });
+  }
+
+  function enhanceTextarea(ta) {
+    if (!ta || !ta.isConnected) return;
+    if (ta.dataset.expandReady === '1' || ta.dataset.noExpand === '1') return;
+    // 已经被包过一次（observer 可能再次收到移动后的节点）。
+    if (ta.parentElement && ta.parentElement.classList.contains('textarea-expand')) {
+      ta.dataset.expandReady = '1';
+      return;
+    }
+    ta.dataset.expandReady = '1';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'textarea-expand';
+    ta.parentNode.insertBefore(wrap, ta);
+    wrap.appendChild(ta);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'textarea-expand__btn';
+    btn.title = '扩大编辑';
+    btn.setAttribute('aria-label', '扩大编辑');
+    btn.innerHTML = icon('expand', 13);
+    wrap.appendChild(btn);
+
+    // 原输入框被禁用时（例如自定义内容未开启），按钮一起隐藏。
+    const sync = () => {
+      btn.disabled = ta.disabled;
+      btn.hidden = ta.disabled;
+    };
+    sync();
+    new MutationObserver(sync).observe(ta, { attributes: true, attributeFilter: ['disabled'] });
+
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openExpandedEditor(ta);
+    });
+  }
+
+  function enhanceTextareas(root) {
+    if (!root || (root.nodeType !== 1 && root.nodeType !== 11)) return;
+    if (root.nodeType === 1 && root.tagName === 'TEXTAREA') enhanceTextarea(root);
+    if (root.querySelectorAll) root.querySelectorAll('textarea').forEach(enhanceTextarea);
+  }
+
+  function initTextareaExpand() {
+    enhanceTextareas(document.body);
+    const observer = new MutationObserver((records) => {
+      for (const rec of records) {
+        rec.addedNodes.forEach((node) => {
+          if (node.nodeType === 1 || node.nodeType === 11) enhanceTextareas(node);
+        });
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
   // ---------- 复用的 UI 片段 ----------
   function badge(text, tone, withDot) {
     return `<span class="badge${tone ? ' badge--' + tone : ''}">${withDot ? '<span class="dot"></span>' : ''}${esc(text)}</span>`;
@@ -1306,6 +1429,8 @@
   };
 
   Theme.apply(Theme.get());
+  if (document.body) initTextareaExpand();
+  else window.addEventListener('DOMContentLoaded', initTextareaExpand);
   if (document.readyState === 'loading') {
     window.addEventListener('DOMContentLoaded', boot);
   } else {

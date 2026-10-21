@@ -39,6 +39,11 @@
     <div style="margin-bottom:8px"><b>只开总开关</b>：请求最终失败时（上游报错、超时、无可用路由等），用这里配置的错误替代原始错误；成功的请求不受影响。</div>
     <div style="margin-bottom:8px"><b>始终返回错误</b>：总开关开启后才能使用。开启后不请求上游，所有调用都直接返回这里配置的错误。</div>
     <div>状态码支持 <code>400–599</code>；错误详情留空时返回默认文案。流式响应一旦开始输出，中途失败无法改写已经发出的内容。</div>`;
+  const SYSTEM_PROMPT_HELP_TEXT = '开启后，请求里自带的系统提示词会被全部移除，只把这里填写的内容作为唯一的系统提示词放在最前面。支持 OpenAI 对话的 system/developer 消息、Anthropic 原生 system 字段和 Responses 的 instructions。';
+  const SYSTEM_PROMPT_HELP_HTML = `
+    <div style="margin-bottom:8px">开启后，网关会在转发前删除请求里自带的全部系统提示词：OpenAI 对话的 <code>system</code> / <code>developer</code> 消息、Anthropic 原生的顶层 <code>system</code> 字段、Responses API 的 <code>instructions</code> 以及 input 里的系统条目。</div>
+    <div style="margin-bottom:8px">然后只把这里填写的内容作为唯一的系统提示词放在最前面，调用方无法再用自己的系统提示词改变模型设定。</div>
+    <div>仅对对话类请求生效；提示词会按原样发送给上游，不做变量替换。</div>`;
 
   // 模型编辑弹窗里的字段说明同样收进问号，避免弹窗被大段文字占满。
   const CAPS_HELP_TEXT = '这些参数只用于模型广场和模型列表的展示，网关不会根据它们校验、裁剪或改写请求；留空表示不声明。';
@@ -239,7 +244,7 @@
       actions.querySelector('#btn-clear-cooldowns').onclick = async () => {
         const ok = await confirmDialog({
           title: '清除所有冷却',
-          message: `将清空内存中所有路由的失败冷却状态，冷却中的条目会立即恢复可用。<br><br>
+          message: `将清空内存中所有路由的失败冷却状态与亲和记录，冷却中的条目会立即恢复可用。<br><br>
             只影响当前进程的运行时状态，不会修改任何配置。`,
           confirmText: '清除冷却',
         });
@@ -1646,7 +1651,7 @@
       actions.querySelector('#btn-clear-cooldowns').onclick = async () => {
         const ok = await confirmDialog({
           title: '清除所有冷却',
-          message: `将清空内存中所有路由的失败冷却状态，冷却中的条目会立即恢复可用。<br><br>
+          message: `将清空内存中所有路由的失败冷却状态与亲和记录，冷却中的条目会立即恢复可用。<br><br>
             只影响当前进程的运行时状态，不会修改模型配置。`,
           confirmText: '清除冷却',
         });
@@ -2967,6 +2972,21 @@
           </div>
           <div class="field">
             <div class="field__head">
+              <label class="field__label">系统提示词注入
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="m-sysprompt-help" title="${esc(SYSTEM_PROMPT_HELP_TEXT)}" aria-label="查看系统提示词注入机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="m-sysprompt-enabled" ${m.system_prompt_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div id="m-sysprompt-detail" style="${m.system_prompt_enabled ? '' : 'display:none'}">
+              <textarea class="textarea" id="m-sysprompt-text" spellcheck="false"
+                        style="min-height:96px;font-family:inherit;font-size:13px"
+                        placeholder="例如：你是懒大猫，回答时保持简洁、友善">${esc(m.system_prompt || '')}</textarea>
+              <div class="field__hint">开启后请求里自带的系统提示词会被全部移除，只用这里的内容作为唯一的系统提示词。</div>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field__head">
               <label class="field__label">自定义内容返回
                 <button type="button" class="badge badge--blue badge--click field__help"
                         id="m-content-help" title="${esc(CUSTOM_CONTENT_HELP_TEXT)}" aria-label="查看自定义内容返回机制">?</button>
@@ -3043,7 +3063,10 @@
         const errorAlwaysEl = mo.body.querySelector('#m-error-always');
         const errorStatusEl = mo.body.querySelector('#m-error-status');
         const errorMessageEl = mo.body.querySelector('#m-error-message');
-        const syncErrorFields = () => {
+        const sysPromptEnabledEl = mo.body.querySelector('#m-sysprompt-enabled');
+        const sysPromptDetailEl = mo.body.querySelector('#m-sysprompt-detail');
+        const sysPromptTextEl = mo.body.querySelector('#m-sysprompt-text');
+        const syncAdvancedFields = () => {
           const contentOn = contentEnabledEl.checked;
           // 开启内容返回时自动关闭自定义错误，避免两套配置同时生效。
           if (contentOn) {
@@ -3061,9 +3084,12 @@
           contentFirstByteEl.disabled = !contentOn;
           contentSpeedEl.disabled = !contentOn;
           contentLatencyEl.disabled = !contentOn;
+          const sysPromptOn = sysPromptEnabledEl.checked;
+          sysPromptTextEl.disabled = !sysPromptOn;
           // 详细配置只在开启时显示，关闭时只保留总开关。
           contentDetailEl.style.display = contentOn ? '' : 'none';
           errorDetailEl.style.display = errorActive ? '' : 'none';
+          sysPromptDetailEl.style.display = sysPromptOn ? '' : 'none';
           // 开关本身用 is-disabled 变灰，避免看起来还能点。
           const errorSwitch = errorEnabledEl.closest('.switch');
           if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
@@ -3071,9 +3097,10 @@
           if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
           if (!on) errorAlwaysEl.checked = false;
         };
-        contentEnabledEl.onchange = syncErrorFields;
-        errorEnabledEl.onchange = syncErrorFields;
-        syncErrorFields();
+        contentEnabledEl.onchange = syncAdvancedFields;
+        errorEnabledEl.onchange = syncAdvancedFields;
+        sysPromptEnabledEl.onchange = syncAdvancedFields;
+        syncAdvancedFields();
         mo.body.querySelector('#m-content-help').onclick = () => {
           openHelpModal('自定义内容返回', CUSTOM_CONTENT_HELP_HTML);
         };
@@ -3082,6 +3109,9 @@
         };
         mo.body.querySelector('#m-no-retry-help').onclick = () => {
           openHelpModal('不可重试状态码', NO_RETRY_STATUS_HELP_HTML);
+        };
+        mo.body.querySelector('#m-sysprompt-help').onclick = () => {
+          openHelpModal('系统提示词注入', SYSTEM_PROMPT_HELP_HTML);
         };
         mo.body.querySelector('#m-no-retry-template').onclick = () => {
           const input = mo.body.querySelector('#m-no-retry');
@@ -3121,6 +3151,12 @@
               return;
             }
           }
+          const systemPromptOn = mo.body.querySelector('#m-sysprompt-enabled').checked;
+          const systemPrompt = mo.body.querySelector('#m-sysprompt-text').value.trim();
+          if (systemPromptOn && !systemPrompt) {
+            Toast.warn('开启系统提示词注入时请填写提示词内容');
+            return;
+          }
           const btn = mo.foot.querySelector('[data-act=save]');
           btn.disabled = true;
           btn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';
@@ -3146,6 +3182,8 @@
               error_always: errorAlways,
               error_status: errorStatus,
               error_message: mo.body.querySelector('#m-error-message').value.trim(),
+              system_prompt_enabled: systemPromptOn,
+              system_prompt: systemPrompt,
             });
             mo.close();
             Toast.success('模型配置已保存');
@@ -3388,6 +3426,7 @@
       caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
       no_retry_status: '', content_enabled: false, content_text: '',
       error_enabled: false, error_always: false, error_status: 0, error_message: '',
+      system_prompt_enabled: false, system_prompt: '',
     };
     // 本地编辑态
     const draft = {
@@ -3468,6 +3507,21 @@
             <input class="input mono" id="cm-no-retry"
                    value="${esc(m.no_retry_status ?? '')}"
                    placeholder="${DEFAULT_NO_RETRY_STATUS}">
+          </div>
+          <div class="field">
+            <div class="field__head">
+              <label class="field__label">系统提示词注入
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="cm-sysprompt-help" title="${esc(SYSTEM_PROMPT_HELP_TEXT)}" aria-label="查看系统提示词注入机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="cm-sysprompt-enabled" ${m.system_prompt_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div id="cm-sysprompt-detail" style="${m.system_prompt_enabled ? '' : 'display:none'}">
+              <textarea class="textarea" id="cm-sysprompt-text" spellcheck="false"
+                        style="min-height:96px;font-family:inherit;font-size:13px"
+                        placeholder="例如：你是懒大猫，回答时保持简洁、友善">${esc(m.system_prompt || '')}</textarea>
+              <div class="field__hint">开启后请求里自带的系统提示词会被全部移除，只用这里的内容作为唯一的系统提示词。</div>
+            </div>
           </div>
           <div class="field">
             <div class="field__head">
@@ -3567,7 +3621,10 @@
         const errorAlwaysEl = mo.body.querySelector('#cm-error-always');
         const errorStatusEl = mo.body.querySelector('#cm-error-status');
         const errorMessageEl = mo.body.querySelector('#cm-error-message');
-        const syncErrorFields = () => {
+        const sysPromptEnabledEl = mo.body.querySelector('#cm-sysprompt-enabled');
+        const sysPromptDetailEl = mo.body.querySelector('#cm-sysprompt-detail');
+        const sysPromptTextEl = mo.body.querySelector('#cm-sysprompt-text');
+        const syncAdvancedFields = () => {
           const contentOn = contentEnabledEl.checked;
           // 开启内容返回时自动关闭自定义错误，避免两套配置同时生效。
           if (contentOn) {
@@ -3585,9 +3642,12 @@
           contentFirstByteEl.disabled = !contentOn;
           contentSpeedEl.disabled = !contentOn;
           contentLatencyEl.disabled = !contentOn;
+          const sysPromptOn = sysPromptEnabledEl.checked;
+          sysPromptTextEl.disabled = !sysPromptOn;
           // 详细配置只在开启时显示，关闭时只保留总开关。
           contentDetailEl.style.display = contentOn ? '' : 'none';
           errorDetailEl.style.display = errorActive ? '' : 'none';
+          sysPromptDetailEl.style.display = sysPromptOn ? '' : 'none';
           // 开关本身用 is-disabled 变灰，避免看起来还能点。
           const errorSwitch = errorEnabledEl.closest('.switch');
           if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
@@ -3595,9 +3655,10 @@
           if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
           if (!on) errorAlwaysEl.checked = false;
         };
-        contentEnabledEl.onchange = syncErrorFields;
-        errorEnabledEl.onchange = syncErrorFields;
-        syncErrorFields();
+        contentEnabledEl.onchange = syncAdvancedFields;
+        errorEnabledEl.onchange = syncAdvancedFields;
+        sysPromptEnabledEl.onchange = syncAdvancedFields;
+        syncAdvancedFields();
         mo.body.querySelector('#cm-sched-help').onclick = () => {
           openHelpModal('调度选项', SCHED_HELP_HTML);
         };
@@ -3609,6 +3670,9 @@
         };
         mo.body.querySelector('#cm-no-retry-help').onclick = () => {
           openHelpModal('不可重试状态码', NO_RETRY_STATUS_HELP_HTML);
+        };
+        mo.body.querySelector('#cm-sysprompt-help').onclick = () => {
+          openHelpModal('系统提示词注入', SYSTEM_PROMPT_HELP_HTML);
         };
         mo.body.querySelector('#cm-no-retry-template').onclick = () => {
           const input = mo.body.querySelector('#cm-no-retry');
@@ -4440,6 +4504,13 @@
             }
           }
 
+          const systemPromptOn = mo.body.querySelector('#cm-sysprompt-enabled').checked;
+          const systemPrompt = mo.body.querySelector('#cm-sysprompt-text').value.trim();
+          if (systemPromptOn && !systemPrompt) {
+            Toast.warn('开启系统提示词注入时请填写提示词内容');
+            return;
+          }
+
           const payload = {
             id: newID,
             type: 'custom',
@@ -4459,6 +4530,8 @@
             error_always: errorAlways,
             error_status: errorStatus,
             error_message: mo.body.querySelector('#cm-error-message').value.trim(),
+            system_prompt_enabled: systemPromptOn,
+            system_prompt: systemPrompt,
             timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#cm-timeout').value) || 300)),
             caps,
             enabled: mo.body.querySelector('#cm-enabled').checked,

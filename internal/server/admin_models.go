@@ -89,9 +89,11 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		errorEnabled := m.CustomErrorEnabled()
 		errorAlways := m.CustomErrorAlways()
 		contentEnabled := m.CustomContentEnabled()
+		systemPromptOn := m.SystemPromptEnabled()
 		v.ErrorEnabled = &errorEnabled
 		v.ErrorAlways = &errorAlways
 		v.ContentEnabled = &contentEnabled
+		v.SystemPromptOn = &systemPromptOn
 		if p, ok := providerByID[m.ProviderID]; ok {
 			v.ProviderName = p.Name
 			v.ProviderIcon = p.Icon
@@ -236,6 +238,8 @@ type modelRequest struct {
 	ContentFirstByteMs *int           `json:"content_first_byte_ms"`
 	ContentSpeed       *int           `json:"content_speed"`
 	ContentLatencyMs   *int           `json:"content_latency_ms"`
+	SystemPromptOn     *bool          `json:"system_prompt_enabled"`
+	SystemPrompt       *string        `json:"system_prompt"`
 	Timeout            *int           `json:"timeout"`
 }
 
@@ -492,6 +496,21 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	}
 	m.ErrorEnabled = &errorEnabled
 	m.ErrorAlways = &errorAlways
+
+	// 系统提示词注入：开启后请求里自带的系统提示词全部丢弃，
+	// 只用这里配置的内容作为唯一的系统提示词。
+	systemPromptOn := m.SystemPromptEnabled()
+	if req.SystemPromptOn != nil {
+		systemPromptOn = *req.SystemPromptOn
+	}
+	if req.SystemPrompt != nil {
+		m.SystemPrompt = strings.TrimSpace(*req.SystemPrompt)
+	}
+	if systemPromptOn && m.SystemPrompt == "" {
+		writeErr(w, http.StatusBadRequest, "开启系统提示词注入时请填写提示词内容")
+		return
+	}
+	m.SystemPromptOn = &systemPromptOn
 
 	if isNew {
 		if _, err := s.store.GetModel(m.ID); err == nil {

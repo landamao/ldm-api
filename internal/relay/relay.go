@@ -707,6 +707,11 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
 	}
+	// 系统提示词注入：开启后用模型配置的内容替换请求里自带的全部系统提示词，
+	// 让模型表现为自带人格设定。自定义内容/错误返回不请求上游，注入无副作用。
+	if resolved.Model.SystemPromptEnabled() {
+		applySystemPrompt(req, resolved.Model.SystemPrompt)
+	}
 	// 「自定义内容返回」优先级最高：开启后每次请求都直接返回配置的内容，
 	// 不解析路由、不请求上游，自定义错误返回也不再生效。
 	if cc, ok := customContentOf(resolved.Model); ok {

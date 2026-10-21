@@ -118,3 +118,20 @@ func TestModelCustomContentSwitch(t *testing.T) {
 		t.Error("关闭后不应生效")
 	}
 }
+
+func TestModelSystemPromptSwitch(t *testing.T) {
+	if (Model{}).SystemPromptEnabled() {
+		t.Error("未配置开关时应为关闭")
+	}
+	textOnly := Model{SystemPrompt: "你是懒大猫"}
+	if textOnly.SystemPromptEnabled() {
+		t.Error("只有提示词、没有开关时应视为关闭")
+	}
+	on, off := true, false
+	if !(Model{SystemPromptOn: &on}).SystemPromptEnabled() {
+		t.Error("开启后应生效")
+	}
+	if (Model{SystemPromptOn: &off}).SystemPromptEnabled() {
+		t.Error("关闭后不应生效")
+	}
+}

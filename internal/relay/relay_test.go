@@ -571,10 +571,25 @@ func TestCooldownZeroDisablesCooldown(t *testing.T) {
 }
 
 func TestClearAllCooldowns(t *testing.T) {
+	MarkSuccess("CLR-M", "CLR-A", "a")
+	MarkKeySuccess("CLR-K", "sk-clr")
 	MarkFailure("CLR-A", "a")
 	MarkFailure("CLR-B", "b")
 	if n := ClearAllCooldowns(); n < 2 {
 		t.Fatalf("应至少清除 2 条冷却，得到 %d", n)
+	}
+	// 亲和记录也应一并清掉，避免下次请求优先回到刚恢复的条目。
+	routeStates.Lock()
+	_, hasRoute := routeStates.lastRoute["CLR-M"]
+	routeStates.Unlock()
+	if hasRoute {
+		t.Fatal("清空冷却后模型亲和应一并清空")
+	}
+	keyStates.Lock()
+	_, hasKey := keyStates.lastKey["CLR-K"]
+	keyStates.Unlock()
+	if hasKey {
+		t.Fatal("清空冷却后 Key 亲和应一并清空")
 	}
 	if n := ClearAllCooldowns(); n != 0 {
 		t.Fatalf("冷却应已清空，仍剩 %d 条", n)
@@ -737,22 +752,51 @@ func TestPruneModelRoutes(t *testing.T) {
 func TestClearCooldownsScoped(t *testing.T) {
 	ClearAllCooldowns()
 	defer ClearAllCooldowns()
+	MarkSuccess("SC-M", "SC-A", "x")
+	MarkKeySuccess("SC-A", "sk-sc")
 	MarkFailure("SC-A", "x")
 	MarkFailure("SC-A", "y")
 	MarkFailure("SC-B", "z")
-	m := store.Model{Type: store.ModelTypeCustom, Routes: []store.Route{
+	m := store.Model{ID: "SC-M", Type: store.ModelTypeCustom, Routes: []store.Route{
 		{ChannelID: "SC-A", Upstream: "x"},
 		{ChannelID: "SC-B", Upstream: "z"},
 	}}
 	if n := ClearCooldownsForModel(m); n != 2 {
 		t.Fatalf("应按模型清掉 2 条冷却，得到 %d", n)
 	}
+	// 按模型清除只影响该模型的亲和，Key 亲和留给渠道级清除。
+	routeStates.Lock()
+	_, hasRoute := routeStates.lastRoute["SC-M"]
+	routeStates.Unlock()
+	if hasRoute {
+		t.Fatal("按模型清冷却后该模型的亲和应清空")
+	}
+	keyStates.Lock()
+	_, hasKey := keyStates.lastKey["SC-A"]
+	keyStates.Unlock()
+	if !hasKey {
+		t.Fatal("按模型清冷却不应清掉 Key 亲和")
+	}
+	// 另一个模型的亲和指向该渠道时，渠道级清除也要把它清掉。
+	MarkSuccess("SC-OTHER", "SC-A", "x")
 	if n := ClearCooldownsForChannel("SC-A"); n != 1 {
 		t.Fatalf("应按渠道清掉剩余的 1 条冷却，得到 %d", n)
 	}
+	routeStates.Lock()
+	_, hasOther := routeStates.lastRoute["SC-OTHER"]
+	routeStates.Unlock()
+	if hasOther {
+		t.Fatal("按渠道清冷却后指向该渠道的模型亲和应清空")
+	}
+	keyStates.Lock()
+	_, hasKey = keyStates.lastKey["SC-A"]
+	keyStates.Unlock()
+	if hasKey {
+		t.Fatal("按渠道清冷却后该渠道的 Key 亲和应清空")
+	}
 	// 渠道模型：按自身渠道/上游清
 	MarkFailure("SC-B", "z")
-	cm := store.Model{Type: store.ModelTypeChannel, ChannelID: "SC-B", Upstream: "z"}
+	cm := store.Model{ID: "SC-B/z", Type: store.ModelTypeChannel, ChannelID: "SC-B", Upstream: "z"}
 	if n := ClearCooldownsForModel(cm); n != 1 {
 		t.Fatalf("渠道模型应清掉自身路由的冷却，得到 %d", n)
 	}
@@ -2019,7 +2063,8 @@ func TestPlanKeysSingleKeyMode(t *testing.T) {
 	}
 }
 
-func candidateIndexes(keys []keyCandidate) []int {	out := make([]int, len(keys))
+func candidateIndexes(keys []keyCandidate) []int {
+	out := make([]int, len(keys))
 	for i, k := range keys {
 		out[i] = k.index
 	}

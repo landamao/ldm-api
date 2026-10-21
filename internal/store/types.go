@@ -268,6 +268,12 @@ type Model struct {
 	ContentSpeed       int    `json:"content_speed,omitempty"`
 	ContentLatencyMs   int    `json:"content_latency_ms,omitempty"`
 
+	// 系统提示词注入。
+	// SystemPromptOn 开启后，请求里自带的系统提示词会被全部移除，
+	// 只把 SystemPrompt 作为唯一的系统提示词放在最前面。
+	SystemPromptOn *bool  `json:"system_prompt_enabled,omitempty"`
+	SystemPrompt   string `json:"system_prompt,omitempty"`
+
 	DisplayName string   `json:"display_name,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
@@ -305,6 +311,11 @@ func (m Model) CustomErrorAlways() bool {
 // CustomContentEnabled 返回自定义内容返回总开关。
 func (m Model) CustomContentEnabled() bool {
 	return m.ContentEnabled != nil && *m.ContentEnabled
+}
+
+// SystemPromptEnabled 返回系统提示词注入总开关。
+func (m Model) SystemPromptEnabled() bool {
+	return m.SystemPromptOn != nil && *m.SystemPromptOn
 }
 
 // Token 调用方使用的 API Key。
