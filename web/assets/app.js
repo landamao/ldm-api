@@ -1107,7 +1107,10 @@
       if (caps.vision === true) out.push(badge('图片', 'pink'));
       else if (caps.vision === false && o.showNeg) out.push(badge('不支持图片', 'gray'));
     }
-    if (!out.length) out.push(badge('参数透传', 'gray'));
+    // 能力全部没填时显示「未设置」，和模型编辑弹窗里的三态文案保持一致。
+    const blank = !caps || ['context_length', 'max_output', 'tool_calling', 'thinking', 'vision']
+      .every((k) => caps[k] == null);
+    if (!out.length) out.push(badge(blank ? '未设置' : '参数透传', 'gray'));
     return `<div class="badge-group">${out.join('')}</div>`;
   }
 
