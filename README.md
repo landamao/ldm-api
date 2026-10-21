@@ -36,7 +36,7 @@ chmod +x ldmapi-linux-amd64
 
 ```
   ╭──────────────────────────────────────────────────────────────╮
-  │  🐱 懒大猫 API   v1.16.4                                     │
+  │  🐱 懒大猫 API   v1.16.5                                     │
   │                                                              │
   │  控制台     http://127.0.0.1:6700                            │
   │  API 地址   http://127.0.0.1:6700/v1                         │
@@ -515,7 +515,7 @@ Windows 产物的图标和版本信息来自 `assets/ldmapi.ico`，由 `go-winre
 go install github.com/tc-hib/go-winres@latest
 go-winres simply --arch amd64,arm64 --icon assets/ldmapi.ico \
   --product-name "懒大猫 API" --file-description "懒大猫 API - 模型聚合网关" \
-  --product-version 1.16.4 --file-version 1.16.4 --original-filename ldmapi.exe
+  --product-version 1.16.5 --file-version 1.16.5 --original-filename ldmapi.exe
 ```
 
 修改前端时不必重新编译，让程序直接从磁盘读取前端资源即可：

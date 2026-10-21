@@ -1897,6 +1897,10 @@
           run.msgEl = null;
           run.thinkBlock = run.thinkBody = run.thinkMeta = run.answerEl = null;
           run.toolCard = null;
+          if (run.thinkTimer) {
+            clearInterval(run.thinkTimer);
+            run.thinkTimer = null;
+          }
           run.ctl.abort();
           chatStore.run = null;
         }
@@ -2397,17 +2401,37 @@
           run.thinkBody = det.querySelector('.think-block__body');
           run.thinkMeta = det.querySelector('.think-block__meta');
         };
+        const stopThinkTimer = () => {
+          if (run.thinkTimer) {
+            clearInterval(run.thinkTimer);
+            run.thinkTimer = null;
+          }
+        };
+        // 思考中实时刷新耗时，正文或工具调用开始后停止
+        const startThinkTimer = () => {
+          stopThinkTimer();
+          if (!run.bubble || !run.curThink) return;
+          run.thinkTimer = setInterval(() => {
+            if (!run.curThink) { stopThinkTimer(); return; }
+            paintThinkMeta(true);
+          }, 100);
+        };
+        const paintThinkMeta = (thinking) => {
+          if (!run.bubble || !run.curThink || !run.thinkMeta) return;
+          const part = run.curThink;
+          const ms = part.ms != null ? part.ms : (part.t0 ? Date.now() - part.t0 : 0);
+          run.thinkMeta.textContent = thinking
+            ? ` 思考中… ${part.text.length} 字 · ${fmtSeconds(ms)}`
+            : ` ${part.text.length} 字 · ${fmtSeconds(ms)}`;
+        };
         const paintThink = (thinking) => {
           if (!run.bubble || !run.curThink) return;
-          if (!run.thinkBody || !run.thinkMeta) return;
-          const part = run.curThink;
-          run.thinkBody.textContent = part.text;
-          run.thinkMeta.textContent = thinking
-            ? ` 思考中…（${part.text.length} 字）`
-            : ` ${part.text.length} 字${part.ms != null ? ` · ${fmtSeconds(part.ms)}` : ''}`;
+          if (run.thinkBody) run.thinkBody.textContent = run.curThink.text;
+          paintThinkMeta(thinking);
         };
         const foldThink = () => {
           if (!run.curThink) return;
+          stopThinkTimer();
           // 记下这一轮从开始思考到结束思考用了多久
           if (run.curThink.ms == null && run.curThink.t0) {
             run.curThink.ms = Math.max(0, Date.now() - run.curThink.t0);
@@ -2427,6 +2451,7 @@
             run.answerEl = null;
             run.curText = null;
             newThinkBlock();
+            startThinkTimer();
           }
           run.curThink.text += chunk;
           paintThink(true);
@@ -2496,7 +2521,8 @@
                 run.thinkBlock = det;
                 run.thinkBody = det.querySelector('.think-block__body');
                 run.thinkMeta = det.querySelector('.think-block__meta');
-                run.thinkMeta.textContent = ` 思考中…（${(part.text || '').length} 字）`;
+                paintThinkMeta(true);
+                startThinkTimer();
               }
             } else if (part.type === 'text') {
               const el = document.createElement('div');
@@ -2864,7 +2890,7 @@
           tools: !customBody && toolsOn,
           ctl: new AbortController(),
           t0: Date.now(), firstTokenMs: 0, usage: null,
-          think: '', answer: '', curThink: null,
+          think: '', answer: '', curThink: null, thinkTimer: null,
           // parts 是气泡的时间线：思考段、正文段与工具调用段按输出顺序排列
           parts: [], curText: null, roundText: '',
           toolLog: [], toolPart: null, toolCard: null, toolStreaming: false,
@@ -3307,6 +3333,10 @@
           run.msgEl = null;
           run.thinkBlock = run.thinkBody = run.thinkMeta = run.answerEl = null;
           run.toolCard = null;
+          if (run.thinkTimer) {
+            clearInterval(run.thinkTimer);
+            run.thinkTimer = null;
+          }
         }
       };
       window.addEventListener('hashchange', onLeave, { once: true });
