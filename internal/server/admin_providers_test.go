@@ -22,7 +22,7 @@ func TestDefaultProvidersSeeded(t *testing.T) {
 	want := map[string]string{
 		"zhipu": "智谱", "deepseek": "DeepSeek", "xai": "xAI", "openai": "OpenAI",
 		"stepfun": "阶跃星辰", "bytedance": "字节跳动", "xiaomi": "小米",
-		"minimax": "MiniMax", "gemini": "Gemini", "claude": "Claude",
+		"minimax": "MiniMax", "google": "Google", "anthropic": "Anthropic",
 		"moonshot": "月之暗面", "alibaba": "阿里巴巴",
 	}
 	for _, p := range providers {
@@ -32,8 +32,8 @@ func TestDefaultProvidersSeeded(t *testing.T) {
 		if p.Icon == "" {
 			t.Errorf("提供商 %s 应有默认图标", p.ID)
 		}
-		if len(p.Match) == 0 {
-			t.Errorf("提供商 %s 应有自动匹配关键词", p.ID)
+		if len(p.Match) != 1 {
+			t.Errorf("提供商 %s 应只有一个默认匹配关键词，实际 %v", p.ID, p.Match)
 		}
 	}
 }
@@ -67,8 +67,8 @@ func TestAutoProviderAssignment(t *testing.T) {
 	want := map[string]string{
 		"gpt-4o": "openai", "deepseek-chat": "deepseek", "glm-4": "zhipu",
 		"grok-2": "xai", "step-2": "stepfun", "doubao-pro": "bytedance",
-		"mimo-7b": "xiaomi", "minimax-abab": "minimax", "gemini-2.5-pro": "gemini",
-		"claude-3-7-sonnet": "claude", "kimi-k2": "moonshot", "qwen-max": "alibaba",
+		"mimo-7b": "xiaomi", "minimax-abab": "minimax", "gemini-2.5-pro": "google",
+		"claude-3-7-sonnet": "anthropic", "kimi-k2": "moonshot", "qwen-max": "alibaba",
 		"unknown-model": "",
 	}
 	for _, m := range models {
@@ -187,13 +187,13 @@ func TestRestoreDefaultProviders(t *testing.T) {
 	}
 	if err := st.SaveModel(store.Model{
 		ID: "c1/claude-3-7-sonnet", Type: store.ModelTypeChannel, ChannelID: "c1",
-		Upstream: "claude-3-7-sonnet", ProviderID: "claude", Enabled: true,
+		Upstream: "claude-3-7-sonnet", ProviderID: "anthropic", Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// 删除两个内置提供商，只找回 claude
-	for _, id := range []string{"claude", "moonshot"} {
+	for _, id := range []string{"anthropic", "moonshot"} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodDelete, "/api/providers/"+id, nil)
 		req.SetPathValue("id", id)
@@ -214,12 +214,12 @@ func TestRestoreDefaultProviders(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/providers/restore-defaults", strings.NewReader(`{"ids":["claude"]}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/restore-defaults", strings.NewReader(`{"ids":["anthropic"]}`))
 	s.restoreDefaultProviders(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("恢复失败: %d %s", rec.Code, rec.Body.String())
 	}
-	if _, err := st.GetProvider("claude"); err != nil {
+	if _, err := st.GetProvider("anthropic"); err != nil {
 		t.Errorf("恢复后 claude 应存在: %v", err)
 	}
 	if _, err := st.GetProvider("moonshot"); err == nil {
@@ -228,7 +228,7 @@ func TestRestoreDefaultProviders(t *testing.T) {
 	if got, _ := st.GetProvider("openai"); got.Name != "OpenAI 自定义" {
 		t.Errorf("已有提供商不应被覆盖，名称实际为 %q", got.Name)
 	}
-	if m, _ := st.GetModel("c1/claude-3-7-sonnet"); m.ProviderID != "claude" {
+	if m, _ := st.GetModel("c1/claude-3-7-sonnet"); m.ProviderID != "anthropic" {
 		t.Errorf("恢复后模型应重新归属 claude，实际 %q", m.ProviderID)
 	}
 

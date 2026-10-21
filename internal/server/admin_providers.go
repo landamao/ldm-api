@@ -17,25 +17,25 @@ import (
 const providerSeedVersion = "providers_seeded_v3"
 
 // defaultProviders 是首次启动时写入的提供商列表。
-// Match 里的关键词按「模型 ID 小写包含」匹配，顺序即匹配优先级。
+// Match 里的关键词按「模型 ID 小写包含」匹配，每个提供商只保留一个主关键词。
 func defaultProviders() []store.Provider {
 	now := time.Now().UnixMilli()
 	defs := []struct {
 		id, name, icon, color string
 		match                 []string
 	}{
-		{"zhipu", "智谱", "zhipu", "#3859FF", []string{"glm", "zhipu", "智谱", "chatglm"}},
-		{"deepseek", "DeepSeek", "deepseek", "#4D6BFE", []string{"deepseek", "深度求索"}},
-		{"xai", "xAI", "xai", "#000000", []string{"grok", "xai"}},
-		{"openai", "OpenAI", "openai", "#10A37F", []string{"gpt", "openai", "chatgpt"}},
-		{"stepfun", "阶跃星辰", "stepfun", "#005AFF", []string{"step", "stepfun", "阶跃"}},
-		{"bytedance", "字节跳动", "bytedance", "#325AB4", []string{"doubao", "豆包", "bytedance", "字节"}},
-		{"xiaomi", "小米", "xiaomi", "#FF6900", []string{"mimo", "xiaomi", "小米"}},
-		{"minimax", "MiniMax", "minimax", "#F23F5D", []string{"minimax", "abab"}},
-		{"gemini", "Gemini", "gemini", "#3186FF", []string{"gemin", "google"}},
-		{"claude", "Claude", "claude", "#D97757", []string{"claude", "anthropic"}},
-		{"moonshot", "月之暗面", "moonshot", "#5A32E6", []string{"kimi", "moonshot", "月之暗面"}},
-		{"alibaba", "阿里巴巴", "qwen", "#615CED", []string{"qwen", "qwq", "tongyi", "通义", "千问", "alibaba"}},
+		{"zhipu", "智谱", "zhipu", "#3859FF", []string{"glm"}},
+		{"deepseek", "DeepSeek", "deepseek", "#4D6BFE", []string{"deepseek"}},
+		{"xai", "xAI", "xai", "#000000", []string{"grok"}},
+		{"openai", "OpenAI", "openai", "#10A37F", []string{"gpt"}},
+		{"stepfun", "阶跃星辰", "stepfun", "#005AFF", []string{"step"}},
+		{"bytedance", "字节跳动", "bytedance", "#325AB4", []string{"doubao"}},
+		{"xiaomi", "小米", "xiaomi", "#FF6900", []string{"mimo"}},
+		{"minimax", "MiniMax", "minimax", "#F23F5D", []string{"minimax"}},
+		{"google", "Google", "gemini", "#3186FF", []string{"gemini"}},
+		{"anthropic", "Anthropic", "claude", "#D97757", []string{"claude"}},
+		{"moonshot", "月之暗面", "moonshot", "#5A32E6", []string{"kimi"}},
+		{"alibaba", "阿里巴巴", "qwen", "#615CED", []string{"qwen"}},
 	}
 	out := make([]store.Provider, 0, len(defs))
 	for i, d := range defs {

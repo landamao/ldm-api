@@ -87,13 +87,13 @@ func main() {
 			requests: 700, errors: 0,
 		},
 		{
-			id: "claude-sonnet-4.5", upstream: "claude-sonnet-4.5", channelID: "ch_anthropic", providerID: "claude",
+			id: "claude-sonnet-4.5", upstream: "claude-sonnet-4.5", channelID: "ch_anthropic", providerID: "anthropic",
 			description: "均衡型模型，代码与长上下文表现稳定。", tags: []string{"代码"},
 			caps:     store.Caps{ContextLength: intp(200000), MaxOutput: intp(64000), ToolCalling: boolp(true), Thinking: boolp(true), Vision: boolp(true)},
 			requests: 700, errors: 35,
 		},
 		{
-			id: "gemini-2.5-pro", upstream: "gemini-2.5-pro", channelID: "ch_gemini", providerID: "gemini",
+			id: "gemini-2.5-pro", upstream: "gemini-2.5-pro", channelID: "ch_gemini", providerID: "google",
 			description: "超长上下文与多模态理解。", tags: []string{"多模态"},
 			caps:     store.Caps{ContextLength: intp(1048576), MaxOutput: intp(65536), ToolCalling: boolp(true), Thinking: boolp(true), Vision: boolp(true)},
 			requests: 700, errors: 70,

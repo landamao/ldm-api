@@ -169,18 +169,20 @@ chmod +x ldmapi-linux-amd64
 
 | 提供商 | 自动匹配关键词 |
 | --- | --- |
-| 智谱 | `glm`、`zhipu`、`智谱`、`chatglm` |
-| DeepSeek | `deepseek`、`深度求索` |
-| xAI | `grok`、`xai` |
-| OpenAI | `gpt`、`openai`、`chatgpt` |
-| 阶跃星辰 | `step`、`stepfun`、`阶跃` |
-| 字节跳动 | `doubao`、`豆包`、`bytedance`、`字节` |
-| 小米 | `mimo`、`xiaomi`、`小米` |
-| MiniMax | `minimax`、`abab` |
-| Gemini | `gemin`、`google` |
-| Claude | `claude`、`anthropic` |
-| 月之暗面 | `kimi`、`moonshot`、`月之暗面` |
-| 阿里巴巴 | `qwen`、`qwq`、`tongyi`、`通义`、`千问`、`alibaba` |
+| 智谱 | `glm` |
+| DeepSeek | `deepseek` |
+| xAI | `grok` |
+| OpenAI | `gpt` |
+| 阶跃星辰 | `step` |
+| 字节跳动 | `doubao` |
+| 小米 | `mimo` |
+| MiniMax | `minimax` |
+| Google | `gemini` |
+| Anthropic | `claude` |
+| 月之暗面 | `kimi` |
+| 阿里巴巴 | `qwen` |
+
+每个内置提供商默认只保留一个主关键词，避免和名称相近的模型互相抢归属；需要额外关键词时可在「提供商管理 → 编辑」里自行添加。提供商 ID（如 `google`、`anthropic`）是内部稳定标识，模型通过 `provider_id` 引用它，创建后不可修改；改名只影响展示，不影响已有模型的归属。
 
 添加模型时会按上游模型名自动归属提供商，并自动使用该提供商的图标；也可以在「模型管理 → 编辑」里手动修改，或用多选工具栏「批量设置提供商」统一调整。自定义提供商支持选择内置图标、填写 emoji 或图片直链，以及自定义匹配关键词。删除内置提供商后，可在「提供商管理 → 恢复内置提供商」里勾选需要找回的项，恢复后失去归属的模型会自动重新匹配。
 
