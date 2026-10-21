@@ -2785,11 +2785,22 @@
     },
   });
 
+  // 与渠道管理的模型列表一致：换行、逗号、分号都能分隔，去空去重
+  function parseModelNames(text) {
+    const out = [];
+    const seen = new Set();
+    String(text || '').split(/[\n\r,;]+/).forEach((raw) => {
+      const v = raw.trim();
+      if (!v || seen.has(v)) return;
+      seen.add(v);
+      out.push(v);
+    });
+    return out;
+  }
+
   async function openTokenEditor(token) {
     const isNew = !token;
     const t = token || { name: '', enabled: true, expires_at: 0, quota_limit: 0, allowed_models: [], allowed_ips: [], remark: '' };
-    // 模型权限复用「模型管理 → 添加模型」的选择弹窗（支持搜索、按渠道/提供商分组）
-    let allowedSet = new Set(t.allowed_models || []);
 
     const expiryVal = t.expires_at ? new Date(t.expires_at).toISOString().slice(0, 10) : '';
 
@@ -2810,10 +2821,14 @@
         </div>
       </div>
       <div class="field">
-        <label class="field__label">模型权限</label>
-        <div class="field__hint" style="margin-top:0;margin-bottom:8px">不勾选表示可以使用全部模型；选中后点击模型名可复制。</div>
-        <div id="t-model-summary"></div>
-        <button class="btn btn--sm mt-8" id="t-pick-models">${icon('models', 13)}选择模型</button>
+        <div class="flex-center gap-8" style="margin-bottom:6px">
+          <label class="field__label" style="margin-bottom:0">模型权限</label>
+          <div class="ml-auto"></div>
+          <button class="btn btn--sm" id="t-pick-models" type="button">${icon('models', 13)}选择模型</button>
+        </div>
+        <textarea class="textarea" id="t-models" rows="4" spellcheck="false" placeholder="每行一个，或用逗号分隔；留空表示可以使用全部模型&#10;gpt-4o&#10;claude-sonnet-4">${esc((t.allowed_models || []).join('\n'))}</textarea>
+        <div class="field__hint">留空表示可以使用全部模型；可使用<code>*</code>通配符（如 <code>*deepseek*</code>、<code>deepseek*</code>、<code>*l*d*m*</code>）。也可以点「选择模型」勾选</div>
+        <div class="mt-12" id="t-model-preview"></div>
       </div>
       <div class="field">
         <label class="field__label">IP 限制</label>
@@ -2842,14 +2857,21 @@
         <button class="btn" data-act="cancel">取消</button>
         <button class="btn btn--primary" data-act="save">${isNew ? '创建' : '保存'}</button>`,
       onMount(mo) {
-        const summaryEl = mo.body.querySelector('#t-model-summary');
-        const renderAllowed = () => {
-          summaryEl.innerHTML = allowedSet.size
-            ? `<div class="badge-group" style="max-height:104px;overflow:auto">${Array.from(allowedSet).map((m) => `<button type="button" class="badge badge--gray badge--click mono" data-copy-model="${esc(m)}" title="点击复制">${esc(m)}</button>`).join('')}</div>`
+        const modelsEl = mo.body.querySelector('#t-models');
+        const previewEl = mo.body.querySelector('#t-model-preview');
+        const renderPreview = () => {
+          const list = parseModelNames(modelsEl.value);
+          previewEl.innerHTML = list.length
+            ? `<div class="flex-center gap-8" style="margin-bottom:6px">
+                 <div class="section-title" style="margin-bottom:0">共 ${list.length} 个模型</div>
+                 <div class="ml-auto muted fs-12">点击模型名可复制</div>
+               </div>
+               <div class="badge-group">${list.map((m) => `<button type="button" class="badge badge--gray badge--click mono" data-copy-model="${esc(m)}" title="点击复制">${esc(m)}</button>`).join('')}</div>`
             : '<span class="muted fs-12">全部模型</span>';
         };
-        renderAllowed();
-        summaryEl.addEventListener('click', (e) => {
+        renderPreview();
+        modelsEl.addEventListener('input', renderPreview);
+        previewEl.addEventListener('click', (e) => {
           const el = e.target.closest('[data-copy-model]');
           if (el) copyText(el.dataset.copyModel, '模型名 ');
         });
@@ -2858,12 +2880,16 @@
           window.LDM.openModelPicker({
             mode: 'models',
             title: '选择可用模型',
-            desc: '从「模型管理」中已启用的模型里选择。不勾选表示可以使用全部模型。',
+            desc: '从「模型管理」中已启用的模型里选择，结果会合并到手动填写的模型名里。不勾选表示可以使用全部模型。',
             top: true,
-            preselected: new Set(allowedSet),
-            onConfirm(ids) {
-              allowedSet = new Set(ids);
-              renderAllowed();
+            preselected: new Set(parseModelNames(modelsEl.value)),
+            onConfirm(ids, items, all) {
+              // 手动填写但不在选择弹窗列表里的模型名（例如通配符 *）原样保留
+              const known = new Set((all || []).map((it) => it.id));
+              const manual = parseModelNames(modelsEl.value).filter((m) => !known.has(m));
+              const merged = manual.concat(ids.filter((id) => !manual.includes(id)));
+              modelsEl.value = merged.join('\n');
+              renderPreview();
             },
           });
         };
@@ -2880,7 +2906,7 @@
             enabled: mo.body.querySelector('#t-enabled').checked,
             expires_at: expireVal2 ? new Date(expireVal2 + 'T23:59:59').getTime() : 0,
             quota_limit: Number(mo.body.querySelector('#t-quota').value) || 0,
-            allowed_models: Array.from(allowedSet),
+            allowed_models: parseModelNames(modelsEl.value),
             allowed_ips: mo.body.querySelector('#t-ips').value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean),
             remark: mo.body.querySelector('#t-remark').value.trim(),
           };

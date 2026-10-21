@@ -40,6 +40,16 @@
     <div style="margin-bottom:8px"><b>始终返回错误</b>：总开关开启后才能使用。开启后不请求上游，所有调用都直接返回这里配置的错误。</div>
     <div>状态码支持 <code>400–599</code>；错误详情留空时返回默认文案。流式响应一旦开始输出，中途失败无法改写已经发出的内容。</div>`;
 
+  // 模型编辑弹窗里的字段说明同样收进问号，避免弹窗被大段文字占满。
+  const CAPS_HELP_TEXT = '这些参数只用于模型广场和模型列表的展示，网关不会根据它们校验、裁剪或改写请求；留空表示不声明。';
+  const CAPS_HELP_HTML = `
+    <div style="margin-bottom:8px">这些参数只用于模型广场和模型列表的展示，网关不会根据它们校验、裁剪或改写请求；留空表示不声明。</div>
+    <div style="margin-bottom:8px">全部留空时不会做任何能力相关的处理（模型名替换和协议转换仍会正常进行）。</div>
+    <div><b>JSON</b>：可直接粘贴能力参数对象。支持 <code>context_length</code>、<code>max_output</code>、<code>tool_calling</code>、<code>thinking</code>、<code>vision</code> 五个字段，<code>null</code> 或留空表示不声明。</div>`;
+  const SCHED_HELP_HTML = `
+    <div style="margin-bottom:8px"><b>模型亲和</b>：开启后，本轮哪个路由成功了，下一轮请求就优先从它开始。</div>
+    <div><b>失败冷却</b>：条目失败后在冷却时长内视为不可用直接跳过（0 = 不冷却）。<b>全冷却时自动重置</b>决定全部条目都在冷却中时的行为：关 = 直接返回不可用；开 = 清空所有冷却再路由一遍。</div>`;
+
   // 每个渠道 / 模型编辑弹窗的「高级设置」展开状态按实体 ID 记在本地。
   // 新建时统一用 __new，避免不同实体的状态互相影响。
   const ADVANCED_KEY_PREFIX = 'ldmapi.advanced.';
@@ -2532,7 +2542,8 @@
           if (isAdd && !ids.length) return;
           const items = selectedItems();
           mo.close();
-          onConfirm(ids, items);
+          // 第三个参数是弹窗里可勾选的全部条目，供调用方区分「未勾选的已知项」和「手动填写的未知项」
+          onConfirm(ids, items, list);
         };
         applyFilter();
         refresh();
@@ -2983,7 +2994,6 @@
                          value="${m.content_latency_ms || 0}" style="margin-top:4px">
                 </label>
               </div>
-              <div class="field__hint">开启后自定义错误功能将不可用。每次请求都直接返回这段内容，不请求上游。思考内容留空时不输出；流式速度按每秒输出字符数模拟，0 表示不模拟。</div>
             </div>
           </div>
           <div class="field">
@@ -3002,7 +3012,6 @@
                        value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试">
               </div>
               <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-always" ${m.error_always ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
-              <div class="field__hint">开启自定义内容返回后此功能将不可用。只开总开关：调用失败时用这里的错误替代原始错误；再开「始终返回错误」则所有调用都直接返回这里的错误。</div>
             </div>
           </div>
         </div>
@@ -3014,7 +3023,6 @@
 
     openModal({
       title: '编辑渠道模型',
-      desc: `模型 <code>${esc(m.id)}</code> 的能力参数只用于展示，网关不会根据这些参数校验或改写请求。`,
       body,
       size: 'lg',
       footer: `<div class="spacer"></div>
@@ -3175,12 +3183,13 @@
       <div id="caps-editor">
         <div class="section-title" style="display:flex;align-items:center;gap:10px">
           <span>能力参数</span>
+          <button type="button" class="badge badge--blue badge--click field__help"
+                  id="caps-help" title="${esc(CAPS_HELP_TEXT)}" aria-label="查看能力参数说明">?</button>
           <div class="pill-toggle" id="caps-mode" style="margin-left:auto">
             <button type="button" data-caps-mode="visual" class="is-on">可视化</button>
             <button type="button" data-caps-mode="json">JSON</button>
           </div>
         </div>
-        <div class="field__hint" style="margin:-4px 0 12px">这些参数只用于模型广场和模型列表的展示，网关不会根据它们校验、裁剪或改写请求；留空表示不声明。全部留空时不会做任何能力相关的处理（模型名替换和协议转换仍会正常进行）。</div>
         <div id="caps-visual">
           <div class="form-row">
             <div class="field">
@@ -3202,7 +3211,6 @@
             <button class="btn btn--sm" type="button" data-act="copy-caps-json">${icon('copy', 13)}复制 JSON</button>
             <button class="btn btn--sm" type="button" data-act="paste-caps-json">${icon('paste', 13)}粘贴 JSON</button>
           </div>
-          <div class="field__hint">可直接粘贴能力参数对象。支持 context_length、max_output、tool_calling、thinking、vision 五个字段，null 或留空表示不声明。</div>
         </div>
       </div>`;
   }
@@ -3303,6 +3311,8 @@
   }
 
   function bindCapsEditor(scope) {
+    const capsHelpEl = scope.querySelector('#caps-help');
+    if (capsHelpEl) capsHelpEl.onclick = () => openHelpModal('能力参数', CAPS_HELP_HTML);
     scope.querySelectorAll('.tristate').forEach((group) => {
       group.querySelectorAll('.tristate__opt').forEach((opt) => {
         opt.onclick = () => {
@@ -3400,7 +3410,7 @@
 
       <div class="field">
         <div class="field__label" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
-          <span>目标路由模型（可选）<button type="button" class="badge badge--blue badge--click field__help" id="cm-route-help" title="${esc(routeHelpText)}" aria-label="查看路由规则">?</button></span>
+          <span>目标路由模型<button type="button" class="badge badge--blue badge--click field__help" id="cm-route-help" title="${esc(routeHelpText)}" aria-label="查看路由规则">?</button></span>
           <div class="pill-toggle" id="cm-route-mode" style="margin-left:auto">
             <button type="button" data-route-mode="visual" class="is-on">可视化</button>
             <button type="button" data-route-mode="json">JSON</button>
@@ -3418,23 +3428,22 @@
             <button class="btn btn--sm" data-act="copy-json">${icon('copy', 13)}复制 JSON</button>
             <button class="btn btn--sm" data-act="paste-json">${icon('paste', 13)}粘贴 JSON</button>
           </div>
-          <div class="field__hint">可直接复制粘贴复用。channel_id + upstream 定位渠道模型；相同 group 且相邻的条目自动成组；weight 决定组内尝试顺序（按权重随机排序，权重越高越可能靠前，全部相等时等概率）。</div>
         </div>
-        <div class="field__hint">路由可以不配置。留空时按「高级设置」里的自定义内容返回 / 始终返回错误处理；都没有配置时，调用会返回「没有可用渠道」。</div>
       </div>
 
       <div class="field">
-        <label class="field__label">调度选项</label>
+        <label class="field__label">调度选项
+          <button type="button" class="badge badge--blue badge--click field__help"
+                  id="cm-sched-help" title="查看模型亲和、失败冷却与自动重置规则" aria-label="查看调度规则">?</button>
+        </label>
         <div class="sched-grid">
           <label class="switch"><input type="checkbox" id="cm-affinity" ${m.affinity ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">模型亲和</span></label>
-          <div class="field__hint" style="margin-top:2px">开启后：本轮哪个路由成功了，下一轮请求就优先从它开始。</div>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
             <span class="muted fs-12">失败冷却</span>
             <input class="input" id="cm-cooldown" type="number" min="0" max="86400" value="${m.cooldown_sec ?? 300}" style="width:90px;height:30px;font-size:12.5px">
             <span class="muted fs-12">秒</span>
             <label class="switch" style="margin-left:auto"><input type="checkbox" id="cm-cooldown-reset" ${m.cooldown_reset ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">全冷却时自动重置</span></label>
           </div>
-          <div class="field__hint" style="margin-top:2px">条目失败后在冷却时长内视为不可用直接跳过（0 = 不冷却）。「自动重置」决定全部条目都在冷却中时的行为：关=直接返回不可用；开=清空所有冷却再路由一遍。</div>
         </div>
       </div>
 
@@ -3489,7 +3498,6 @@
                          value="${m.content_latency_ms || 0}" style="margin-top:4px">
                 </label>
               </div>
-              <div class="field__hint">开启后自定义错误功能将不可用。每次请求都直接返回这段内容，不请求上游。思考内容留空时不输出；流式速度按每秒输出字符数模拟，0 表示不模拟。</div>
             </div>
           </div>
           <div class="field">
@@ -3508,7 +3516,6 @@
                        value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试">
               </div>
               <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-always" ${m.error_always ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
-              <div class="field__hint">开启自定义内容返回后此功能将不可用。只开总开关：调用失败时用这里的错误替代原始错误；再开「始终返回错误」则所有调用都直接返回这里的错误。</div>
             </div>
           </div>
         </div>
@@ -3591,6 +3598,9 @@
         contentEnabledEl.onchange = syncErrorFields;
         errorEnabledEl.onchange = syncErrorFields;
         syncErrorFields();
+        mo.body.querySelector('#cm-sched-help').onclick = () => {
+          openHelpModal('调度选项', SCHED_HELP_HTML);
+        };
         mo.body.querySelector('#cm-content-help').onclick = () => {
           openHelpModal('自定义内容返回', CUSTOM_CONTENT_HELP_HTML);
         };
@@ -4356,7 +4366,9 @@
               <div style="margin-bottom:8px"><b>合并分组</b>：相邻条目「合并」成组后，组内每次按权重随机排序再依次尝试（权重越高越可能靠前，权重全部相等时等概率），全部失败再到后面的条目。</div>
               <div style="margin-bottom:8px"><b>拖拽排序</b>：按住左侧手柄拖动调整单条位置；按住组头左侧握把拖动调整整组位置。</div>
               <div style="margin-bottom:8px"><b>拖出弹窗</b>：只会收起当前条目所在的分组（拖回不会自动展开，松手后恢复），不影响其他分组。</div>
-              <div><b>合并 / 分开</b>：组外条目用「合并」按钮，组内条目用「分开」按钮。</div>
+              <div style="margin-bottom:8px"><b>合并 / 分开</b>：组外条目用「合并」按钮，组内条目用「分开」按钮。</div>
+              <div style="margin-bottom:8px"><b>JSON</b>：可直接复制粘贴复用。<code>channel_id</code> + <code>upstream</code> 定位渠道模型；相同 <code>group</code> 且相邻的条目自动成组；<code>weight</code> 决定组内尝试顺序（按权重随机排序，权重越高越可能靠前，全部相等时等概率）。</div>
+              <div><b>不配置路由</b>：留空时按「高级设置」里的自定义内容返回 / 始终返回错误处理；都没有配置时，调用会返回「没有可用渠道」。</div>
             </div>`,
             footer: `<div class="spacer"></div><button class="btn" data-close>知道了</button>`,
           });

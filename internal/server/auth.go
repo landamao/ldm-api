@@ -211,11 +211,44 @@ func tokenAllowsModel(t store.Token, model string) bool {
 		return true
 	}
 	for _, m := range t.AllowedModels {
-		if m == model || m == "*" {
+		if m == model {
+			return true
+		}
+		// 含 * 的条目按通配模式匹配：* 匹配任意长度（含空），也能跨过模型 ID 里的 /
+		if strings.Contains(m, "*") && wildcardMatch(m, model) {
 			return true
 		}
 	}
 	return false
+}
+
+// wildcardMatch 用双指针回溯实现通配：* 匹配任意字节序列（包括空），
+// 其余字符按字面比较。UTF-8 多字节字符按字节比较仍然安全，因为 * 是单字节 ASCII，
+// 不会与多字节字符的后续字节混淆。
+func wildcardMatch(pattern, s string) bool {
+	p, i := 0, 0
+	star, match := -1, 0
+	for i < len(s) {
+		switch {
+		case p < len(pattern) && pattern[p] == s[i]:
+			p++
+			i++
+		case p < len(pattern) && pattern[p] == '*':
+			star = p
+			match = i
+			p++
+		case star >= 0:
+			p = star + 1
+			match++
+			i = match
+		default:
+			return false
+		}
+	}
+	for p < len(pattern) && pattern[p] == '*' {
+		p++
+	}
+	return p == len(pattern)
 }
 
 // requestIP 返回用于 IP 白名单校验的客户端地址。

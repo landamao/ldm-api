@@ -36,7 +36,7 @@ chmod +x ldmapi-linux-amd64
 
 ```
   ╭──────────────────────────────────────────────────────────────╮
-  │  🐱 懒大猫 API   v1.12.0                                     │
+  │  🐱 懒大猫 API   v1.13.0                                     │
   │                                                              │
   │  控制台     http://127.0.0.1:6700                            │
   │  API 地址   http://127.0.0.1:6700/v1                         │
@@ -394,7 +394,11 @@ Gemini 的 `cachedContentTokenCount`，最终都以 OpenAI 的字段形式透出
 
 搜索状态下「全选可添加」只会选中当前可见的条目，不会误选被过滤掉的内容；折叠只是显示状态，不影响分组
 全选与已选统计。令牌的模型权限只列出「模型管理」里已启用的模型，没有渠道的自定义模型归到
-「自定义模型」分组；已选模型以徽章展示，点击模型名即可复制。
+「自定义模型」分组；勾选结果会合并到令牌编辑弹窗里手动填写的模型名中，下方的模型徽章实时预览，点击模型名即可复制。
+
+令牌的模型权限也可以直接手填模型名，每行一个或用逗号、分号分隔，支持 `*` 通配符：`*` 匹配任意长度（包括空）
+且能跨过 `/`，例如 `*deepseek*` 匹配所有名字里带 deepseek 的模型（包括带渠道前缀的），`deepseek*` 只匹配
+以 deepseek 开头的模型，单独一个 `*` 表示全部模型。留空同样表示可以使用全部模型。
 
 ### 输出速度与思考长度
 
@@ -482,7 +486,7 @@ Windows 产物的图标和版本信息来自 `assets/ldmapi.ico`，由 `go-winre
 go install github.com/tc-hib/go-winres@latest
 go-winres simply --arch amd64,arm64 --icon assets/ldmapi.ico \
   --product-name "懒大猫 API" --file-description "懒大猫 API - 模型聚合网关" \
-  --product-version 1.12.0 --file-version 1.12.0 --original-filename ldmapi.exe
+  --product-version 1.13.0 --file-version 1.13.0 --original-filename ldmapi.exe
 ```
 
 修改前端时不必重新编译，让程序直接从磁盘读取前端资源即可：

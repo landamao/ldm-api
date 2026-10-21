@@ -177,6 +177,34 @@ func TestTokenAllowsModel(t *testing.T) {
 	if !tokenAllowsModel(wildcard, "任意") {
 		t.Error("通配符应允许所有模型")
 	}
+	if !tokenAllowsModel(wildcard, "渠道/含斜杠的模型") {
+		t.Error("单独 * 应能匹配带 / 的模型 ID")
+	}
+
+	cases := []struct {
+		pattern string
+		model   string
+		want    bool
+	}{
+		{"deepseek*", "deepseek-v4-pro", true},
+		{"deepseek*", "ldm/deepseek-v4-pro", false},
+		{"*deepseek", "ldm/deepseek", true},
+		{"*deepseek", "deepseek-v4", false},
+		{"*deepseek*", "懒大猫/deepseek-v4-pro", true},
+		{"*deepseek*", "懒大猫/claude-sonnet-4", false},
+		{"*a*b*", "x-a-y-b-z", true},
+		{"*a*b*", "x-b-y-a-z", false},
+		{"A/c*", "A/c", true},
+		{"A/c*", "A/c2", true},
+		{"A/c*", "A/d", false},
+		{"DeepSeek*", "deepseek-v4", false},
+	}
+	for _, c := range cases {
+		got := tokenAllowsModel(store.Token{AllowedModels: []string{c.pattern}}, c.model)
+		if got != c.want {
+			t.Errorf("通配 %q 匹配 %q: 期望 %v，得到 %v", c.pattern, c.model, c.want, got)
+		}
+	}
 }
 
 func TestTokenAllowsIP(t *testing.T) {

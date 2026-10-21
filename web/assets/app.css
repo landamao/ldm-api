@@ -693,6 +693,12 @@ html[data-theme="dark"] code, html[data-theme="dark"] .code { color: var(--pink-
   justify-content: center; vertical-align: middle;
   font-size: 9px;
 }
+/* 区块标题里的问号跟字段标签保持同一尺寸，避免比标题还抢眼 */
+.section-title .field__help {
+  width: 14px; height: 14px; padding: 0; margin-left: -4px;
+  justify-content: center; vertical-align: middle;
+  font-size: 9px;
+}
 .field__hint { font-size: 11px; color: var(--text-3); margin-top: 4px; line-height: 1.55; }
 .field__error { font-size: 11px; color: var(--red-500); margin-top: 4px; }
 
