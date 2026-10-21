@@ -1698,12 +1698,12 @@
       };
 
       // 一轮工具调用共用一张卡片：标题显示调用次数，内部按顺序列出每次调用的
-      // 名称、参数与结果；只有一次调用时也用同样的结构。
+      // 名称、参数与结果；只有一次调用时也用同样的结构。和思考块一样默认收起。
       const toolCardEl = (calls) => {
         const list = (calls || []).filter(Boolean);
         const det = document.createElement('details');
         det.className = 'tool-block';
-        det.open = true;
+        det.open = false;
         det.innerHTML = '<summary>工具调用<span class="tool-block__meta"></span></summary>'
           + '<div class="tool-block__body"></div>';
         const failed = list.filter((c) => c.error).length;
