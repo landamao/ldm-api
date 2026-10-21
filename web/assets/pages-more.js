@@ -1697,34 +1697,34 @@
         return '';
       };
 
-      // 一轮工具调用共用一张卡片：标题显示调用次数，内部按顺序列出每次调用的
-      // 名称、参数与结果；只有一次调用时也用同样的结构。和思考块一样默认收起。
-      const toolCardEl = (calls) => {
-        const list = (calls || []).filter(Boolean);
+      // 工具卡片：流式输出工具调用时先建出来，参数随分片实时刷新；
+      // 执行完补上结果并收起。返回 { el, sync }，sync 就地更新已有节点，
+      // 避免每个分片重建整张卡片导致闪烁。
+      const toolCardEl = (calls, opts) => {
+        const list = calls || [];
+        const state = { done: !!(opts && opts.done) };
         const det = document.createElement('details');
         det.className = 'tool-block';
-        det.open = false;
+        det.open = !state.done;
         det.innerHTML = '<summary>工具调用<span class="tool-block__meta"></span></summary>'
           + '<div class="tool-block__body"></div>';
-        const failed = list.filter((c) => c.error).length;
-        det.querySelector('.tool-block__meta').textContent =
-          ` ${list.length} 次${failed ? ` · ${failed} 个失败` : ''}`;
+        const meta = det.querySelector('.tool-block__meta');
         const body = det.querySelector('.tool-block__body');
-        list.forEach((call) => {
+        const sections = [];
+
+        const addSection = () => {
           const sec = document.createElement('div');
           sec.className = 'tool-call';
           const head = document.createElement('div');
           head.className = 'tool-call__head';
           const name = document.createElement('span');
           name.className = 'tool-call__name';
-          name.textContent = call.name || '未知工具';
-          const state = document.createElement('span');
-          state.className = 'tool-call__state' + (call.error ? ' is-error' : '');
-          state.textContent = call.error ? '失败' : '完成';
+          const st = document.createElement('span');
+          st.className = 'tool-call__state';
           head.appendChild(name);
-          head.appendChild(state);
+          head.appendChild(st);
           sec.appendChild(head);
-          const addRow = (label, value) => {
+          const addRow = (label) => {
             const row = document.createElement('div');
             row.className = 'tool-call__row';
             const lab = document.createElement('div');
@@ -1732,22 +1732,46 @@
             lab.textContent = label;
             const pre = document.createElement('pre');
             pre.className = 'tool-call__code';
-            pre.textContent = value;
             row.appendChild(lab);
             row.appendChild(pre);
             sec.appendChild(row);
+            return { row, pre };
           };
-          addRow('参数', call.args || '{}');
-          addRow('结果', call.result || '');
+          const args = addRow('参数');
+          const result = addRow('结果');
+          result.row.hidden = true;
           body.appendChild(sec);
-        });
-        return det;
+          sections.push({ name, st, argsPre: args.pre, resRow: result.row, resPre: result.pre });
+        };
+
+        const sync = (next) => {
+          if (next) Object.assign(state, next);
+          while (sections.length < list.length) addSection();
+          list.forEach((call, i) => {
+            const c = call || {};
+            const s = sections[i];
+            s.name.textContent = c.name || '未知工具';
+            s.argsPre.textContent = c.args || '{}';
+            const hasResult = c.result != null;
+            s.resRow.hidden = !hasResult;
+            if (hasResult) s.resPre.textContent = c.result;
+            const failed = !!c.error;
+            s.st.textContent = failed ? '失败' : (hasResult ? '完成' : (state.done ? '未执行' : '调用中'));
+            s.st.className = 'tool-call__state' + (failed ? ' is-error' : '');
+          });
+          const failedCount = list.filter((c) => c && c.error).length;
+          meta.textContent = state.done
+            ? ` ${list.length} 次${failedCount ? ` · ${failedCount} 个失败` : ''}`
+            : ` ${list.length} 次 · 调用中…`;
+        };
+        sync();
+        return { el: det, sync };
       };
 
       const toolWrapEl = (calls) => {
         const wrap = document.createElement('div');
         wrap.className = 'tool-wrap';
-        if (calls && calls.length) wrap.appendChild(toolCardEl(calls));
+        if (calls && calls.length) wrap.appendChild(toolCardEl(calls, { done: true }).el);
         return wrap;
       };
 
@@ -1857,6 +1881,7 @@
           run.bubble = null;
           run.msgEl = null;
           run.thinkBlock = run.thinkBody = run.thinkMeta = run.answerEl = null;
+          run.toolCard = null;
           run.ctl.abort();
           chatStore.run = null;
         }
@@ -2461,7 +2486,13 @@
               run.answerEl = el;
               run.curText = part;
             } else if (part.type === 'tools') {
-              b.appendChild(toolWrapEl(part.calls));
+              const live = part === run.toolPart && run.toolStreaming;
+              const card = toolCardEl(part.calls, { done: !live });
+              const wrap = document.createElement('div');
+              wrap.className = 'tool-wrap';
+              wrap.appendChild(card.el);
+              b.appendChild(wrap);
+              if (live) run.toolCard = card;
               run.answerEl = null;
               run.curText = null;
             }
@@ -2478,6 +2509,28 @@
           for (;;) {
             const roundCalls = [];
             run.roundText = '';
+            run.toolPart = null;
+            run.toolCard = null;
+            run.toolStreaming = false;
+            // 工具调用一开始输出就建卡片，参数随分片实时刷新
+            const ensureToolCard = () => {
+              if (run.toolPart) return;
+              run.toolPart = { type: 'tools', calls: roundCalls };
+              run.parts.push(run.toolPart);
+              // 开始输出工具调用：本轮思考结束，之后的正文另起一段
+              foldThink();
+              run.answerEl = null;
+              run.curText = null;
+              run.toolStreaming = true;
+              if (!run.bubble) return;
+              clearPlaceholder();
+              const card = toolCardEl(roundCalls, { done: false });
+              const wrap = document.createElement('div');
+              wrap.className = 'tool-wrap';
+              wrap.appendChild(card.el);
+              run.bubble.appendChild(wrap);
+              run.toolCard = card;
+            };
             const payload = customBody
               ? { raw: customBody, ...testParams() }
               : {
@@ -2528,6 +2581,8 @@
                   });
                 });
               }
+              // 非流式一次性拿到完整参数，也先建卡片再执行
+              if (run.tools && roundCalls.length) ensureToolCard();
               scrollLog();
             } else {
               const reader = res.body.getReader();
@@ -2583,6 +2638,11 @@
                           : JSON.stringify(fn.arguments);
                       }
                     }
+                    // 参数是分片到达的，每来一片就刷新卡片上的参数文本
+                    if (run.tools && roundCalls.length) {
+                      ensureToolCard();
+                      if (run.toolCard) run.toolCard.sync();
+                    }
                   }
                 }
                 scrollLog();
@@ -2594,11 +2654,15 @@
             if (!run.tools || !roundCalls.length) break;
             if (toolRounds >= MAX_TOOL_ROUNDS) break;
 
-            // 执行工具，把 assistant 的 tool_calls 和 tool 结果追加到下一轮消息
+            // 执行工具：结果写回卡片并就地刷新，然后收起卡片
             const executed = roundCalls.map((c) => {
               const r = runChatTool(c.name, c.args);
+              if (!c.id) c.id = 'call_' + uid();
+              c.result = r.result;
+              c.error = !r.ok;
+              c.done = true;
               return {
-                id: c.id || ('call_' + uid()),
+                id: c.id,
                 name: c.name,
                 args: c.args,
                 result: r.result,
@@ -2606,14 +2670,14 @@
               };
             });
             run.toolLog.push(...executed);
-            // 工具块按输出顺序接在当前正文段后面；本轮思考到这里结束，
-            // 下一轮思考会另起一块，下一轮正文也另起一段
-            foldThink();
-            run.parts.push({ type: 'tools', calls: executed });
-            if (run.bubble) {
-              clearPlaceholder();
-              run.bubble.appendChild(toolWrapEl(executed));
+            // 卡片在流式输出时已经插进气泡，这里只补结果并收起
+            if (run.toolCard) {
+              run.toolCard.sync({ done: true });
+              run.toolCard.el.open = false;
             }
+            run.toolPart = null;
+            run.toolCard = null;
+            run.toolStreaming = false;
             run.answerEl = null;
             run.curText = null;
             scrollLog();
@@ -2640,6 +2704,14 @@
           if (isAbort(e)) run.stopped = true;
           else run.failed = e;
         }
+        // 流式中断或达到轮数上限时，没执行的工具调用标记为未执行并收起
+        if (run.toolCard) {
+          run.toolCard.sync({ done: true });
+          run.toolCard.el.open = false;
+          run.toolCard = null;
+        }
+        run.toolStreaming = false;
+        run.toolPart = null;
         // 无论成功、报错还是停止，都不应该再留着加载动画
         clearPlaceholder();
         // 只有出现过工具调用时才额外保存分段顺序，普通回复继续用 content
@@ -2771,7 +2843,7 @@
           think: '', answer: '', curThink: null,
           // parts 是气泡的时间线：思考段、正文段与工具调用段按输出顺序排列
           parts: [], curText: null, roundText: '',
-          toolLog: [],
+          toolLog: [], toolPart: null, toolCard: null, toolStreaming: false,
           stopped: false, failed: null,
           bubble: null, msgEl: null, view: null,
           thinkBlock: null, thinkBody: null, thinkMeta: null, answerEl: null,
@@ -3210,6 +3282,7 @@
           run.bubble = null;
           run.msgEl = null;
           run.thinkBlock = run.thinkBody = run.thinkMeta = run.answerEl = null;
+          run.toolCard = null;
         }
       };
       window.addEventListener('hashchange', onLeave, { once: true });
