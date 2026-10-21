@@ -8,6 +8,7 @@
     esc, API, State, Toast, openModal, confirmDialog, promptDialog, icon, providerIcon, providerAvatar,
     badge, statusBadge, emptyState, loadingBlock, fmtTime, fmtInt, fmtUnit, fmtNum, fmtDuration,
     fmtUptime, relTime, copyText, debounce, fmtContext, Theme, switchEl, colorBadge, isCoarsePointer,
+    REPO_URL,
   } = window.LDM;
 
   const { areaChart, barChart, donutChart, rankList, timeLabel, hideTip } = window.Charts;
@@ -3391,10 +3392,10 @@
           </div>
           <div class="card__body">
             <div class="stat-grid stat-grid--4" style="margin-bottom:0">
-              <div class="stat">
+              <a class="stat stat--link" href="${esc(REPO_URL)}/releases" target="_blank" rel="noopener noreferrer" title="在 GitHub 查看发布记录">
                 <div class="stat__label">版本</div>
                 <div class="stat__value" style="font-size:19px">v${esc(me.version)}</div>
-              </div>
+              </a>
               <div class="stat">
                 <div class="stat__label">运行时间</div>
                 <div class="stat__value" style="font-size:19px">${esc(fmtUptime(me.uptime_seconds))}</div>
@@ -3405,7 +3406,7 @@
               </div>
               <div class="stat">
                 <div class="stat__label">内存占用</div>
-                <div class="stat__value" style="font-size:19px">${esc(fmtMem(me.memory_bytes))}</div>
+                <div class="stat__value" style="font-size:19px">${esc(fmtMem(me.memory_bytes))}${Number(me.memory_total_bytes) > 0 ? ` <small>/ ${esc(fmtMem(me.memory_total_bytes))}</small>` : ''}</div>
               </div>
             </div>
           </div>

@@ -133,15 +133,16 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	writeOK(w, map[string]any{
-		"logged_in":        true,
-		"version":          s.Version,
-		"started_at":       s.StartedAt.UnixMilli(),
-		"uptime_seconds":   int64(time.Since(s.StartedAt).Seconds()),
-		"system":           systemName(),
-		"memory_bytes":     mem.Sys,
-		"default_password": s.CheckPassword(DefaultPassword),
-		"counts":           counts,
-		"settings":         publicSettings(st),
+		"logged_in":          true,
+		"version":            s.Version,
+		"started_at":         s.StartedAt.UnixMilli(),
+		"uptime_seconds":     int64(time.Since(s.StartedAt).Seconds()),
+		"system":             systemName(),
+		"memory_bytes":       mem.Sys,
+		"memory_total_bytes": totalSystemMemory(),
+		"default_password":   s.CheckPassword(DefaultPassword),
+		"counts":             counts,
+		"settings":           publicSettings(st),
 	})
 }
 
