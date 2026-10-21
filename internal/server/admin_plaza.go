@@ -215,6 +215,8 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		MaxTok  *int            `json:"max_tokens"`
 		Seed    *int64          `json:"seed"`
 		Raw     json.RawMessage `json:"raw"` // 自定义请求体：原样转发，不再由网关拼装
+		// Tools 是在线聊天「工具调用」开关附带的工具定义，普通模式下透传给上游。
+		Tools json.RawMessage `json:"tools"`
 
 		// 临时测试：填写后直接请求该上游，不经过渠道与模型路由，也不写调用日志。
 		BaseURL string `json:"base_url"`
@@ -271,6 +273,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Seed != nil {
 			payload["seed"] = *req.Seed
+		}
+		if len(req.Tools) > 0 && string(req.Tools) != "null" {
+			payload["tools"] = req.Tools
 		}
 	}
 	body, _ := json.Marshal(payload)

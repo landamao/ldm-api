@@ -836,10 +836,12 @@
   // 关标签页/刷新时浏览器会直接掐断请求，把已经生成的部分存下来，回来还能看到
   window.addEventListener('beforeunload', () => {
     const run = chatStore.run;
-    if (!run || run.discarded || run.unloadSaved || (!run.answer && !run.think)) return;
+    if (!run || run.discarded || run.unloadSaved || (!run.answer && !run.think && !run.toolLog.length)) return;
     run.unloadSaved = true;
     const entry = { role: 'assistant', content: run.answer, model: run.sentModel.id, stopped: true };
     if (run.think) entry.think = run.think;
+    if (run.toolLog.length) entry.tool_calls = run.toolLog;
+    if (run.parts && run.parts.some((p) => p.type === 'tools')) entry.parts = run.parts;
     entry.meta = [[`模型 ${run.sentModel.id}`], ['页面关闭，已停止生成']];
     if (run.sentModel.provider_icon) entry.provider_icon = run.sentModel.provider_icon;
     chatStore.history.push(entry);
@@ -999,6 +1001,11 @@
                       <span class="chat-switch-row__label">流式输出</span>
                       ${switchEl(true, '', 'id="chat-stream" title="关闭后等完整回复再一次性显示"')}
                     </div>
+                    <div class="chat-switch-row">
+                      <span class="chat-switch-row__label">工具调用</span>
+                      ${switchEl(false, '', 'id="chat-tools" title="开启后向模型提供获取当前时间的工具，用于测试工具调用"')}
+                    </div>
+                    <div class="muted fs-12">提供 get_current_time 工具，用于测试模型是否支持工具调用</div>
                   </div>
                   <div class="chat-field">
                     <div class="chat-field__head">
@@ -1081,6 +1088,8 @@
       const streamInput = streamToggle.querySelector('input');
       const streamTop = root.querySelector('#chat-stream-top');
       const streamTopInput = streamTop.querySelector('input');
+      const toolsSwitch = root.querySelector('#chat-tools');
+      const toolsInput = toolsSwitch.querySelector('input');
       const customSwitch = root.querySelector('#chat-custom-switch');
       const customSwitchInput = customSwitch.querySelector('input');
       const customPanel = root.querySelector('#chat-custom');
@@ -1137,6 +1146,21 @@
       };
       streamTopInput.onchange = () => {
         setStreaming(streamTopInput.checked);
+        focusText();
+      };
+
+      // 工具调用开关：开启后每次请求都带上获取当前时间的测试工具
+      const TOOLS_KEY = 'ldmapi.chat.tools';
+      let toolsOn = false;
+      try { toolsOn = localStorage.getItem(TOOLS_KEY) === '1'; } catch (e) { /* 存储不可用 */ }
+      const setTools = (on) => {
+        toolsOn = on;
+        toolsInput.checked = on;
+        try { localStorage.setItem(TOOLS_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
+      };
+      setTools(toolsOn);
+      toolsInput.onchange = () => {
+        setTools(toolsInput.checked);
         focusText();
       };
 
@@ -1658,6 +1682,60 @@
         return '';
       };
 
+      // 一轮工具调用共用一张卡片：标题显示调用次数，内部按顺序列出每次调用的
+      // 名称、参数与结果；只有一次调用时也用同样的结构。
+      const toolCardEl = (calls) => {
+        const list = (calls || []).filter(Boolean);
+        const det = document.createElement('details');
+        det.className = 'tool-block';
+        det.open = true;
+        det.innerHTML = '<summary>工具调用<span class="tool-block__meta"></span></summary>'
+          + '<div class="tool-block__body"></div>';
+        const failed = list.filter((c) => c.error).length;
+        det.querySelector('.tool-block__meta').textContent =
+          ` ${list.length} 次${failed ? ` · ${failed} 个失败` : ''}`;
+        const body = det.querySelector('.tool-block__body');
+        list.forEach((call) => {
+          const sec = document.createElement('div');
+          sec.className = 'tool-call';
+          const head = document.createElement('div');
+          head.className = 'tool-call__head';
+          const name = document.createElement('span');
+          name.className = 'tool-call__name';
+          name.textContent = call.name || '未知工具';
+          const state = document.createElement('span');
+          state.className = 'tool-call__state' + (call.error ? ' is-error' : '');
+          state.textContent = call.error ? '失败' : '完成';
+          head.appendChild(name);
+          head.appendChild(state);
+          sec.appendChild(head);
+          const addRow = (label, value) => {
+            const row = document.createElement('div');
+            row.className = 'tool-call__row';
+            const lab = document.createElement('div');
+            lab.className = 'tool-call__label';
+            lab.textContent = label;
+            const pre = document.createElement('pre');
+            pre.className = 'tool-call__code';
+            pre.textContent = value;
+            row.appendChild(lab);
+            row.appendChild(pre);
+            sec.appendChild(row);
+          };
+          addRow('参数', call.args || '{}');
+          addRow('结果', call.result || '');
+          body.appendChild(sec);
+        });
+        return det;
+      };
+
+      const toolWrapEl = (calls) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'tool-wrap';
+        if (calls && calls.length) wrap.appendChild(toolCardEl(calls));
+        return wrap;
+      };
+
       const addMsg = (role, content, isError, providerIconKey) => {
         const el = document.createElement('div');
         el.className = 'msg msg--' + (role === 'user' ? 'user' : 'assistant') + (isError ? ' msg--error' : '');
@@ -1723,7 +1801,21 @@
         const contentEl = document.createElement('div');
         contentEl.className = 'msg__content';
         bubble.appendChild(contentEl);
-        renderContent(contentEl, m.display || m.content || '');
+        if (m.role === 'assistant' && Array.isArray(m.parts) && m.parts.length) {
+          // 新记录按正文 / 工具调用的实际输出顺序回放
+          m.parts.forEach((part) => {
+            if (!part) return;
+            if (part.type === 'text') appendTextPart(contentEl, part.text);
+            else if (part.type === 'tools') contentEl.appendChild(toolWrapEl(part.calls));
+          });
+        } else {
+          // 旧记录没有分段信息：工具块在前，正文在后。
+          // renderContent 默认会清空容器，这里必须保留已插入的工具块。
+          if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+            contentEl.appendChild(toolWrapEl(m.tool_calls));
+          }
+          renderContent(contentEl, m.display || m.content || '', false);
+        }
         if (m.error) {
           const errEl = document.createElement('div');
           errEl.className = 'msg__error-text';
@@ -1806,6 +1898,8 @@
         streamToggle.classList.toggle('is-disabled', busy || customMode);
         streamTopInput.disabled = busy || customMode;
         streamTop.classList.toggle('is-disabled', busy || customMode);
+        toolsInput.disabled = busy || customMode;
+        toolsSwitch.classList.toggle('is-disabled', busy || customMode);
         modelSel.disabled = busy || customMode;
         mobileModelSel.disabled = busy || customMode;
         paramsReset.disabled = busy || customMode;
@@ -2127,6 +2221,8 @@
         streamToggle.classList.toggle('is-disabled', on || sending);
         streamTopInput.disabled = on || sending;
         streamTop.classList.toggle('is-disabled', on || sending);
+        toolsInput.disabled = on || sending;
+        toolsSwitch.classList.toggle('is-disabled', on || sending);
         customEditor.disabled = sending;
         pickImage.disabled = on || sending;
         pickFile.disabled = on || sending;
@@ -2135,6 +2231,87 @@
       };
 
       // ---------- 请求 ----------
+
+      // 测试工具：给模型一个获取当前时间的函数。模型发起调用后由浏览器执行，
+      // 再把结果作为 tool 消息回传，完整走一遍工具调用往返。
+      const CHAT_TOOLS = [{
+        type: 'function',
+        function: {
+          name: 'get_current_time',
+          description: '获取当前的日期和时间。用户询问现在几点、今天几号或需要当前时间时调用。',
+          parameters: {
+            type: 'object',
+            properties: {
+              timezone: {
+                type: 'string',
+                description: 'IANA 时区名称，例如 Asia/Shanghai；留空使用浏览器本地时区',
+              },
+            },
+          },
+        },
+      }];
+
+      const runChatTool = (name, argText) => {
+        if (name !== 'get_current_time') {
+          return { ok: false, result: JSON.stringify({ error: '未知工具：' + (name || '未命名') }) };
+        }
+        let args = {};
+        if (argText) {
+          try {
+            args = JSON.parse(argText);
+          } catch (e) {
+            return { ok: false, result: JSON.stringify({ error: '工具参数不是合法 JSON：' + e.message }) };
+          }
+        }
+        const tz = args && typeof args.timezone === 'string' ? args.timezone.trim() : '';
+        const now = new Date();
+        const opts = { hour12: false };
+        if (tz) opts.timeZone = tz;
+        try {
+          return {
+            ok: true,
+            result: JSON.stringify({
+              timezone: tz || Intl.DateTimeFormat().resolvedOptions().timeZone || '本地时区',
+              local_time: now.toLocaleString('zh-CN', opts),
+              weekday: now.toLocaleDateString('zh-CN', { ...opts, weekday: 'long' }),
+              iso: now.toISOString(),
+              unix: Math.floor(now.getTime() / 1000),
+            }, null, 2),
+          };
+        } catch (e) {
+          return { ok: false, result: JSON.stringify({ error: '时区无效：' + tz }) };
+        }
+      };
+
+      // 多轮工具调用会把用量拆到多次响应里，展示时按轮累加
+      const mergeUsage = (base, u) => {
+        if (!u) return base;
+        if (!base) return { ...u };
+        const sum = (a, b) => (Number(a) || 0) + (Number(b) || 0);
+        const out = { ...base };
+        ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach((k) => {
+          if (u[k] != null) out[k] = sum(base[k], u[k]);
+        });
+        const cached = (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens)
+          || u.prompt_cache_hit_tokens || 0;
+        if (cached) {
+          const prev = (out.prompt_tokens_details && out.prompt_tokens_details.cached_tokens)
+            || out.prompt_cache_hit_tokens || 0;
+          out.prompt_tokens_details = out.prompt_tokens_details || {};
+          out.prompt_tokens_details.cached_tokens = sum(prev, cached);
+          delete out.prompt_cache_hit_tokens;
+        }
+        const reasoning = u.completion_tokens_details && u.completion_tokens_details.reasoning_tokens;
+        if (reasoning) {
+          const prev = out.completion_tokens_details && out.completion_tokens_details.reasoning_tokens;
+          out.completion_tokens_details = out.completion_tokens_details || {};
+          out.completion_tokens_details.reasoning_tokens = sum(prev, reasoning);
+        }
+        return out;
+      };
+
+      // 最多连续执行几轮工具调用，防止模型在工具之间反复循环
+      const MAX_TOOL_ROUNDS = 3;
 
       // 只负责一次流式调用与气泡渲染，历史由调用方维护。
       // run 放在 chatStore 里，页面切走再回来时可以重新 attach 到新气泡。
@@ -2154,8 +2331,7 @@
         const clearPlaceholder = () => {
           const b = run.bubble;
           if (!b) return;
-          const typing = b.querySelector('.typing');
-          if (typing) typing.remove();
+          b.querySelectorAll('.typing').forEach((el) => el.remove());
         };
         const ensureThink = () => {
           const b = run.bubble;
@@ -2173,14 +2349,17 @@
           run.thinkMeta = det.querySelector('.think-block__meta');
           run.thinkMeta.textContent = run.answer ? ` ${run.think.length} 字` : ' 思考中…';
         };
+        // 正文按轮次分段：每轮正文一个元素，工具块插在两段正文之间，
+        // 这样「正文 + 工具调用 + 后续正文」的显示顺序和模型输出顺序一致。
         const ensureAnswer = () => {
           const b = run.bubble;
-          if (!b) return;
-          if (run.answerEl && b.contains(run.answerEl)) return;
+          if (!b) return null;
           clearPlaceholder();
+          if (run.answerEl && b.contains(run.answerEl)) return run.answerEl;
           run.answerEl = document.createElement('div');
           run.answerEl.className = 'msg__answer';
           b.appendChild(run.answerEl);
+          return run.answerEl;
         };
         const paintThink = (thinking) => {
           if (!run.bubble) return;
@@ -2190,6 +2369,17 @@
           if (thinking) run.thinkMeta.textContent = ` 思考中…（${run.think.length} 字）`;
           else run.thinkMeta.textContent = ` ${run.think.length} 字`;
         };
+        const addContent = (chunk) => {
+          if (!chunk) return;
+          run.roundText += chunk;
+          run.answer += chunk;
+          if (!run.curText) {
+            run.curText = { type: 'text', text: '' };
+            run.parts.push(run.curText);
+          }
+          run.curText.text += chunk;
+          paintAnswer();
+        };
         const paintAnswer = () => {
           // 正文开始了就把思考块收起来，想看还能再点开
           if (run.think && !run.thinkFolded) {
@@ -2197,16 +2387,17 @@
             if (run.thinkBlock) run.thinkBlock.open = false;
             if (run.bubble) paintThink(false);
           }
-          if (!run.bubble) return;
-          ensureAnswer();
-          if (run.answerEl) run.answerEl.textContent = run.answer;
+          if (!run.bubble || !run.curText) return;
+          const el = ensureAnswer();
+          if (el) el.textContent = run.curText.text;
         };
         const paintFailure = (message) => {
           const b = run.bubble;
           if (!b) return;
           if (run.think) paintThink(false);
           if (run.answer) paintAnswer();
-          if (!run.think && !run.answer) b.innerHTML = '';
+          clearPlaceholder();
+          if (!run.think && !run.answer && !run.parts.length) b.innerHTML = '';
           const errEl = document.createElement('div');
           errEl.className = 'msg__error-text';
           errEl.textContent = message;
@@ -2215,124 +2406,222 @@
           if (msg) msg.classList.add('msg--error');
         };
 
-        // 页面切走再回来时，把累计内容重新画到新的气泡上
+        // 页面切走再回来时，按时间线把正文段与工具块重新画到新的气泡上
         run.attach = (b, v) => {
           run.bubble = b;
           run.msgEl = b.closest('.msg');
           run.view = v || null;
-          run.thinkBlock = run.thinkBody = run.thinkMeta = run.answerEl = null;
+          run.thinkBlock = run.thinkBody = run.thinkMeta = null;
+          run.answerEl = null;
+          run.curText = null;
           b.innerHTML = '';
           if (run.think) {
             ensureThink();
             if (run.thinkBlock) run.thinkBlock.open = !run.thinkFolded;
             paintThink(false);
           }
-          if (run.answer) {
-            ensureAnswer();
-            if (run.answerEl) run.answerEl.textContent = run.answer;
-          }
-          if (!run.think && !run.answer) b.innerHTML = typingHtml;
+          run.parts.forEach((part) => {
+            if (!part) return;
+            if (part.type === 'text') {
+              const el = document.createElement('div');
+              el.className = 'msg__answer';
+              el.textContent = part.text;
+              b.appendChild(el);
+              run.answerEl = el;
+              run.curText = part;
+            } else if (part.type === 'tools') {
+              b.appendChild(toolWrapEl(part.calls));
+              run.answerEl = null;
+              run.curText = null;
+            }
+          });
+          if (!run.think && !run.answer && !run.parts.length) b.innerHTML = typingHtml;
         };
         run.attach(bubble, view);
 
         try {
-          const payload = customBody
-            ? { raw: customBody, ...testParams() }
-            : {
-                model: sentModel.id,
-                // 只发正文，思考内容和错误提示都不参与上下文
-                messages: run.messages,
-                stream: streaming,
-                ...collectParams(),
-                ...testParams(),
-              };
-          const res = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            signal: run.ctl.signal,
-            body: JSON.stringify(payload),
-          });
-          if (!res.ok) {
-            let msg = `HTTP ${res.status}`;
-            try {
-              const j = await res.json();
-              msg = (j.error && j.error.message) || msg;
-            } catch (e) { /* 响应不是 JSON，保留状态码 */ }
-            throw new Error(msg);
-          }
-          // 请求体里的 stream 只代表意愿，真正决定解析方式的是上游实际返回的类型
-          useStream = (res.headers.get('content-type') || '').toLowerCase().includes('text/event-stream');
-          if (!useStream) {
-            // 非流式：等完整响应，思考与正文一次性渲染
-            const j = await res.json();
-            run.usage = j.usage || null;
-            const msg = (j.choices && j.choices[0] && j.choices[0].message) || {};
-            const reasoning = msg.reasoning_content || msg.reasoning || '';
-            if (reasoning) {
-              run.think = reasoning;
-              run.thinkFolded = true;
-              if (run.bubble) {
-                ensureThink();
-                if (run.thinkBlock) run.thinkBlock.open = false;
-                paintThink(false);
-              }
-            }
-            const content = flattenText(msg.content);
-            if (content) {
-              run.answer = content;
-              if (run.bubble) {
-                ensureAnswer();
-                if (run.answerEl) run.answerEl.textContent = run.answer;
-              }
-            }
-            scrollLog();
-          } else {
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buf = '';
-            for (;;) {
-              let chunk;
+          // 第一轮使用历史快照；模型调用工具后，把 assistant 的 tool_calls
+          // 与执行结果追加进消息，再请求下一轮，直到模型给出正文。
+          let messages = run.messages.slice();
+          let toolRounds = 0;
+          for (;;) {
+            const roundCalls = [];
+            run.roundText = '';
+            const payload = customBody
+              ? { raw: customBody, ...testParams() }
+              : {
+                  model: sentModel.id,
+                  // 只发正文，思考内容和错误提示都不参与上下文
+                  messages,
+                  stream: streaming,
+                  ...collectParams(),
+                  ...testParams(),
+                  ...(run.tools ? { tools: CHAT_TOOLS } : {}),
+                };
+            const res = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              signal: run.ctl.signal,
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+              let msg = `HTTP ${res.status}`;
               try {
-                chunk = await reader.read();
-              } catch (e) {
-                // 主动停止：跳出循环，交给后面的收尾逻辑
-                if (isAbort(e)) { run.stopped = true; break; }
-                throw e;
+                const j = await res.json();
+                msg = (j.error && j.error.message) || msg;
+              } catch (e) { /* 响应不是 JSON，保留状态码 */ }
+              throw new Error(msg);
+            }
+            // 请求体里的 stream 只代表意愿，真正决定解析方式的是上游实际返回的类型
+            useStream = (res.headers.get('content-type') || '').toLowerCase().includes('text/event-stream');
+            if (!useStream) {
+              // 非流式：等完整响应，思考与正文一次性渲染
+              const j = await res.json();
+              run.usage = mergeUsage(run.usage, j.usage);
+              const msg = (j.choices && j.choices[0] && j.choices[0].message) || {};
+              const reasoning = msg.reasoning_content || msg.reasoning || '';
+              if (reasoning) {
+                run.think += reasoning;
+                run.thinkFolded = true;
+                if (run.bubble) {
+                  ensureThink();
+                  if (run.thinkBlock) run.thinkBlock.open = false;
+                  paintThink(false);
+                }
               }
-              if (chunk.done) break;
-              buf += decoder.decode(chunk.value, { stream: true });
-              const lines = buf.split('\n');
-              buf = lines.pop();
-              for (const line of lines) {
-                const t = line.trim();
-                if (!t.startsWith('data:')) continue;
-                const data = t.slice(5).trim();
-                if (data === '[DONE]') continue;
-                let j;
-                try { j = JSON.parse(data); } catch (e) { continue; }
-                if (j.usage) run.usage = j.usage;
-                const d = j.choices && j.choices[0] && j.choices[0].delta;
-                if (!d) continue;
-                if (!run.firstTokenMs && (d.reasoning_content || d.content)) {
-                  run.firstTokenMs = Date.now() - t0;
-                }
-                if (d.reasoning_content) {
-                  run.think += d.reasoning_content;
-                  paintThink(true);
-                }
-                if (d.content) {
-                  run.answer += d.content;
-                  paintAnswer();
-                }
+              const content = flattenText(msg.content);
+              if (content) addContent(content);
+              if (Array.isArray(msg.tool_calls)) {
+                msg.tool_calls.forEach((tc, i) => {
+                  const fn = (tc && tc.function) || {};
+                  roundCalls.push({
+                    index: i,
+                    id: (tc && tc.id) || '',
+                    name: fn.name || '',
+                    args: typeof fn.arguments === 'string'
+                      ? fn.arguments
+                      : (fn.arguments == null ? '' : JSON.stringify(fn.arguments)),
+                  });
+                });
               }
               scrollLog();
+            } else {
+              const reader = res.body.getReader();
+              const decoder = new TextDecoder();
+              let buf = '';
+              for (;;) {
+                let chunk;
+                try {
+                  chunk = await reader.read();
+                } catch (e) {
+                  // 主动停止：跳出循环，交给后面的收尾逻辑
+                  if (isAbort(e)) { run.stopped = true; break; }
+                  throw e;
+                }
+                if (chunk.done) break;
+                buf += decoder.decode(chunk.value, { stream: true });
+                const lines = buf.split('\n');
+                buf = lines.pop();
+                for (const line of lines) {
+                  const t = line.trim();
+                  if (!t.startsWith('data:')) continue;
+                  const data = t.slice(5).trim();
+                  if (data === '[DONE]') continue;
+                  let j;
+                  try { j = JSON.parse(data); } catch (e) { continue; }
+                  if (j.usage) run.usage = mergeUsage(run.usage, j.usage);
+                  const d = j.choices && j.choices[0] && j.choices[0].delta;
+                  if (!d) continue;
+                  if (!run.firstTokenMs && (d.reasoning_content || d.content || d.tool_calls)) {
+                    run.firstTokenMs = Date.now() - t0;
+                  }
+                  if (d.reasoning_content) {
+                    run.think += d.reasoning_content;
+                    paintThink(true);
+                  }
+                  if (d.content) addContent(d.content);
+                  if (Array.isArray(d.tool_calls)) {
+                    for (const tc of d.tool_calls) {
+                      // 标准实现每个分片都带 index；个别上游不带时按「属于上一个调用」处理，
+                      // 避免把同一次调用的参数碎片拆成多个工具
+                      const idx = Number.isInteger(tc && tc.index)
+                        ? tc.index
+                        : (roundCalls.length ? roundCalls[roundCalls.length - 1].index : 0);
+                      let slot = roundCalls.find((x) => x.index === idx);
+                      if (!slot) {
+                        slot = { index: idx, id: '', name: '', args: '' };
+                        roundCalls.push(slot);
+                      }
+                      if (tc.id) slot.id = tc.id;
+                      const fn = tc.function || {};
+                      // 名字通常只在第一块里出现，直接覆盖避免重复拼接
+                      if (fn.name) slot.name = fn.name;
+                      if (fn.arguments != null) {
+                        slot.args += typeof fn.arguments === 'string'
+                          ? fn.arguments
+                          : JSON.stringify(fn.arguments);
+                      }
+                    }
+                  }
+                }
+                scrollLog();
+              }
+            }
+
+            if (run.stopped || run.failed) break;
+            // 没开工具、没有工具调用，或者已经达到轮数上限：结束本次生成
+            if (!run.tools || !roundCalls.length) break;
+            if (toolRounds >= MAX_TOOL_ROUNDS) break;
+
+            // 执行工具，把 assistant 的 tool_calls 和 tool 结果追加到下一轮消息
+            const executed = roundCalls.map((c) => {
+              const r = runChatTool(c.name, c.args);
+              return {
+                id: c.id || ('call_' + uid()),
+                name: c.name,
+                args: c.args,
+                result: r.result,
+                error: !r.ok,
+              };
+            });
+            run.toolLog.push(...executed);
+            // 工具块按输出顺序接在当前正文段后面；下一轮正文会另起一段
+            run.parts.push({ type: 'tools', calls: executed });
+            if (run.bubble) {
+              clearPlaceholder();
+              run.bubble.appendChild(toolWrapEl(executed));
+            }
+            run.answerEl = null;
+            run.curText = null;
+            scrollLog();
+            toolRounds += 1;
+            messages = messages.concat([
+              {
+                role: 'assistant',
+                content: run.roundText || null,
+                tool_calls: executed.map((c) => ({
+                  id: c.id,
+                  type: 'function',
+                  function: { name: c.name, arguments: c.args || '{}' },
+                })),
+              },
+              ...executed.map((c) => ({ role: 'tool', tool_call_id: c.id, content: c.result })),
+            ]);
+            // 等下一轮响应期间保持输入中的动画
+            if (run.bubble) {
+              clearPlaceholder();
+              run.bubble.insertAdjacentHTML('beforeend', typingHtml);
             }
           }
         } catch (e) {
           if (isAbort(e)) run.stopped = true;
           else run.failed = e;
         }
+        // 无论成功、报错还是停止，都不应该再留着加载动画
+        clearPlaceholder();
+        // 只有出现过工具调用时才额外保存分段顺序，普通回复继续用 content
+        const entryParts = run.parts.some((p) => p.type === 'tools') ? run.parts : null;
 
         if (run.failed) {
           const errorText = '调用失败：' + (run.failed.message || run.failed);
@@ -2345,6 +2634,8 @@
             model: sentModel.id,
           };
           if (run.think) entry.think = run.think;
+          if (run.toolLog.length) entry.tool_calls = run.toolLog;
+          if (entryParts) entry.parts = entryParts;
           if (customBody) entry.custom = true;
           if (sentModel.provider_icon) entry.provider_icon = sentModel.provider_icon;
           entry.meta = [[`模型 ${sentModel.id}`], ['调用失败'], [`总耗时 ${fmtDuration(Date.now() - t0)}`]];
@@ -2358,7 +2649,15 @@
           if (run.bubble) paintThink(false);
         }
         if (!run.answer && !run.think && run.bubble) {
-          run.bubble.textContent = run.stopped ? '（已停止生成）' : '（模型没有返回内容）';
+          if (run.toolLog.length) {
+            // 气泡里已经有工具调用块，只补一行提示，不能整块覆盖
+            const note = document.createElement('div');
+            note.className = 'muted fs-12';
+            note.textContent = run.stopped ? '（已停止生成）' : '（模型只调用了工具，没有返回正文）';
+            run.bubble.appendChild(note);
+          } else {
+            run.bubble.textContent = run.stopped ? '（已停止生成）' : '（模型没有返回内容）';
+          }
         }
 
         const totalMs = Date.now() - t0;
@@ -2394,15 +2693,18 @@
         if (usage && usage.total_tokens) timingParts.push(`总token ${fmtInt(usage.total_tokens)}`);
 
         // 对话共用一份历史，所以在每条回复上标明用的是哪个模型
-        const metaGroups = [[`模型 ${sentModel.id}`], inputParts, outputParts, timingParts]
+        const toolParts = run.toolLog.length ? [`工具调用 ${run.toolLog.length} 次`] : [];
+        const metaGroups = [[`模型 ${sentModel.id}`], inputParts, outputParts, toolParts, timingParts]
           .filter((g) => g.length);
         if (run.stopped) metaGroups.push(['已停止生成']);
         if (run.bubble) setMeta(run.bubble, metaGroups);
 
-        // 只把正文带回下一轮，思考内容与统计信息单独存起来用于回看
-        if (run.answer || run.think) {
+        // 只把正文带回下一轮，思考内容、工具调用与统计信息单独存起来用于回看
+        if (run.answer || run.think || run.toolLog.length) {
           const entry = { role: 'assistant', content: run.answer, model: sentModel.id };
           if (run.think) entry.think = run.think;
+          if (run.toolLog.length) entry.tool_calls = run.toolLog;
+          if (entryParts) entry.parts = entryParts;
           if (metaGroups.length) entry.meta = metaGroups;
           if (sentModel.provider_icon) entry.provider_icon = sentModel.provider_icon;
           if (customBody) entry.custom = true;
@@ -2444,9 +2746,13 @@
         if (chatStore.run) return null;
         const run = {
           messages, sentModel, customBody,
+          tools: !customBody && toolsOn,
           ctl: new AbortController(),
           t0: Date.now(), firstTokenMs: 0, usage: null,
           think: '', answer: '', thinkFolded: false,
+          // parts 是气泡的时间线：正文段与工具调用段按输出顺序排列
+          parts: [], curText: null, roundText: '',
+          toolLog: [],
           stopped: false, failed: null,
           bubble: null, msgEl: null, view: null,
           entry: null, discarded: false, unloadSaved: false,

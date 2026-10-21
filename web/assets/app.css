@@ -1735,6 +1735,69 @@ html[data-theme="dark"] .msg__bubble { background: rgba(255, 255, 255, .08); }
   max-height: 320px;
   overflow-y: auto;
 }
+/* 工具调用：测试工具的调用参数与执行结果 */
+.tool-wrap { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 10px; }
+.tool-wrap:empty { display: none; }
+.msg__content > .tool-wrap { margin-bottom: 0; }
+.tool-block {
+  border: 1px solid var(--border-line);
+  border-left: 3px solid var(--blue-500);
+  border-radius: 11px;
+  background: rgba(59, 130, 246, .07);
+  overflow: hidden;
+}
+.tool-block > summary {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 11px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  font-size: 12px; font-weight: 650;
+  color: var(--blue-500);
+}
+.tool-block > summary::-webkit-details-marker { display: none; }
+.tool-block > summary::before {
+  content: "▸";
+  display: inline-block;
+  font-size: 10px;
+  transition: transform .16s;
+}
+.tool-block[open] > summary::before { transform: rotate(90deg); }
+.tool-block__meta { font-weight: 500; color: var(--text-3); font-size: 11px; }
+.tool-block__body {
+  padding: 9px 11px;
+  border-top: 1px solid var(--border-line);
+  display: flex; flex-direction: column; gap: 12px;
+}
+/* 同一张卡片里的每次工具调用 */
+.tool-call { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tool-call + .tool-call { padding-top: 11px; border-top: 1px dashed var(--border-line); }
+.tool-call__head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tool-call__name {
+  font-family: var(--mono);
+  font-size: 12px; font-weight: 650;
+  color: var(--text);
+  word-break: break-all;
+}
+.tool-call__state { font-size: 11px; color: var(--green-500); }
+.tool-call__state.is-error { color: var(--red-500); }
+.tool-call__row { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tool-call__label { font-size: 11px; color: var(--text-3); }
+.tool-call__code {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, .04);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+html[data-theme="dark"] .tool-call__code { background: rgba(255, 255, 255, .06); }
 .msg__answer { white-space: pre-wrap; word-break: break-word; }
 .msg__answer:empty { display: none; }
 .msg__content { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
