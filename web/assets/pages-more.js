@@ -1317,6 +1317,14 @@
         return (n / (1024 * 1024)).toFixed(1) + ' MB';
       };
 
+      // 思考与工具耗时统一按秒显示：不足 1 秒保留两位，10 秒以上取整
+      const fmtSeconds = (ms) => {
+        const s = Math.max(0, Number(ms) || 0) / 1000;
+        if (s < 1) return `${s.toFixed(2)} 秒`;
+        if (s < 10) return `${s.toFixed(1)} 秒`;
+        return `${Math.round(s)} 秒`;
+      };
+
       const appendImage = (box, url) => {
         const link = document.createElement('a');
         link.className = 'msg__image-link';
@@ -1587,14 +1595,18 @@
         box.appendChild(el);
       };
 
-      // 深度思考折叠块：多轮工具调用时每轮各一块，按输出顺序插在气泡里
-      const thinkBlockEl = (text, open) => {
+      // 深度思考折叠块：多轮工具调用时每轮各一块，按输出顺序插在气泡里。
+      // ms 是这一轮从开始思考到结束思考的耗时，旧记录没有这个字段时只显示字数。
+      const thinkBlockEl = (text, open, ms) => {
         const det = document.createElement('details');
         det.className = 'think-block';
         det.open = !!open;
         det.innerHTML = '<summary>深度思考<span class="think-block__meta"></span></summary>'
           + '<div class="think-block__body"></div>';
-        det.querySelector('.think-block__meta').textContent = text ? ` ${text.length} 字` : ' 思考中…';
+        const meta = text
+          ? ` ${text.length} 字${ms != null ? ` · ${fmtSeconds(ms)}` : ''}`
+          : ' 思考中…';
+        det.querySelector('.think-block__meta').textContent = meta;
         det.querySelector('.think-block__body').textContent = text || '';
         return det;
       };
@@ -1756,7 +1768,10 @@
             s.resRow.hidden = !hasResult;
             if (hasResult) s.resPre.textContent = c.result;
             const failed = !!c.error;
-            s.st.textContent = failed ? '失败' : (hasResult ? '完成' : (state.done ? '未执行' : '调用中'));
+            const time = typeof c.ms === 'number' ? ` · ${fmtSeconds(c.ms)}` : '';
+            s.st.textContent = failed
+              ? `失败${time}`
+              : (hasResult ? `完成${time}` : (state.done ? '未执行' : '调用中'));
             s.st.className = 'tool-call__state' + (failed ? ' is-error' : '');
           });
           const failedCount = list.filter((c) => c && c.error).length;
@@ -1840,7 +1855,7 @@
           // 新记录按思考 / 正文 / 工具调用的实际输出顺序回放
           parts.forEach((part) => {
             if (!part) return;
-            if (part.type === 'think') contentEl.appendChild(thinkBlockEl(part.text || '', false));
+            if (part.type === 'think') contentEl.appendChild(thinkBlockEl(part.text || '', false, part.ms));
             else if (part.type === 'text') appendTextPart(contentEl, part.text);
             else if (part.type === 'tools') contentEl.appendChild(toolWrapEl(part.calls));
           });
@@ -2385,13 +2400,18 @@
         const paintThink = (thinking) => {
           if (!run.bubble || !run.curThink) return;
           if (!run.thinkBody || !run.thinkMeta) return;
-          run.thinkBody.textContent = run.curThink.text;
+          const part = run.curThink;
+          run.thinkBody.textContent = part.text;
           run.thinkMeta.textContent = thinking
-            ? ` 思考中…（${run.curThink.text.length} 字）`
-            : ` ${run.curThink.text.length} 字`;
+            ? ` 思考中…（${part.text.length} 字）`
+            : ` ${part.text.length} 字${part.ms != null ? ` · ${fmtSeconds(part.ms)}` : ''}`;
         };
         const foldThink = () => {
           if (!run.curThink) return;
+          // 记下这一轮从开始思考到结束思考用了多久
+          if (run.curThink.ms == null && run.curThink.t0) {
+            run.curThink.ms = Math.max(0, Date.now() - run.curThink.t0);
+          }
           paintThink(false);
           if (run.thinkBlock) run.thinkBlock.open = false;
           run.curThink = null;
@@ -2401,7 +2421,7 @@
           if (!chunk) return;
           run.think += chunk;
           if (!run.curThink) {
-            run.curThink = { type: 'think', text: '' };
+            run.curThink = { type: 'think', text: '', t0: Date.now() };
             run.parts.push(run.curThink);
             // 思考可能夹在正文之间，后面的正文要另起一段
             run.answerEl = null;
@@ -2468,7 +2488,7 @@
           run.parts.forEach((part) => {
             if (!part) return;
             if (part.type === 'think') {
-              const det = thinkBlockEl(part.text || '', part === run.curThink);
+              const det = thinkBlockEl(part.text || '', part === run.curThink, part.ms);
               b.appendChild(det);
               run.answerEl = null;
               run.curText = null;
@@ -2656,17 +2676,21 @@
 
             // 执行工具：结果写回卡片并就地刷新，然后收起卡片
             const executed = roundCalls.map((c) => {
+              const started = performance.now();
               const r = runChatTool(c.name, c.args);
+              const ms = Math.max(0, Math.round(performance.now() - started));
               if (!c.id) c.id = 'call_' + uid();
               c.result = r.result;
               c.error = !r.ok;
               c.done = true;
+              c.ms = ms;
               return {
                 id: c.id,
                 name: c.name,
                 args: c.args,
                 result: r.result,
                 error: !r.ok,
+                ms,
               };
             });
             run.toolLog.push(...executed);
