@@ -277,6 +277,13 @@ type Model struct {
 	ContentSpeed       int    `json:"content_speed,omitempty"`
 	ContentLatencyMs   int    `json:"content_latency_ms,omitempty"`
 
+	// 思考覆写。
+	// ThinkingOverrideOn 开启后，上游返回的思考内容会被替换为
+	// ThinkingOverrideText；文本为空时直接隐藏思考内容（响应里不再出现思考字段）。
+	// 正文、工具调用与用量统计不受影响。自定义内容返回优先级最高，开启后本项不生效。
+	ThinkingOverrideOn   *bool  `json:"thinking_override_enabled,omitempty"`
+	ThinkingOverrideText string `json:"thinking_override_text,omitempty"`
+
 	// 系统提示词注入。
 	// SystemPromptOn 开启后，请求里自带的系统提示词会被全部移除，
 	// 只把 SystemPrompt 作为唯一的系统提示词放在最前面。
@@ -320,6 +327,11 @@ func (m Model) CustomErrorAlways() bool {
 // CustomContentEnabled 返回自定义内容返回总开关。
 func (m Model) CustomContentEnabled() bool {
 	return m.ContentEnabled != nil && *m.ContentEnabled
+}
+
+// ThinkingOverrideEnabled 返回思考覆写总开关。
+func (m Model) ThinkingOverrideEnabled() bool {
+	return m.ThinkingOverrideOn != nil && *m.ThinkingOverrideOn
 }
 
 // SystemPromptEnabled 返回系统提示词注入总开关。

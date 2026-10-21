@@ -44,6 +44,12 @@
     <div style="margin-bottom:8px">开启后，网关会在转发前删除请求里自带的全部系统提示词：OpenAI 对话的 <code>system</code> / <code>developer</code> 消息、Anthropic 原生的顶层 <code>system</code> 字段、Responses API 的 <code>instructions</code> 以及 input 里的系统条目。</div>
     <div style="margin-bottom:8px">然后只把这里填写的内容作为唯一的系统提示词放在最前面，调用方无法再用自己的系统提示词改变模型设定。</div>
     <div>仅对对话类请求生效；提示词会按原样发送给上游，不做变量替换。</div>`;
+  const THINKING_OVERRIDE_HELP_TEXT = '开启后，模型返回的思考内容会替换为这里填写的内容；留空时直接隐藏思考内容。正文、工具调用和用量统计不受影响。自定义内容返回优先级最高，开启后本项不生效。';
+  const THINKING_OVERRIDE_HELP_HTML = `
+    <div style="margin-bottom:8px"><b>作用</b>：只改写模型返回的思考内容，流式与非流式、对话 / 补全 / Responses 端点都支持；正文、工具调用和用量统计不受影响。</div>
+    <div style="margin-bottom:8px"><b>填写内容</b>：模型输出思考时，客户端只会看到这里填写的内容（例如「正在思考···」），上游真实的思考内容不会发给客户端。</div>
+    <div style="margin-bottom:8px"><b>留空</b>：直接隐藏思考内容，响应里不再出现思考字段，客户端会一直等待到正文开始输出。</div>
+    <div><b>优先级</b>：自定义内容返回优先级最高，开启后思考覆写不生效，关闭内容返回后自动恢复。配合能力参数里的「思考 → 不支持、关闭报错」时，请求里的思考参数和历史思考内容会先被移除，上下文里不会留下思考内容。</div>`;
 
   // 模型编辑弹窗里的字段说明同样收进问号，避免弹窗被大段文字占满。
   const CAPS_HELP_TEXT = '工具调用 / 思考 / 图片输入支持「不设置 / 支持 / 不支持」；选择不支持时可决定报错还是自动移除。';
@@ -3020,6 +3026,21 @@
           </div>
           <div class="field">
             <div class="field__head">
+              <label class="field__label">思考覆写
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="m-thinkoverride-help" title="${esc(THINKING_OVERRIDE_HELP_TEXT)}" aria-label="查看思考覆写机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="m-thinkoverride-enabled" ${m.thinking_override_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div id="m-thinkoverride-detail" style="${m.thinking_override_enabled ? '' : 'display:none'}">
+              <textarea class="textarea" id="m-thinkoverride-text" spellcheck="false"
+                        style="min-height:56px;font-family:inherit;font-size:13px"
+                        placeholder="覆写后的思考内容（留空则隐藏思考内容）">${esc(m.thinking_override_text || '')}</textarea>
+              <div class="field__hint">模型返回的思考内容会替换为这里的内容；留空则直接隐藏。自定义内容返回开启时不生效。</div>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field__head">
               <label class="field__label">自定义错误返回
                 <button type="button" class="badge badge--blue badge--click field__help"
                         id="m-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看自定义错误返回机制">?</button>
@@ -3068,6 +3089,9 @@
         const sysPromptEnabledEl = mo.body.querySelector('#m-sysprompt-enabled');
         const sysPromptDetailEl = mo.body.querySelector('#m-sysprompt-detail');
         const sysPromptTextEl = mo.body.querySelector('#m-sysprompt-text');
+        const thinkOverrideEnabledEl = mo.body.querySelector('#m-thinkoverride-enabled');
+        const thinkOverrideDetailEl = mo.body.querySelector('#m-thinkoverride-detail');
+        const thinkOverrideTextEl = mo.body.querySelector('#m-thinkoverride-text');
         const syncAdvancedFields = () => {
           const contentOn = contentEnabledEl.checked;
           // 开启内容返回时自动关闭自定义错误，避免两套配置同时生效。
@@ -3088,20 +3112,29 @@
           contentLatencyEl.disabled = !contentOn;
           const sysPromptOn = sysPromptEnabledEl.checked;
           sysPromptTextEl.disabled = !sysPromptOn;
+          // 思考覆写受内容返回压制：开关保留原状态，但变灰不可点，
+          // 关闭内容返回后自动恢复生效。
+          const thinkOverrideOn = thinkOverrideEnabledEl.checked;
+          thinkOverrideEnabledEl.disabled = contentOn;
+          thinkOverrideTextEl.disabled = contentOn || !thinkOverrideOn;
           // 详细配置只在开启时显示，关闭时只保留总开关。
           contentDetailEl.style.display = contentOn ? '' : 'none';
           errorDetailEl.style.display = errorActive ? '' : 'none';
           sysPromptDetailEl.style.display = sysPromptOn ? '' : 'none';
+          thinkOverrideDetailEl.style.display = thinkOverrideOn ? '' : 'none';
           // 开关本身用 is-disabled 变灰，避免看起来还能点。
           const errorSwitch = errorEnabledEl.closest('.switch');
           if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
           const alwaysSwitch = errorAlwaysEl.closest('.switch');
           if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
+          const thinkOverrideSwitch = thinkOverrideEnabledEl.closest('.switch');
+          if (thinkOverrideSwitch) thinkOverrideSwitch.classList.toggle('is-disabled', contentOn);
           if (!on) errorAlwaysEl.checked = false;
         };
         contentEnabledEl.onchange = syncAdvancedFields;
         errorEnabledEl.onchange = syncAdvancedFields;
         sysPromptEnabledEl.onchange = syncAdvancedFields;
+        thinkOverrideEnabledEl.onchange = syncAdvancedFields;
         syncAdvancedFields();
         mo.body.querySelector('#m-content-help').onclick = () => {
           openHelpModal('自定义内容返回', CUSTOM_CONTENT_HELP_HTML);
@@ -3114,6 +3147,9 @@
         };
         mo.body.querySelector('#m-sysprompt-help').onclick = () => {
           openHelpModal('系统提示词注入', SYSTEM_PROMPT_HELP_HTML);
+        };
+        mo.body.querySelector('#m-thinkoverride-help').onclick = () => {
+          openHelpModal('思考覆写', THINKING_OVERRIDE_HELP_HTML);
         };
         mo.body.querySelector('#m-no-retry-template').onclick = () => {
           const input = mo.body.querySelector('#m-no-retry');
@@ -3184,6 +3220,8 @@
               error_always: errorAlways,
               error_status: errorStatus,
               error_message: mo.body.querySelector('#m-error-message').value.trim(),
+              thinking_override_enabled: mo.body.querySelector('#m-thinkoverride-enabled').checked,
+              thinking_override_text: mo.body.querySelector('#m-thinkoverride-text').value,
               system_prompt_enabled: systemPromptOn,
               system_prompt: systemPrompt,
             });
@@ -3465,6 +3503,7 @@
       id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
       caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
       no_retry_status: '', content_enabled: false, content_text: '',
+      thinking_override_enabled: false, thinking_override_text: '',
       error_enabled: false, error_always: false, error_status: 0, error_message: '',
       system_prompt_enabled: false, system_prompt: '',
     };
@@ -3596,6 +3635,21 @@
           </div>
           <div class="field">
             <div class="field__head">
+              <label class="field__label">思考覆写
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="cm-thinkoverride-help" title="${esc(THINKING_OVERRIDE_HELP_TEXT)}" aria-label="查看思考覆写机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="cm-thinkoverride-enabled" ${m.thinking_override_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div id="cm-thinkoverride-detail" style="${m.thinking_override_enabled ? '' : 'display:none'}">
+              <textarea class="textarea" id="cm-thinkoverride-text" spellcheck="false"
+                        style="min-height:56px;font-family:inherit;font-size:13px"
+                        placeholder="覆写后的思考内容（留空则隐藏思考内容）">${esc(m.thinking_override_text || '')}</textarea>
+              <div class="field__hint">模型返回的思考内容会替换为这里的内容；留空则直接隐藏。自定义内容返回开启时不生效。</div>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field__head">
               <label class="field__label">自定义错误返回
                 <button type="button" class="badge badge--blue badge--click field__help"
                         id="cm-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看自定义错误返回机制">?</button>
@@ -3664,6 +3718,9 @@
         const sysPromptEnabledEl = mo.body.querySelector('#cm-sysprompt-enabled');
         const sysPromptDetailEl = mo.body.querySelector('#cm-sysprompt-detail');
         const sysPromptTextEl = mo.body.querySelector('#cm-sysprompt-text');
+        const thinkOverrideEnabledEl = mo.body.querySelector('#cm-thinkoverride-enabled');
+        const thinkOverrideDetailEl = mo.body.querySelector('#cm-thinkoverride-detail');
+        const thinkOverrideTextEl = mo.body.querySelector('#cm-thinkoverride-text');
         const syncAdvancedFields = () => {
           const contentOn = contentEnabledEl.checked;
           // 开启内容返回时自动关闭自定义错误，避免两套配置同时生效。
@@ -3684,20 +3741,29 @@
           contentLatencyEl.disabled = !contentOn;
           const sysPromptOn = sysPromptEnabledEl.checked;
           sysPromptTextEl.disabled = !sysPromptOn;
+          // 思考覆写受内容返回压制：开关保留原状态，但变灰不可点，
+          // 关闭内容返回后自动恢复生效。
+          const thinkOverrideOn = thinkOverrideEnabledEl.checked;
+          thinkOverrideEnabledEl.disabled = contentOn;
+          thinkOverrideTextEl.disabled = contentOn || !thinkOverrideOn;
           // 详细配置只在开启时显示，关闭时只保留总开关。
           contentDetailEl.style.display = contentOn ? '' : 'none';
           errorDetailEl.style.display = errorActive ? '' : 'none';
           sysPromptDetailEl.style.display = sysPromptOn ? '' : 'none';
+          thinkOverrideDetailEl.style.display = thinkOverrideOn ? '' : 'none';
           // 开关本身用 is-disabled 变灰，避免看起来还能点。
           const errorSwitch = errorEnabledEl.closest('.switch');
           if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
           const alwaysSwitch = errorAlwaysEl.closest('.switch');
           if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
+          const thinkOverrideSwitch = thinkOverrideEnabledEl.closest('.switch');
+          if (thinkOverrideSwitch) thinkOverrideSwitch.classList.toggle('is-disabled', contentOn);
           if (!on) errorAlwaysEl.checked = false;
         };
         contentEnabledEl.onchange = syncAdvancedFields;
         errorEnabledEl.onchange = syncAdvancedFields;
         sysPromptEnabledEl.onchange = syncAdvancedFields;
+        thinkOverrideEnabledEl.onchange = syncAdvancedFields;
         syncAdvancedFields();
         mo.body.querySelector('#cm-sched-help').onclick = () => {
           openHelpModal('调度选项', SCHED_HELP_HTML);
@@ -3713,6 +3779,9 @@
         };
         mo.body.querySelector('#cm-sysprompt-help').onclick = () => {
           openHelpModal('系统提示词注入', SYSTEM_PROMPT_HELP_HTML);
+        };
+        mo.body.querySelector('#cm-thinkoverride-help').onclick = () => {
+          openHelpModal('思考覆写', THINKING_OVERRIDE_HELP_HTML);
         };
         mo.body.querySelector('#cm-no-retry-template').onclick = () => {
           const input = mo.body.querySelector('#cm-no-retry');
@@ -4570,6 +4639,8 @@
             error_always: errorAlways,
             error_status: errorStatus,
             error_message: mo.body.querySelector('#cm-error-message').value.trim(),
+            thinking_override_enabled: mo.body.querySelector('#cm-thinkoverride-enabled').checked,
+            thinking_override_text: mo.body.querySelector('#cm-thinkoverride-text').value,
             system_prompt_enabled: systemPromptOn,
             system_prompt: systemPrompt,
             timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#cm-timeout').value) || 300)),

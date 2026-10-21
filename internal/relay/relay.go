@@ -1122,6 +1122,10 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		if derr != nil && decoded == nil {
 			decoded = raw
 		}
+		// 思考覆写：把上游返回的思考内容替换为配置文本，留空时直接隐藏。
+		if override, ok := reasoningOverrideOf(resolved.Model); ok {
+			decoded = rewriteReasoningJSON(decoded, override.text)
+		}
 		writeUpstreamRaw(w, resp, decoded)
 		reasoning := reasoningCharsOf(decoded)
 		// 非流式是一次性返回的，「首字耗时」没有意义，留 0 让前端显示成 —
@@ -1146,7 +1150,11 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		flusher.Flush()
 	}
 
-	st := prov.NewStream(modelOf(req))
+	var st upstream.Stream = prov.NewStream(modelOf(req))
+	// 思考覆写：包装流式翻译器，改写发给客户端的思考增量。
+	if override, ok := reasoningOverrideOf(resolved.Model); ok {
+		st = newReasoningOverrideStream(st, override.text)
+	}
 	buf := make([]byte, 0, 64*1024)
 	tmp := make([]byte, 32*1024)
 	var pending []byte

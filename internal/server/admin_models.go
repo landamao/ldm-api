@@ -89,10 +89,12 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		errorEnabled := m.CustomErrorEnabled()
 		errorAlways := m.CustomErrorAlways()
 		contentEnabled := m.CustomContentEnabled()
+		thinkingOverrideOn := m.ThinkingOverrideEnabled()
 		systemPromptOn := m.SystemPromptEnabled()
 		v.ErrorEnabled = &errorEnabled
 		v.ErrorAlways = &errorAlways
 		v.ContentEnabled = &contentEnabled
+		v.ThinkingOverrideOn = &thinkingOverrideOn
 		v.SystemPromptOn = &systemPromptOn
 		if p, ok := providerByID[m.ProviderID]; ok {
 			v.ProviderName = p.Name
@@ -213,34 +215,36 @@ func (s *Server) availableChannelModels(w http.ResponseWriter, r *http.Request) 
 }
 
 type modelRequest struct {
-	ID                 string         `json:"id"`
-	Type               string         `json:"type"`
-	ChannelID          string         `json:"channel_id"`
-	Upstream           string         `json:"upstream"`
-	Routes             *[]store.Route `json:"routes"`
-	ProviderID         *string        `json:"provider_id"`
-	Caps               *store.Caps    `json:"caps"`
-	Enabled            *bool          `json:"enabled"`
-	DisplayName        *string        `json:"display_name"`
-	Description        *string        `json:"description"`
-	Tags               *[]string      `json:"tags"`
-	Affinity           *bool          `json:"affinity"`
-	CooldownSec        *int           `json:"cooldown_sec"`
-	CooldownReset      *bool          `json:"cooldown_reset"`
-	NoRetryStatus      *string        `json:"no_retry_status"`
-	ErrorEnabled       *bool          `json:"error_enabled"`
-	ErrorAlways        *bool          `json:"error_always"`
-	ErrorStatus        *int           `json:"error_status"`
-	ErrorMessage       *string        `json:"error_message"`
-	ContentEnabled     *bool          `json:"content_enabled"`
-	ContentText        *string        `json:"content_text"`
-	ContentReasoning   *string        `json:"content_reasoning"`
-	ContentFirstByteMs *int           `json:"content_first_byte_ms"`
-	ContentSpeed       *int           `json:"content_speed"`
-	ContentLatencyMs   *int           `json:"content_latency_ms"`
-	SystemPromptOn     *bool          `json:"system_prompt_enabled"`
-	SystemPrompt       *string        `json:"system_prompt"`
-	Timeout            *int           `json:"timeout"`
+	ID                   string         `json:"id"`
+	Type                 string         `json:"type"`
+	ChannelID            string         `json:"channel_id"`
+	Upstream             string         `json:"upstream"`
+	Routes               *[]store.Route `json:"routes"`
+	ProviderID           *string        `json:"provider_id"`
+	Caps                 *store.Caps    `json:"caps"`
+	Enabled              *bool          `json:"enabled"`
+	DisplayName          *string        `json:"display_name"`
+	Description          *string        `json:"description"`
+	Tags                 *[]string      `json:"tags"`
+	Affinity             *bool          `json:"affinity"`
+	CooldownSec          *int           `json:"cooldown_sec"`
+	CooldownReset        *bool          `json:"cooldown_reset"`
+	NoRetryStatus        *string        `json:"no_retry_status"`
+	ErrorEnabled         *bool          `json:"error_enabled"`
+	ErrorAlways          *bool          `json:"error_always"`
+	ErrorStatus          *int           `json:"error_status"`
+	ErrorMessage         *string        `json:"error_message"`
+	ContentEnabled       *bool          `json:"content_enabled"`
+	ContentText          *string        `json:"content_text"`
+	ContentReasoning     *string        `json:"content_reasoning"`
+	ContentFirstByteMs   *int           `json:"content_first_byte_ms"`
+	ContentSpeed         *int           `json:"content_speed"`
+	ContentLatencyMs     *int           `json:"content_latency_ms"`
+	ThinkingOverrideOn   *bool          `json:"thinking_override_enabled"`
+	ThinkingOverrideText *string        `json:"thinking_override_text"`
+	SystemPromptOn       *bool          `json:"system_prompt_enabled"`
+	SystemPrompt         *string        `json:"system_prompt"`
+	Timeout              *int           `json:"timeout"`
 }
 
 func (s *Server) clearModelCooldowns(w http.ResponseWriter, r *http.Request) {
@@ -453,6 +457,18 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.ContentEnabled = &contentEnabled
+
+	// 思考覆写：只改写模型返回的思考内容，不影响正文和路由。
+	// 自定义内容返回优先级更高，同时开启时本项不生效，但配置会保留，
+	// 关闭内容返回后自动恢复。
+	thinkingOverrideOn := m.ThinkingOverrideEnabled()
+	if req.ThinkingOverrideOn != nil {
+		thinkingOverrideOn = *req.ThinkingOverrideOn
+	}
+	if req.ThinkingOverrideText != nil {
+		m.ThinkingOverrideText = *req.ThinkingOverrideText
+	}
+	m.ThinkingOverrideOn = &thinkingOverrideOn
 
 	// 自定义错误返回：总开关关闭时，子开关与状态码都不生效。
 	// 显式关闭总开关会同时关闭子开关；只打开子开关时一并打开总开关。
