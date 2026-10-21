@@ -577,9 +577,9 @@
 
   // ---------- 模型详情抽屉 ----------
   const capLabel = (v) => (v === true ? '支持' : v === false ? '不支持' : '从上游透传');
-  const capBadge = (v) => (v === true
+  const capBadge = (v, err) => (v === true
     ? badge('支持', 'green')
-    : (v === false ? badge('不支持', 'red') : badge('从上游透传', 'gray')));
+    : (v === false ? badge(err ? '不支持（报错）' : '不支持', 'red') : badge('从上游透传', 'gray')));
 
   function openModelDrawer(m) {
     const isCustom = m.type === 'custom';
@@ -704,9 +704,9 @@
                 ? `<b>${fmtContext(caps.context_length)}</b> tokens` : capBadge(undefined))}
               ${row('最大输出', caps.max_output
                 ? `<b>${fmtInt(caps.max_output)}</b> tokens` : capBadge(undefined))}
-              ${row('工具调用', capBadge(caps.tool_calling))}
-              ${row('思考', capBadge(caps.thinking))}
-              ${row('图片输入', capBadge(caps.vision))}
+              ${row('工具调用', capBadge(caps.tool_calling, caps.tool_calling_error))}
+              ${row('思考', capBadge(caps.thinking, caps.thinking_error))}
+              ${row('图片输入', capBadge(caps.vision, caps.vision_error))}
             </dl>
           </div>
 

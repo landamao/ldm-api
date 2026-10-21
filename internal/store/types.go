@@ -8,15 +8,21 @@ import (
 // DefaultCooldownSec 是冷却时长未设置（旧数据）时的默认值。
 const DefaultCooldownSec = 300
 
-// Caps 描述一个模型的能力参数，仅用于模型广场 / 模型列表的展示。
-// 所有字段都是可空的：nil 表示“未声明”，网关不会据此校验或改写请求，
-// 实际能力完全由上游决定。
+// Caps 描述一个模型的能力参数。
+// ContextLength / MaxOutput 仅用于模型广场和模型列表的展示。
+// ToolCalling / Thinking / Vision 是三态：nil 表示不设置，true 表示支持，
+// false 表示不支持。明确标记为不支持时，网关会在转发前检查请求：
+// 对应的 *Error 开关打开则直接返回 400，关闭则从请求里移除相关内容后继续。
 type Caps struct {
 	ContextLength *int  `json:"context_length,omitempty"`
 	MaxOutput     *int  `json:"max_output,omitempty"`
 	ToolCalling   *bool `json:"tool_calling,omitempty"`
 	Thinking      *bool `json:"thinking,omitempty"`
 	Vision        *bool `json:"vision,omitempty"`
+	// 以下开关只在对应能力明确为 false（不支持）时生效。
+	ToolCallingError bool `json:"tool_calling_error,omitempty"`
+	ThinkingError    bool `json:"thinking_error,omitempty"`
+	VisionError      bool `json:"vision_error,omitempty"`
 }
 
 func (c Caps) Clone() Caps {
@@ -41,6 +47,9 @@ func (c Caps) Clone() Caps {
 		v := *c.Vision
 		out.Vision = &v
 	}
+	out.ToolCallingError = c.ToolCallingError
+	out.ThinkingError = c.ThinkingError
+	out.VisionError = c.VisionError
 	return out
 }
 

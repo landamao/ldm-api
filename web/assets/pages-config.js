@@ -46,11 +46,13 @@
     <div>仅对对话类请求生效；提示词会按原样发送给上游，不做变量替换。</div>`;
 
   // 模型编辑弹窗里的字段说明同样收进问号，避免弹窗被大段文字占满。
-  const CAPS_HELP_TEXT = '这些参数只用于模型广场和模型列表的展示，网关不会根据它们校验、裁剪或改写请求；留空表示不声明。';
+  const CAPS_HELP_TEXT = '工具调用 / 思考 / 图片输入支持「不设置 / 支持 / 不支持」；选择不支持时可决定报错还是自动移除。';
   const CAPS_HELP_HTML = `
-    <div style="margin-bottom:8px">这些参数只用于模型广场和模型列表的展示，网关不会根据它们校验、裁剪或改写请求；留空表示不声明。</div>
-    <div style="margin-bottom:8px">全部留空时不会做任何能力相关的处理（模型名替换和协议转换仍会正常进行）。</div>
-    <div><b>JSON</b>：可直接粘贴能力参数对象。支持 <code>context_length</code>、<code>max_output</code>、<code>tool_calling</code>、<code>thinking</code>、<code>vision</code> 五个字段，<code>null</code> 或留空表示不声明。</div>`;
+    <div style="margin-bottom:8px">「工具调用」「思考」「图片输入」支持三态：<b>不设置</b>、<b>支持</b>、<b>不支持</b>。只有选择「不支持」时网关才会检查请求。</div>
+    <div style="margin-bottom:8px"><b>不支持时报错</b>：检测到请求里有对应内容（工具调用、思考参数或历史思考内容、图片）时直接返回 400，例如「模型「xxx」不支持思考」。</div>
+    <div style="margin-bottom:8px"><b>不支持但不报错</b>：自动从请求上下文里移除这些内容后继续转发。</div>
+    <div style="margin-bottom:8px"><b>不设置 / 支持</b>：不做任何校验或改写。上下文长度和最大输出仍只用于展示。</div>
+    <div><b>JSON</b>：可直接粘贴能力参数对象。除 <code>context_length</code>、<code>max_output</code>、<code>tool_calling</code>、<code>thinking</code>、<code>vision</code> 外，还支持 <code>tool_calling_error</code>、<code>thinking_error</code>、<code>vision_error</code> 三个布尔字段；<code>null</code> 或留空表示不设置。</div>`;
   const SCHED_HELP_HTML = `
     <div style="margin-bottom:8px"><b>模型亲和</b>：开启后，本轮哪个路由成功了，下一轮请求就优先从它开始。</div>
     <div><b>失败冷却</b>：条目失败后在冷却时长内视为不可用直接跳过（0 = 不冷却）。<b>全冷却时自动重置</b>决定全部条目都在冷却中时的行为：关 = 直接返回不可用；开 = 清空所有冷却再路由一遍。</div>`;
@@ -3200,19 +3202,30 @@
   }
 
   // ---------- 能力参数编辑器 ----------
-  // 能力参数只用于模型广场 / 模型列表的展示，网关不会在请求时校验、裁剪或改写。
+  // 能力参数支持三态：不设置 / 支持 / 不支持。选择「不支持」时可开启报错，
+  // 开启后请求里出现对应内容会直接返回 400；关闭时自动移除后继续转发。
   // 支持可视化与 JSON 两种编辑方式，JSON 便于复制粘贴和备份。
-  const CAPS_KEYS = ['context_length', 'max_output', 'tool_calling', 'thinking', 'vision'];
+  const CAPS_KEYS = [
+    'context_length', 'max_output', 'tool_calling', 'thinking', 'vision',
+    'tool_calling_error', 'thinking_error', 'vision_error',
+  ];
 
   function capsEditorHtml(caps) {
     const c = caps || {};
-    const tri = (id, label, val, hint) => `
+    const tri = (id, label, val, errVal, hint) => `
       <div class="field">
         <label class="field__label">${esc(label)}</label>
-        <div class="tristate" data-tri="${id}">
-          <div class="tristate__opt${val == null ? ' is-on' : ''}" data-value="auto">留空（不声明）</div>
-          <div class="tristate__opt${val === true ? ' is-on' : ''}" data-value="yes">支持</div>
-          <div class="tristate__opt${val === false ? ' is-on' : ''}" data-value="no">不支持</div>
+        <div class="cap-row">
+          <div class="tristate" data-tri="${id}">
+            <div class="tristate__opt${val == null ? ' is-on' : ''}" data-value="auto">不设置</div>
+            <div class="tristate__opt${val === true ? ' is-on' : ''}" data-value="yes">支持</div>
+            <div class="tristate__opt${val === false ? ' is-on' : ''}" data-value="no">不支持</div>
+          </div>
+          <label class="switch" data-cap-error="${id}" style="${val === false ? '' : 'display:none'}">
+            <input type="checkbox" id="c-${id}-error" ${errVal ? 'checked' : ''}>
+            <span class="switch__track"></span>
+            <span class="switch__label">不支持时报错（400）</span>
+          </label>
         </div>
         ${hint ? `<div class="field__hint">${esc(hint)}</div>` : ''}
       </div>`;
@@ -3239,12 +3252,12 @@
               <input class="input" id="c-max" type="number" min="0" value="${c.max_output == null ? '' : c.max_output}" placeholder="留空表示不声明">
             </div>
           </div>
-          ${tri('tool', '工具调用（Function Calling）', c.tool_calling, '仅用于展示，不会据此剥离 tools 字段。')}
-          ${tri('think', '思考（Reasoning）', c.thinking, '仅用于展示，不会据此移除 reasoning_effort、thinking 等参数。')}
-          ${tri('vision', '图片输入（Vision）', c.vision, '仅用于展示，不会据此过滤消息里的图片内容。')}
+          ${tri('tool', '工具调用（Function Calling）', c.tool_calling, c.tool_calling_error, '请求里有工具调用时：开启报错直接返回 400；关闭则自动移除后继续。')}
+          ${tri('think', '思考（Reasoning）', c.thinking, c.thinking_error, '请求里有思考参数或历史思考内容时：开启报错直接返回 400；关闭则自动移除后继续。')}
+          ${tri('vision', '图片输入（Vision）', c.vision, c.vision_error, '请求里有图片时：开启报错直接返回 400；关闭则自动移除后继续。')}
         </div>
         <div id="caps-json" style="display:none">
-          <textarea class="textarea" id="c-caps-json" spellcheck="false" style="min-height:150px" placeholder='{"context_length":128000,"max_output":8192,"tool_calling":true}'></textarea>
+          <textarea class="textarea" id="c-caps-json" spellcheck="false" style="min-height:150px" placeholder='{"context_length":128000,"max_output":8192,"tool_calling":false,"tool_calling_error":true}'></textarea>
           <div class="btn-row mt-8">
             <button class="btn btn--sm" type="button" data-act="copy-caps-json">${icon('copy', 13)}复制 JSON</button>
             <button class="btn btn--sm" type="button" data-act="paste-caps-json">${icon('paste', 13)}粘贴 JSON</button>
@@ -3309,12 +3322,22 @@
       const v = on ? on.dataset.value : 'auto';
       return v === 'auto' ? null : v === 'yes';
     };
+    // 报错开关只在选择「不支持」时生效。
+    const triError = (id) => {
+      const on = scope.querySelector(`[data-tri=${id}] .tristate__opt.is-on`);
+      if (!on || on.dataset.value !== 'no') return false;
+      const cb = scope.querySelector(`#c-${id}-error`);
+      return !!(cb && cb.checked);
+    };
     const caps = {};
     const ctx = num('c-ctx'); if (ctx !== null) caps.context_length = ctx;
     const mx = num('c-max'); if (mx !== null) caps.max_output = mx;
     const t = tri('tool'); if (t !== null) caps.tool_calling = t;
     const th = tri('think'); if (th !== null) caps.thinking = th;
     const vi = tri('vision'); if (vi !== null) caps.vision = vi;
+    if (t === false && triError('tool')) caps.tool_calling_error = true;
+    if (th === false && triError('think')) caps.thinking_error = true;
+    if (vi === false && triError('vision')) caps.vision_error = true;
     return caps;
   }
 
@@ -3325,7 +3348,11 @@
     };
     set('c-ctx', caps.context_length);
     set('c-max', caps.max_output);
-    [['tool', caps.tool_calling], ['think', caps.thinking], ['vision', caps.vision]].forEach(([id, v]) => {
+    [
+      ['tool', caps.tool_calling, caps.tool_calling_error],
+      ['think', caps.thinking, caps.thinking_error],
+      ['vision', caps.vision, caps.vision_error],
+    ].forEach(([id, v, err]) => {
       const group = scope.querySelector(`[data-tri=${id}]`);
       if (!group) return;
       group.querySelectorAll('.tristate__opt').forEach((opt) => {
@@ -3334,6 +3361,10 @@
           : (v ? opt.dataset.value === 'yes' : opt.dataset.value === 'no');
         opt.classList.toggle('is-on', on);
       });
+      const cb = scope.querySelector(`#c-${id}-error`);
+      if (cb) cb.checked = !!err;
+      const sw = scope.querySelector(`[data-cap-error="${id}"]`);
+      if (sw) sw.style.display = v === false ? '' : 'none';
     });
   }
 
@@ -3351,13 +3382,22 @@
   function bindCapsEditor(scope) {
     const capsHelpEl = scope.querySelector('#caps-help');
     if (capsHelpEl) capsHelpEl.onclick = () => openHelpModal('能力参数', CAPS_HELP_HTML);
+    const syncCapError = (group) => {
+      const id = group.dataset.tri;
+      if (!id) return;
+      const on = group.querySelector('.tristate__opt.is-on');
+      const sw = scope.querySelector(`[data-cap-error="${id}"]`);
+      if (sw) sw.style.display = on && on.dataset.value === 'no' ? '' : 'none';
+    };
     scope.querySelectorAll('.tristate').forEach((group) => {
       group.querySelectorAll('.tristate__opt').forEach((opt) => {
         opt.onclick = () => {
           group.querySelectorAll('.tristate__opt').forEach((x) => x.classList.remove('is-on'));
           opt.classList.add('is-on');
+          syncCapError(group);
         };
       });
+      syncCapError(group);
     });
 
     const editor = scope.querySelector('#caps-editor');

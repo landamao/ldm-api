@@ -944,6 +944,14 @@ html[data-theme="dark"] .ldm-select[aria-expanded="true"] { background-color: rg
 .switch__label { font-size: 13px; color: var(--text); }
 .switch.is-disabled { opacity: .55; cursor: not-allowed; }
 
+/* 能力参数：三态与「不支持时报错」开关同一行，垂直居中 */
+.cap-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
 /* 三态选择（透传 / 支持 / 不支持） */
 .tristate {
   display: inline-flex;

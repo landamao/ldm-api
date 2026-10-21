@@ -712,6 +712,15 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	if resolved.Model.SystemPromptEnabled() {
 		applySystemPrompt(req, resolved.Model.SystemPrompt)
 	}
+	// 能力参数：模型明确标记为「不支持」的输入（思考 / 工具调用 / 图片），
+	// 开启报错时直接返回 400，未开启时从上下文里移除后继续转发。
+	if rej := enforceModelCaps(w, req, resolved.Model); rej != nil {
+		res.StatusCode = rej.status
+		res.ClientErr = rej.clientErr
+		res.Err = rej.detail
+		res.LatencyMs = time.Since(start).Milliseconds()
+		return res
+	}
 	// 「自定义内容返回」优先级最高：开启后每次请求都直接返回配置的内容，
 	// 不解析路由、不请求上游，自定义错误返回也不再生效。
 	if cc, ok := customContentOf(resolved.Model); ok {
@@ -1007,8 +1016,8 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	body := req.Body
 	convertBody := !prov.RawBody && req.JSON != nil && isChatPath(req.Path)
 	if convertBody {
-		// 能力参数只用于界面展示，不参与请求校验或改写；
-		// 传空的 Caps 让协议转换只做格式映射。
+		// 能力参数已经在 Do 里统一校验/清理过，这里传空 Caps
+		// 让协议转换只做格式映射，避免重复裁剪。
 		converted := prov.BuildBody(req.JSON, route.Upstream, store.Caps{})
 		body = mustJSON(converted)
 	} else if req.JSON != nil && prov.Type == store.ChannelOpenAI {

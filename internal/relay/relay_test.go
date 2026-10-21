@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1060,9 +1061,9 @@ func TestReasoningCharsOf(t *testing.T) {
 	}
 }
 
-// 能力参数（工具调用 / 思考 / 图片是否支持）只用于界面展示，
-// 即使模型标记为「不支持」，转发时也不能改动请求内容。
-func TestCapabilitiesDoNotRewriteRequest(t *testing.T) {
+// 模型把能力标记为「不支持」且没有开启报错时，网关要先从上下文里
+// 移除工具调用、思考参数和图片，再继续请求上游。
+func TestUnsupportedCapsStripRequest(t *testing.T) {
 	var received map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -1090,10 +1091,15 @@ func TestCapabilitiesDoNotRewriteRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	payload := `{"model":"A/a","messages":[{"role":"user","content":[` +
-		`{"type":"text","text":"看图"},` +
-		`{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA"}}]}],` +
-		`"tools":[{"type":"function","function":{"name":"f"}}],"reasoning_effort":"high"}`
+	payload := `{"model":"A/a","messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"看图"},` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA"}}]},` +
+		`{"role":"assistant","content":null,"reasoning_content":"想一下",` +
+		`"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"c1","content":"42"},` +
+		`{"role":"user","content":"继续"}],` +
+		`"tools":[{"type":"function","function":{"name":"f"}}],"tool_choice":"auto",` +
+		`"reasoning_effort":"high"}`
 	req := &Request{
 		Path: "/v1/chat/completions", Method: http.MethodPost,
 		Header: http.Header{}, Body: []byte(payload),
@@ -1103,24 +1109,260 @@ func TestCapabilitiesDoNotRewriteRequest(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	New(st).Do(context.Background(), rec, req)
+	res := New(st).Do(context.Background(), rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("清理后应继续请求上游，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("日志状态码应为 200，得到 %d", res.StatusCode)
+	}
 	if received == nil {
 		t.Fatal("上游没有收到请求")
 	}
-	if _, ok := received["tools"]; !ok {
-		t.Error("tools 不应被剥离")
-	}
-	if received["reasoning_effort"] != "high" {
-		t.Error("reasoning_effort 不应被移除")
+	for _, k := range []string{"tools", "tool_choice", "reasoning_effort"} {
+		if _, ok := received[k]; ok {
+			t.Errorf("%s 应该被移除", k)
+		}
 	}
 	msgs, _ := received["messages"].([]any)
-	if len(msgs) != 1 {
-		t.Fatalf("消息数量错误: %d", len(msgs))
+	if len(msgs) != 2 {
+		t.Fatalf("只应保留两条用户消息，得到 %d: %+v", len(msgs), msgs)
 	}
 	parts, _ := msgs[0].(map[string]any)["content"].([]any)
-	if len(parts) != 2 {
-		t.Errorf("图片内容不应被过滤，期望 2 个内容块，得到 %d", len(parts))
+	if len(parts) != 1 {
+		t.Fatalf("图片应被移除、文字保留，期望 1 个内容块，得到 %d: %+v", len(parts), parts)
+	}
+	if parts[0].(map[string]any)["text"] != "看图" {
+		t.Errorf("文字内容被误改: %v", parts[0])
+	}
+	if msgs[1].(map[string]any)["content"] != "继续" {
+		t.Errorf("后续用户消息被误改: %v", msgs[1])
+	}
+}
+
+// 标记不支持思考时，即使本轮没有思考参数，历史消息里的思考内容
+// 也要被剥离，避免调用方借历史消息注入思考。
+func TestUnsupportedThinkingStripsHistory(t *testing.T) {
+	var received map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &received)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],` +
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	no := false
+	if err := st.SaveChannel(store.Channel{
+		ID: "A", Type: store.ChannelOpenAI, BaseURL: srv.URL, APIKey: "k",
+		Models: []string{"a"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a",
+		Caps: store.Caps{Thinking: &no}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := `{"model":"A/a","messages":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":"答案","reasoning_content":"伪造的思考"},` +
+		`{"role":"user","content":"继续"}]}`
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: []byte(payload),
+	}
+	if err := json.Unmarshal([]byte(payload), &req.JSON); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	New(st).Do(context.Background(), rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("剥离后应继续请求上游，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if received == nil {
+		t.Fatal("上游没有收到请求")
+	}
+	msgs, _ := received["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("消息数量错误: %d", len(msgs))
+	}
+	if _, ok := msgs[1].(map[string]any)["reasoning_content"]; ok {
+		t.Errorf("历史思考内容应该被移除: %+v", msgs[1])
+	}
+	if msgs[1].(map[string]any)["content"] != "答案" {
+		t.Errorf("正文不应被误删: %+v", msgs[1])
+	}
+}
+
+// 开启「不支持时报错」后，请求里出现对应内容时直接返回 400，
+// 不再请求上游。
+func TestUnsupportedCapsRejectWith400(t *testing.T) {
+	no := false
+	yes := true
+	tests := []struct {
+		name    string
+		caps    store.Caps
+		payload string
+		wantMsg string
+	}{
+		{
+			name:    "思考",
+			caps:    store.Caps{Thinking: &no, ThinkingError: true},
+			payload: `{"model":"A/a","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`,
+			wantMsg: "模型「A/a」不支持思考",
+		},
+		{
+			name:    "历史思考内容",
+			caps:    store.Caps{Thinking: &no, ThinkingError: true},
+			payload: `{"model":"A/a","messages":[{"role":"assistant","content":"答案","reasoning_content":"伪造的思考"}]}`,
+			wantMsg: "模型「A/a」不支持思考",
+		},
+		{
+			name:    "工具调用",
+			caps:    store.Caps{ToolCalling: &no, ToolCallingError: true},
+			payload: `{"model":"A/a","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f"}}]}`,
+			wantMsg: "模型「A/a」不支持工具调用",
+		},
+		{
+			name:    "图片输入",
+			caps:    store.Caps{Vision: &no, VisionError: true},
+			payload: `{"model":"A/a","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA"}}]}]}`,
+			wantMsg: "模型「A/a」不支持图片输入",
+		},
+		{
+			name:    "只开报错但能力为支持",
+			caps:    store.Caps{Thinking: &yes, ThinkingError: true},
+			payload: `{"model":"A/a","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`,
+			wantMsg: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&calls, 1)
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],` +
+					`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			}))
+			defer srv.Close()
+
+			st := newTestStore(t)
+			now := time.Now().UnixMilli()
+			if err := st.SaveChannel(store.Channel{
+				ID: "A", Type: store.ChannelOpenAI, BaseURL: srv.URL, APIKey: "k",
+				Models: []string{"a"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.SaveModel(store.Model{
+				ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a",
+				Caps: tc.caps, Enabled: true, CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			req := &Request{
+				Path: "/v1/chat/completions", Method: http.MethodPost,
+				Header: http.Header{}, Body: []byte(tc.payload),
+			}
+			if err := json.Unmarshal([]byte(tc.payload), &req.JSON); err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			res := New(st).Do(context.Background(), rec, req)
+
+			if tc.wantMsg == "" {
+				if rec.Code != http.StatusOK {
+					t.Fatalf("能力为支持时不应报错，实际 %d: %s", rec.Code, rec.Body.String())
+				}
+				return
+			}
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("应返回 400，实际 %d: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.wantMsg) {
+				t.Errorf("错误文案缺少 %q: %s", tc.wantMsg, rec.Body.String())
+			}
+			if res.ClientErr != tc.wantMsg {
+				t.Errorf("日志里的对外文案错误: %q", res.ClientErr)
+			}
+			if got := atomic.LoadInt32(&calls); got != 0 {
+				t.Errorf("报错时不应请求上游，实际调用 %d 次", got)
+			}
+		})
+	}
+}
+
+// 能力留空或标记为支持时，请求内容必须原样转发。
+func TestCapsUnsetOrSupportedDoNotRewriteRequest(t *testing.T) {
+	yes := true
+	for _, caps := range []store.Caps{{}, {ToolCalling: &yes, Vision: &yes, Thinking: &yes}} {
+		var received map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &received)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],` +
+				`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+		}))
+
+		st := newTestStore(t)
+		now := time.Now().UnixMilli()
+		if err := st.SaveChannel(store.Channel{
+			ID: "A", Type: store.ChannelOpenAI, BaseURL: srv.URL, APIKey: "k",
+			Models: []string{"a"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SaveModel(store.Model{
+			ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a",
+			Caps: caps, Enabled: true, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		payload := `{"model":"A/a","messages":[{"role":"user","content":[` +
+			`{"type":"text","text":"看图"},` +
+			`{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA"}}]}],` +
+			`"tools":[{"type":"function","function":{"name":"f"}}],"reasoning_effort":"high"}`
+		req := &Request{
+			Path: "/v1/chat/completions", Method: http.MethodPost,
+			Header: http.Header{}, Body: []byte(payload),
+		}
+		if err := json.Unmarshal([]byte(payload), &req.JSON); err != nil {
+			t.Fatal(err)
+		}
+
+		rec := httptest.NewRecorder()
+		New(st).Do(context.Background(), rec, req)
+		srv.Close()
+
+		if received == nil {
+			t.Fatal("上游没有收到请求")
+		}
+		if _, ok := received["tools"]; !ok {
+			t.Error("tools 不应被剥离")
+		}
+		if received["reasoning_effort"] != "high" {
+			t.Error("reasoning_effort 不应被移除")
+		}
+		msgs, _ := received["messages"].([]any)
+		if len(msgs) != 1 {
+			t.Fatalf("消息数量错误: %d", len(msgs))
+		}
+		parts, _ := msgs[0].(map[string]any)["content"].([]any)
+		if len(parts) != 2 {
+			t.Errorf("图片内容不应被过滤，期望 2 个内容块，得到 %d", len(parts))
+		}
 	}
 }
 
