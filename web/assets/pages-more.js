@@ -1587,6 +1587,18 @@
         box.appendChild(el);
       };
 
+      // 深度思考折叠块：多轮工具调用时每轮各一块，按输出顺序插在气泡里
+      const thinkBlockEl = (text, open) => {
+        const det = document.createElement('details');
+        det.className = 'think-block';
+        det.open = !!open;
+        det.innerHTML = '<summary>深度思考<span class="think-block__meta"></span></summary>'
+          + '<div class="think-block__body"></div>';
+        det.querySelector('.think-block__meta').textContent = text ? ` ${text.length} 字` : ' 思考中…';
+        det.querySelector('.think-block__body').textContent = text || '';
+        return det;
+      };
+
       // 把字符串或 OpenAI 多模态 content 数组渲染到气泡里
       const renderContent = (box, content, clear) => {
         if (clear !== false) box.innerHTML = '';
@@ -1791,24 +1803,21 @@
         el.innerHTML = avatarHtml(m.role, m.role === 'user' ? '' : storedProviderIcon(m))
           + '<div class="msg__body"><div class="msg__bubble"></div></div>';
         const bubble = el.querySelector('.msg__bubble');
-        if (m.role === 'assistant' && m.think) {
-          const det = document.createElement('details');
-          det.className = 'think-block';
-          det.open = false;
-          det.innerHTML = '<summary>深度思考<span class="think-block__meta"></span></summary>'
-            + '<div class="think-block__body"></div>';
-          det.querySelector('.think-block__meta').textContent = ` ${m.think.length} 字`;
-          det.querySelector('.think-block__body').textContent = m.think;
-          bubble.appendChild(det);
+        const parts = m.role === 'assistant' && Array.isArray(m.parts) && m.parts.length ? m.parts : null;
+        // 新记录把思考也存进 parts；旧记录只有顶层 think 字段，没有分段信息
+        const partsHaveThink = !!(parts && parts.some((p) => p && p.type === 'think'));
+        if (m.role === 'assistant' && m.think && !partsHaveThink) {
+          bubble.appendChild(thinkBlockEl(m.think, false));
         }
         const contentEl = document.createElement('div');
         contentEl.className = 'msg__content';
         bubble.appendChild(contentEl);
-        if (m.role === 'assistant' && Array.isArray(m.parts) && m.parts.length) {
-          // 新记录按正文 / 工具调用的实际输出顺序回放
-          m.parts.forEach((part) => {
+        if (parts) {
+          // 新记录按思考 / 正文 / 工具调用的实际输出顺序回放
+          parts.forEach((part) => {
             if (!part) return;
-            if (part.type === 'text') appendTextPart(contentEl, part.text);
+            if (part.type === 'think') contentEl.appendChild(thinkBlockEl(part.text || '', false));
+            else if (part.type === 'text') appendTextPart(contentEl, part.text);
             else if (part.type === 'tools') contentEl.appendChild(toolWrapEl(part.calls));
           });
         } else {
@@ -2336,21 +2345,46 @@
           if (!b) return;
           b.querySelectorAll('.typing').forEach((el) => el.remove());
         };
-        const ensureThink = () => {
+        // 每轮思考各建一个折叠块，按输出顺序接在上一段内容后面；
+        // 本轮正文开始或本轮结束时自动收起，想看还能再点开。
+        const newThinkBlock = () => {
           const b = run.bubble;
           if (!b) return;
-          if (run.thinkBlock && b.contains(run.thinkBlock)) return;
           clearPlaceholder();
-          const det = document.createElement('details');
-          det.className = 'think-block';
-          det.open = !run.thinkFolded;
-          det.innerHTML = '<summary>深度思考<span class="think-block__meta"></span></summary>'
-            + '<div class="think-block__body"></div>';
-          b.insertBefore(det, b.firstChild);
+          const det = thinkBlockEl('', true);
+          b.appendChild(det);
           run.thinkBlock = det;
           run.thinkBody = det.querySelector('.think-block__body');
           run.thinkMeta = det.querySelector('.think-block__meta');
-          run.thinkMeta.textContent = run.answer ? ` ${run.think.length} 字` : ' 思考中…';
+        };
+        const paintThink = (thinking) => {
+          if (!run.bubble || !run.curThink) return;
+          if (!run.thinkBody || !run.thinkMeta) return;
+          run.thinkBody.textContent = run.curThink.text;
+          run.thinkMeta.textContent = thinking
+            ? ` 思考中…（${run.curThink.text.length} 字）`
+            : ` ${run.curThink.text.length} 字`;
+        };
+        const foldThink = () => {
+          if (!run.curThink) return;
+          paintThink(false);
+          if (run.thinkBlock) run.thinkBlock.open = false;
+          run.curThink = null;
+          run.thinkBlock = run.thinkBody = run.thinkMeta = null;
+        };
+        const addThink = (chunk) => {
+          if (!chunk) return;
+          run.think += chunk;
+          if (!run.curThink) {
+            run.curThink = { type: 'think', text: '' };
+            run.parts.push(run.curThink);
+            // 思考可能夹在正文之间，后面的正文要另起一段
+            run.answerEl = null;
+            run.curText = null;
+            newThinkBlock();
+          }
+          run.curThink.text += chunk;
+          paintThink(true);
         };
         // 正文按轮次分段：每轮正文一个元素，工具块插在两段正文之间，
         // 这样「正文 + 工具调用 + 后续正文」的显示顺序和模型输出顺序一致。
@@ -2364,14 +2398,6 @@
           b.appendChild(run.answerEl);
           return run.answerEl;
         };
-        const paintThink = (thinking) => {
-          if (!run.bubble) return;
-          ensureThink();
-          if (!run.thinkBody || !run.thinkMeta) return;
-          run.thinkBody.textContent = run.think;
-          if (thinking) run.thinkMeta.textContent = ` 思考中…（${run.think.length} 字）`;
-          else run.thinkMeta.textContent = ` ${run.think.length} 字`;
-        };
         const addContent = (chunk) => {
           if (!chunk) return;
           run.roundText += chunk;
@@ -2384,12 +2410,8 @@
           paintAnswer();
         };
         const paintAnswer = () => {
-          // 正文开始了就把思考块收起来，想看还能再点开
-          if (run.think && !run.thinkFolded) {
-            run.thinkFolded = true;
-            if (run.thinkBlock) run.thinkBlock.open = false;
-            if (run.bubble) paintThink(false);
-          }
+          // 正文开始了就把这一轮的思考块收起来，想看还能再点开
+          foldThink();
           if (!run.bubble || !run.curText) return;
           const el = ensureAnswer();
           if (el) el.textContent = run.curText.text;
@@ -2397,7 +2419,7 @@
         const paintFailure = (message) => {
           const b = run.bubble;
           if (!b) return;
-          if (run.think) paintThink(false);
+          foldThink();
           if (run.answer) paintAnswer();
           clearPlaceholder();
           if (!run.think && !run.answer && !run.parts.length) b.innerHTML = '';
@@ -2409,7 +2431,7 @@
           if (msg) msg.classList.add('msg--error');
         };
 
-        // 页面切走再回来时，按时间线把正文段与工具块重新画到新的气泡上
+        // 页面切走再回来时，按时间线把思考块、正文段与工具块重新画到新的气泡上
         run.attach = (b, v) => {
           run.bubble = b;
           run.msgEl = b.closest('.msg');
@@ -2418,14 +2440,20 @@
           run.answerEl = null;
           run.curText = null;
           b.innerHTML = '';
-          if (run.think) {
-            ensureThink();
-            if (run.thinkBlock) run.thinkBlock.open = !run.thinkFolded;
-            paintThink(false);
-          }
           run.parts.forEach((part) => {
             if (!part) return;
-            if (part.type === 'text') {
+            if (part.type === 'think') {
+              const det = thinkBlockEl(part.text || '', part === run.curThink);
+              b.appendChild(det);
+              run.answerEl = null;
+              run.curText = null;
+              if (part === run.curThink) {
+                run.thinkBlock = det;
+                run.thinkBody = det.querySelector('.think-block__body');
+                run.thinkMeta = det.querySelector('.think-block__meta');
+                run.thinkMeta.textContent = ` 思考中…（${(part.text || '').length} 字）`;
+              }
+            } else if (part.type === 'text') {
               const el = document.createElement('div');
               el.className = 'msg__answer';
               el.textContent = part.text;
@@ -2484,15 +2512,7 @@
               run.usage = mergeUsage(run.usage, j.usage);
               const msg = (j.choices && j.choices[0] && j.choices[0].message) || {};
               const reasoning = msg.reasoning_content || msg.reasoning || '';
-              if (reasoning) {
-                run.think += reasoning;
-                run.thinkFolded = true;
-                if (run.bubble) {
-                  ensureThink();
-                  if (run.thinkBlock) run.thinkBlock.open = false;
-                  paintThink(false);
-                }
-              }
+              if (reasoning) addThink(reasoning);
               const content = flattenText(msg.content);
               if (content) addContent(content);
               if (Array.isArray(msg.tool_calls)) {
@@ -2539,10 +2559,7 @@
                   if (!run.firstTokenMs && (d.reasoning_content || d.content || d.tool_calls)) {
                     run.firstTokenMs = Date.now() - t0;
                   }
-                  if (d.reasoning_content) {
-                    run.think += d.reasoning_content;
-                    paintThink(true);
-                  }
+                  if (d.reasoning_content) addThink(d.reasoning_content);
                   if (d.content) addContent(d.content);
                   if (Array.isArray(d.tool_calls)) {
                     for (const tc of d.tool_calls) {
@@ -2589,7 +2606,9 @@
               };
             });
             run.toolLog.push(...executed);
-            // 工具块按输出顺序接在当前正文段后面；下一轮正文会另起一段
+            // 工具块按输出顺序接在当前正文段后面；本轮思考到这里结束，
+            // 下一轮思考会另起一块，下一轮正文也另起一段
+            foldThink();
             run.parts.push({ type: 'tools', calls: executed });
             if (run.bubble) {
               clearPlaceholder();
@@ -2646,11 +2665,8 @@
           return { ok: false, entry };
         }
 
-        if (run.think && !run.thinkFolded) {
-          run.thinkFolded = true;
-          if (run.thinkBlock) run.thinkBlock.open = false;
-          if (run.bubble) paintThink(false);
-        }
+        // 生成结束：最后一轮还在展开的思考块也收起来
+        foldThink();
         if (!run.answer && !run.think && run.bubble) {
           if (run.toolLog.length) {
             // 气泡里已经有工具调用块，只补一行提示，不能整块覆盖
@@ -2752,12 +2768,13 @@
           tools: !customBody && toolsOn,
           ctl: new AbortController(),
           t0: Date.now(), firstTokenMs: 0, usage: null,
-          think: '', answer: '', thinkFolded: false,
-          // parts 是气泡的时间线：正文段与工具调用段按输出顺序排列
+          think: '', answer: '', curThink: null,
+          // parts 是气泡的时间线：思考段、正文段与工具调用段按输出顺序排列
           parts: [], curText: null, roundText: '',
           toolLog: [],
           stopped: false, failed: null,
           bubble: null, msgEl: null, view: null,
+          thinkBlock: null, thinkBody: null, thinkMeta: null, answerEl: null,
           entry: null, discarded: false, unloadSaved: false,
         };
         chatStore.run = run;
