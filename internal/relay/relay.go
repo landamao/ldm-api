@@ -82,6 +82,12 @@ var (
 
 // Resolve 根据模型 ID 解析出可用的上游路由链。
 func (r *Relay) Resolve(modelID string) (*Resolved, error) {
+	return r.resolve(modelID, false)
+}
+
+// resolve 解析路由。allowDisabled 为 true 时跳过模型与渠道的启用状态检查，
+// 供管理端的「测试」使用：禁用的配置也要能验证上游是否真的可用。
+func (r *Relay) resolve(modelID string, allowDisabled bool) (*Resolved, error) {
 	m, err := r.Store.GetModel(modelID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -89,7 +95,7 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 		}
 		return nil, err
 	}
-	if !m.Enabled {
+	if !m.Enabled && !allowDisabled {
 		return nil, ErrModelDisabled
 	}
 	res := &Resolved{Model: m}
@@ -111,7 +117,7 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 			res.NoRoute = fmt.Sprintf("渠道「%s」不存在", m.ChannelID)
 			return res, nil
 		}
-		if !ch.Enabled {
+		if !ch.Enabled && !allowDisabled {
 			res.NoRoute = fmt.Sprintf("渠道「%s」已禁用", ch.ID)
 			return res, nil
 		}
@@ -129,7 +135,9 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 		for _, c := range chans {
 			byID[c.ID] = c
 		}
-		plan, affinity := PlanRoute(m, byID, func(id string) bool { return byID[id].Enabled })
+		plan, affinity := PlanRoute(m, byID, func(id string) bool {
+			return allowDisabled || byID[id].Enabled
+		})
 		if plan == nil {
 			// 区分「渠道全挂」和「全在冷却中」两种不可用。
 			// 渠道里已删除的模型在解析阶段就被跳过，不计入不可用原因。
@@ -137,7 +145,7 @@ func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 			cooling := false
 			for _, rt := range m.Routes {
 				ch, ok := byID[rt.ChannelID]
-				if !ok || !ch.Enabled {
+				if !ok || (!allowDisabled && !ch.Enabled) {
 					unavailable = append(unavailable, rt.ChannelID+"/"+rt.Upstream)
 					continue
 				}
@@ -177,6 +185,8 @@ type Request struct {
 	Stream bool
 	JSON   map[string]any
 	IP     string
+	// AllowDisabled 跳过模型与渠道的启用状态检查，仅管理端「测试」使用。
+	AllowDisabled bool
 }
 
 // Result 是一次转发的最终结果，用于记日志。
@@ -216,6 +226,9 @@ type Result struct {
 	// Canceled 表示客户端主动断开（例如在线聊天里点了「停止」），
 	// 这种请求不计入渠道失败与成功率统计。
 	Canceled bool
+	// SkipRecord 表示这次请求只做了配置侧拒绝（模型已禁用），
+	// 调用方不要写入日志与统计。
+	SkipRecord bool
 }
 
 // ErrUpstream 表示上游返回了错误，并且已经把错误体透传给了客户端。
@@ -691,7 +704,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		return res
 	}
 
-	resolved, err := r.Resolve(modelID)
+	resolved, err := r.resolve(modelID, req.AllowDisabled)
 	if err != nil {
 		code := http.StatusNotFound
 		msg := "模型「" + modelID + "」不存在"
@@ -699,6 +712,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		if errors.Is(err, ErrModelDisabled) {
 			code = http.StatusForbidden
 			msg = "模型「" + modelID + "」不可用"
+			res.SkipRecord = true
 		}
 		writeAPIError(w, code, typ, msg)
 		res.StatusCode = code

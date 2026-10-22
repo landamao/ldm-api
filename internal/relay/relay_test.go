@@ -1921,6 +1921,54 @@ func TestClientErrorsHideInternals(t *testing.T) {
 	})
 }
 
+// 管理端「测试」需要验证上游是否真的可用，不能被模型/渠道的禁用状态挡住。
+func TestAllowDisabledBypassesDisabledState(t *testing.T) {
+	now := time.Now().UnixMilli()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],` +
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer up.Close()
+
+	st := newTestStore(t)
+	if err := st.SaveChannel(store.Channel{
+		ID: "off", Type: store.ChannelOpenAI, BaseURL: up.URL, APIKey: "k",
+		Models: []string{"m"}, Enabled: false, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []store.Model{
+		{ID: "off/m", Type: store.ModelTypeChannel, ChannelID: "off", Upstream: "m"},
+		{ID: "smart", Type: store.ModelTypeCustom, Routes: []store.Route{{ChannelID: "off", Upstream: "m"}}},
+	} {
+		m.Enabled = false
+		m.CreatedAt, m.UpdatedAt = now, now
+		if err := st.SaveModel(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	do := func(model string, allow bool) *Result {
+		body := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`)
+		req := &Request{
+			Path: "/v1/chat/completions", Method: http.MethodPost,
+			Header: http.Header{}, Body: body, AllowDisabled: allow,
+		}
+		_ = json.Unmarshal(body, &req.JSON)
+		return New(st).Do(context.Background(), httptest.NewRecorder(), req)
+	}
+
+	for _, id := range []string{"off/m", "smart"} {
+		if res := do(id, false); res.StatusCode != http.StatusForbidden {
+			t.Errorf("%s 普通请求应被拒绝，得到 %d", id, res.StatusCode)
+		}
+		if res := do(id, true); res.StatusCode != http.StatusOK {
+			t.Errorf("%s 测试请求应绕过禁用状态，得到 %d（%s）", id, res.StatusCode, res.Err)
+		}
+	}
+}
+
 // API 密钥只能调用模型相关端点，文件/微调/批处理等账号级接口必须被拒绝。
 func TestIsAllowedEndpoint(t *testing.T) {
 	allowed := []struct{ method, path string }{

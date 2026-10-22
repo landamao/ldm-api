@@ -680,6 +680,9 @@ func (s *Server) testModel(w http.ResponseWriter, r *http.Request) {
 		Header: http.Header{"Content-Type": []string{"application/json"}},
 		Body:   body,
 		IP:     clientIP(r),
+		// 测试入口不受模型/渠道启用状态限制：禁用只是不对外提供服务，
+		// 仍需要能验证上游配置是否正确。
+		AllowDisabled: true,
 	}
 	_ = json.Unmarshal(body, &relayReq.JSON)
 

@@ -151,6 +151,10 @@ func (s *Server) serveModelList(w http.ResponseWriter, token store.Token) {
 
 // record 把一次调用写进日志与统计。
 func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result) {
+	// 模型已禁用是配置侧的拒绝，不记错误日志、不计统计，也不消耗额度。
+	if res.SkipRecord {
+		return
+	}
 	entry := store.Log{
 		ID:               randomHex(8),
 		Time:             time.Now().UnixMilli(),

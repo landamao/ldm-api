@@ -1857,6 +1857,44 @@ func TestModelStatusDetails(t *testing.T) {
 	}
 }
 
+// 模型管理里的「测试」按钮不受禁用状态限制：已禁用的模型/渠道也要能验证上游。
+func TestModelTestIgnoresDisabledState(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer up.Close()
+
+	s, st := newTestServer(t, "modeltest")
+	if err := st.SaveChannel(store.Channel{
+		ID: "off", Name: "停用线路", Type: store.ChannelOpenAI, BaseURL: up.URL, APIKey: "k",
+		Models: []string{"m"}, Enabled: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "off/m", Type: store.ModelTypeChannel, ChannelID: "off", Upstream: "m", Enabled: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/models/test", strings.NewReader(`{"id":"off/m"}`))
+	rec := httptest.NewRecorder()
+	s.testModel(rec, req)
+
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("响应解析失败: %v: %s", err, rec.Body.String())
+	}
+	if out["ok"] != true {
+		t.Fatalf("已禁用的模型也应能测试，得到 %v", out)
+	}
+	if out["content"] != "ok" {
+		t.Errorf("应返回上游正文，得到 %v", out["content"])
+	}
+}
+
 func TestDiscoverRequiresBaseURL(t *testing.T) {
 	s, _ := newTestServer(t, "u2")
 
@@ -2418,6 +2456,60 @@ func TestRecordLogsClientErrorAndInternalReason(t *testing.T) {
 	}
 	if got.ChannelName != "主线路" {
 		t.Errorf("渠道名称不正确：%q", got.ChannelName)
+	}
+}
+
+// 模型已禁用属于配置侧拒绝：请求直接返回，不写错误日志、不进统计、不消耗额度。
+func TestDisabledModelSkipsLogAndStats(t *testing.T) {
+	s, st := newTestServer(t, "disabled-skip")
+	key, err := s.EnsureDefaultToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "off", Type: store.ModelTypeCustom, Enabled: false, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+
+	req, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"off","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "模型「off」不可用") {
+		t.Fatalf("应直接返回 403 与不可用提示，得到 %d（%s）", resp.StatusCode, body)
+	}
+
+	if _, total, err := st.QueryLogs(store.LogFilter{Limit: 10}); err != nil {
+		t.Fatal(err)
+	} else if total != 0 {
+		t.Errorf("模型禁用不应写日志，得到 %d 条", total)
+	}
+	buckets, err := st.RangeStats(0, time.Now().UnixMilli()+60000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 0 {
+		t.Errorf("模型禁用不应进统计，得到 %d 个小时桶", len(buckets))
+	}
+	tok, err := st.FindTokenByKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.UsedQuota != 0 {
+		t.Errorf("模型禁用不应消耗额度，得到 %d", tok.UsedQuota)
 	}
 }
 
