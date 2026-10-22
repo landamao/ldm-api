@@ -32,12 +32,13 @@
     <div style="margin-bottom:8px"><b>思考内容</b>：填写后会在正文前输出思考内容；留空时响应里不会出现思考字段。</div>
     <div style="margin-bottom:8px"><b>耗时模拟</b>：流式首字是发送第一块数据前的等待（毫秒）；流式速度是每秒输出的字符数，按这个速度分块发送；非流式延迟是返回完整 JSON 前的等待（毫秒）。填 0 表示不模拟。</div>
     <div><b>优先级</b>：开启自定义内容返回会自动关闭自定义错误返回；关闭内容返回后，可以重新打开错误返回，之前填写的状态码和详情仍会保留。</div>`;
-  const CUSTOM_ERROR_HELP_TEXT = '开启自定义内容返回后，此功能将不可用。总开关关闭时以下配置都不生效。只开总开关：请求最终失败时，用这里的错误替代上游原始错误，成功请求不受影响；再开「始终返回错误」：所有调用都直接返回这里的错误，不再请求上游。状态码支持 400–599，错误详情留空时返回默认文案。';
+  const CUSTOM_ERROR_HELP_TEXT = '开启自定义内容返回后，此功能将不可用。总开关关闭时以下配置都不生效。只开总开关：请求最终失败时，用这里的错误替代上游原始错误，成功请求不受影响；再开「始终返回错误」：所有调用都直接返回这里的错误，不再请求上游。「不覆盖不可重试状态码」默认开启，命中模型不可重试状态码的上游错误仍原样返回。状态码支持 400–599，错误详情留空时返回默认文案。';
   const CUSTOM_ERROR_HELP_HTML = `
     <div style="margin-bottom:8px"><b>开启自定义内容返回后，此功能将不可用。</b></div>
     <div style="margin-bottom:8px"><b>总开关</b>：开启后才会读取下面的状态码和错误详情；关闭时以下配置都不生效。</div>
     <div style="margin-bottom:8px"><b>只开总开关</b>：请求最终失败时（上游报错、超时、无可用路由等），用这里配置的错误替代原始错误；成功的请求不受影响。</div>
     <div style="margin-bottom:8px"><b>始终返回错误</b>：总开关开启后才能使用。开启后不请求上游，所有调用都直接返回这里配置的错误。</div>
+    <div style="margin-bottom:8px"><b>不覆盖不可重试状态码</b>：默认开启。开启后，命中模型「不可重试状态码」的上游错误保持原样返回，不会被这里的错误替代；其它失败仍然重写。开启「始终返回错误」时本项不生效。</div>
     <div>状态码支持 <code>400–599</code>；错误详情留空时返回默认文案。流式响应一旦开始输出，中途失败无法改写已经发出的内容。</div>`;
   const SYSTEM_PROMPT_HELP_TEXT = '开启后，请求里自带的系统提示词会被全部移除，只把这里填写的内容作为唯一的系统提示词放在最前面。支持 OpenAI 对话的 system/developer 消息、Anthropic 原生 system 字段和 Responses 的 instructions。';
   const SYSTEM_PROMPT_HELP_HTML = `
@@ -3055,6 +3056,7 @@
                        value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试">
               </div>
               <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-always" ${m.error_always ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
+              <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-keep-no-retry" ${m.error_keep_no_retry ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">不覆盖不可重试状态码</span></label>
             </div>
           </div>
         </div>
@@ -3084,6 +3086,7 @@
         const errorEnabledEl = mo.body.querySelector('#m-error-enabled');
         const errorDetailEl = mo.body.querySelector('#m-error-detail');
         const errorAlwaysEl = mo.body.querySelector('#m-error-always');
+        const errorKeepNoRetryEl = mo.body.querySelector('#m-error-keep-no-retry');
         const errorStatusEl = mo.body.querySelector('#m-error-status');
         const errorMessageEl = mo.body.querySelector('#m-error-message');
         const sysPromptEnabledEl = mo.body.querySelector('#m-sysprompt-enabled');
@@ -3104,6 +3107,9 @@
           errorStatusEl.disabled = !errorActive;
           errorMessageEl.disabled = !errorActive;
           errorAlwaysEl.disabled = !errorActive;
+          // 「始终返回错误」不请求上游，保留原始错误的选项没有意义。
+          const keepNoRetryDisabled = !errorActive || errorAlwaysEl.checked;
+          errorKeepNoRetryEl.disabled = keepNoRetryDisabled;
           errorEnabledEl.disabled = contentOn;
           contentTextEl.disabled = !contentOn;
           contentReasoningEl.disabled = !contentOn;
@@ -3127,12 +3133,17 @@
           if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
           const alwaysSwitch = errorAlwaysEl.closest('.switch');
           if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
+          const keepSwitch = errorKeepNoRetryEl.closest('.switch');
+          if (keepSwitch) keepSwitch.classList.toggle('is-disabled', keepNoRetryDisabled);
           const thinkOverrideSwitch = thinkOverrideEnabledEl.closest('.switch');
           if (thinkOverrideSwitch) thinkOverrideSwitch.classList.toggle('is-disabled', contentOn);
-          if (!on) errorAlwaysEl.checked = false;
+          if (!on) {
+            errorAlwaysEl.checked = false;
+          }
         };
         contentEnabledEl.onchange = syncAdvancedFields;
         errorEnabledEl.onchange = syncAdvancedFields;
+        errorAlwaysEl.onchange = syncAdvancedFields;
         sysPromptEnabledEl.onchange = syncAdvancedFields;
         thinkOverrideEnabledEl.onchange = syncAdvancedFields;
         syncAdvancedFields();
@@ -3220,6 +3231,7 @@
               error_always: errorAlways,
               error_status: errorStatus,
               error_message: mo.body.querySelector('#m-error-message').value.trim(),
+              error_keep_no_retry: mo.body.querySelector('#m-error-keep-no-retry').checked,
               thinking_override_enabled: mo.body.querySelector('#m-thinkoverride-enabled').checked,
               thinking_override_text: mo.body.querySelector('#m-thinkoverride-text').value,
               system_prompt_enabled: systemPromptOn,
@@ -3505,6 +3517,7 @@
       no_retry_status: '', content_enabled: false, content_text: '',
       thinking_override_enabled: false, thinking_override_text: '',
       error_enabled: false, error_always: false, error_status: 0, error_message: '',
+      error_keep_no_retry: true,
       system_prompt_enabled: false, system_prompt: '',
     };
     // 本地编辑态
@@ -3664,6 +3677,7 @@
                        value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试">
               </div>
               <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-always" ${m.error_always ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
+              <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-keep-no-retry" ${m.error_keep_no_retry ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">不覆盖不可重试状态码</span></label>
             </div>
           </div>
         </div>
@@ -3713,6 +3727,7 @@
         const errorEnabledEl = mo.body.querySelector('#cm-error-enabled');
         const errorDetailEl = mo.body.querySelector('#cm-error-detail');
         const errorAlwaysEl = mo.body.querySelector('#cm-error-always');
+        const errorKeepNoRetryEl = mo.body.querySelector('#cm-error-keep-no-retry');
         const errorStatusEl = mo.body.querySelector('#cm-error-status');
         const errorMessageEl = mo.body.querySelector('#cm-error-message');
         const sysPromptEnabledEl = mo.body.querySelector('#cm-sysprompt-enabled');
@@ -3733,6 +3748,9 @@
           errorStatusEl.disabled = !errorActive;
           errorMessageEl.disabled = !errorActive;
           errorAlwaysEl.disabled = !errorActive;
+          // 「始终返回错误」不请求上游，保留原始错误的选项没有意义。
+          const keepNoRetryDisabled = !errorActive || errorAlwaysEl.checked;
+          errorKeepNoRetryEl.disabled = keepNoRetryDisabled;
           errorEnabledEl.disabled = contentOn;
           contentTextEl.disabled = !contentOn;
           contentReasoningEl.disabled = !contentOn;
@@ -3756,12 +3774,17 @@
           if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
           const alwaysSwitch = errorAlwaysEl.closest('.switch');
           if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
+          const keepSwitch = errorKeepNoRetryEl.closest('.switch');
+          if (keepSwitch) keepSwitch.classList.toggle('is-disabled', keepNoRetryDisabled);
           const thinkOverrideSwitch = thinkOverrideEnabledEl.closest('.switch');
           if (thinkOverrideSwitch) thinkOverrideSwitch.classList.toggle('is-disabled', contentOn);
-          if (!on) errorAlwaysEl.checked = false;
+          if (!on) {
+            errorAlwaysEl.checked = false;
+          }
         };
         contentEnabledEl.onchange = syncAdvancedFields;
         errorEnabledEl.onchange = syncAdvancedFields;
+        errorAlwaysEl.onchange = syncAdvancedFields;
         sysPromptEnabledEl.onchange = syncAdvancedFields;
         thinkOverrideEnabledEl.onchange = syncAdvancedFields;
         syncAdvancedFields();
@@ -4639,6 +4662,7 @@
             error_always: errorAlways,
             error_status: errorStatus,
             error_message: mo.body.querySelector('#cm-error-message').value.trim(),
+            error_keep_no_retry: mo.body.querySelector('#cm-error-keep-no-retry').checked,
             thinking_override_enabled: mo.body.querySelector('#cm-thinkoverride-enabled').checked,
             thinking_override_text: mo.body.querySelector('#cm-thinkoverride-text').value,
             system_prompt_enabled: systemPromptOn,

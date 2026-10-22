@@ -119,6 +119,70 @@ func TestSaveModelNoRetryStatus(t *testing.T) {
 	}
 }
 
+func TestSaveModelCustomErrorKeepNoRetry(t *testing.T) {
+	s, st := newTestServer(t, "model-error-keep-no-retry")
+
+	put := func(id, payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/models/"+id, strings.NewReader(payload))
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		s.saveModel(rec, req)
+		return rec
+	}
+
+	// 未提交时默认开启
+	rec := put("m1", `{"id":"m1","type":"custom","routes":[],"error_enabled":true,"error_status":503,"error_message":"统一错误"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, err := st.GetModel("m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.CustomErrorKeepNoRetry() || m.ErrorKeepNoRetry == nil || !*m.ErrorKeepNoRetry {
+		t.Fatalf("未提交时默认开启: %+v", m)
+	}
+
+	// 显式关闭
+	rec = put("m1", `{"error_keep_no_retry":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("m1")
+	if m.CustomErrorKeepNoRetry() {
+		t.Fatalf("显式关闭后不应生效: %+v", m)
+	}
+
+	// 部分更新不提交时保留原值
+	rec = put("m1", `{"error_message":"新文案"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("m1")
+	if m.CustomErrorKeepNoRetry() || m.ErrorMessage != "新文案" {
+		t.Fatalf("未提交时不应覆盖开关: %+v", m)
+	}
+
+	// 关闭总开关时保留配置，重新开启后继续生效
+	rec = put("m1", `{"error_enabled":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("m1")
+	if m.CustomErrorKeepNoRetry() || m.ErrorKeepNoRetry == nil || *m.ErrorKeepNoRetry {
+		t.Fatalf("总开关关闭时开关不应生效: %+v", m)
+	}
+	rec = put("m1", `{"error_enabled":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("m1")
+	if m.CustomErrorKeepNoRetry() {
+		t.Fatalf("重新打开总开关后应保留之前的关闭状态: %+v", m)
+	}
+}
+
 func TestSaveModelCustomError(t *testing.T) {
 	s, st := newTestServer(t, "model-custom-error")
 

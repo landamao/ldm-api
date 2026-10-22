@@ -486,8 +486,9 @@ func TestModelCustomErrorRewriteKeepsNoRetryRules(t *testing.T) {
 		Routes:       []store.Route{{ChannelID: "rwnr", Upstream: "a"}},
 		ErrorEnabled: boolp(true), ErrorAlways: boolp(false),
 		ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "统一错误",
-		NoRetryStatus: strp("500"),
-		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+		ErrorKeepNoRetry: boolp(false),
+		NoRetryStatus:    strp("500"),
+		Enabled:          true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -515,6 +516,101 @@ func TestModelCustomErrorRewriteKeepsNoRetryRules(t *testing.T) {
 	}
 	if plan, _ := PlanRoute(m, byID, func(string) bool { return true }); len(plan) != 1 {
 		t.Errorf("不可重试状态码不应冷却路由，得到 %d 条可用路由", len(plan))
+	}
+}
+
+// 未设置「不覆盖不可重试状态码」时默认开启：命中规则的错误原样透传。
+func TestModelCustomErrorKeepsNoRetryUpstream(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, `{"error":{"message":"upstream boom"}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	ch := statusTestChannel(t, st, "keep", srv.URL, []string{"key-k-000001", "key-k-000002"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "keep/a", Type: store.ModelTypeCustom,
+		Routes:       []store.Route{{ChannelID: "keep", Upstream: "a"}},
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(false),
+		ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "统一错误",
+		NoRetryStatus: strp("500"),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("keep/a"))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("应原样返回上游 500，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "upstream boom") || strings.Contains(body, "统一错误") {
+		t.Errorf("响应应为上游原始错误: %s", body)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("不可重试状态码只应尝试一次，实际 %d 次", got)
+	}
+	if res.StatusCode != http.StatusInternalServerError || !strings.Contains(res.ClientErr, "upstream boom") {
+		t.Errorf("结果应记录实际返回给调用方的上游错误: %+v", res)
+	}
+	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 2 {
+		t.Errorf("不应冷却 Key，得到 %v（%s）", candidateIndexes(keys), reason)
+	}
+	m, _ := st.GetModel("keep/a")
+	chans, _ := st.ListChannels()
+	byID := map[string]store.Channel{}
+	for _, c := range chans {
+		byID[c.ID] = c
+	}
+	if plan, _ := PlanRoute(m, byID, func(string) bool { return true }); len(plan) != 1 {
+		t.Errorf("不应冷却路由，得到 %d 条可用路由", len(plan))
+	}
+}
+
+// 没命中不可重试状态码的失败仍然按自定义错误重写。
+func TestModelCustomErrorKeepNoRetryOnlyMatchesRule(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, `{"error":{"message":"upstream boom"}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "keep2", srv.URL, []string{"key-l-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "keep2/a", Type: store.ModelTypeCustom,
+		Routes:       []store.Route{{ChannelID: "keep2", Upstream: "a"}},
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(false),
+		ErrorStatus: http.StatusServiceUnavailable, ErrorMessage: "统一错误",
+		ErrorKeepNoRetry: boolp(true),
+		NoRetryStatus:    strp("502"),
+		Enabled:          true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	New(st).Do(context.Background(), rec, statusTestRequest("keep2/a"))
+
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "统一错误") {
+		t.Fatalf("未命中规则时应返回配置的错误，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "upstream boom") {
+		t.Errorf("未命中规则时不应透传上游错误: %s", rec.Body.String())
 	}
 }
 

@@ -100,6 +100,19 @@ func TestModelCustomErrorSwitches(t *testing.T) {
 	if disabled.CustomErrorEnabled() || disabled.CustomErrorAlways() {
 		t.Error("总开关关闭时子开关不应生效")
 	}
+	keep := Model{ErrorEnabled: &on, ErrorKeepNoRetry: &on}
+	if !keep.CustomErrorKeepNoRetry() {
+		t.Error("总开关开启时应读取保留不可重试状态码的开关")
+	}
+	if !(Model{ErrorEnabled: &on}).CustomErrorKeepNoRetry() {
+		t.Error("未设置保留开关时应默认开启")
+	}
+	if (Model{ErrorEnabled: &on, ErrorKeepNoRetry: &off}).CustomErrorKeepNoRetry() {
+		t.Error("显式关闭时保留开关不应生效")
+	}
+	if (Model{ErrorEnabled: &off, ErrorKeepNoRetry: &on}).CustomErrorKeepNoRetry() {
+		t.Error("总开关关闭时保留开关不应生效")
+	}
 }
 
 func TestModelCustomContentSwitch(t *testing.T) {

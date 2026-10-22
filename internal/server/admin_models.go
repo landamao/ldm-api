@@ -88,11 +88,13 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		// 回填开关的生效值，前端直接按布尔值渲染（nil 表示未配置）。
 		errorEnabled := m.CustomErrorEnabled()
 		errorAlways := m.CustomErrorAlways()
+		errorKeepNoRetry := m.ErrorKeepNoRetryOn()
 		contentEnabled := m.CustomContentEnabled()
 		thinkingOverrideOn := m.ThinkingOverrideEnabled()
 		systemPromptOn := m.SystemPromptEnabled()
 		v.ErrorEnabled = &errorEnabled
 		v.ErrorAlways = &errorAlways
+		v.ErrorKeepNoRetry = &errorKeepNoRetry
 		v.ContentEnabled = &contentEnabled
 		v.ThinkingOverrideOn = &thinkingOverrideOn
 		v.SystemPromptOn = &systemPromptOn
@@ -234,6 +236,7 @@ type modelRequest struct {
 	ErrorAlways          *bool          `json:"error_always"`
 	ErrorStatus          *int           `json:"error_status"`
 	ErrorMessage         *string        `json:"error_message"`
+	ErrorKeepNoRetry     *bool          `json:"error_keep_no_retry"`
 	ContentEnabled       *bool          `json:"content_enabled"`
 	ContentText          *string        `json:"content_text"`
 	ContentReasoning     *string        `json:"content_reasoning"`
@@ -471,9 +474,11 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	m.ThinkingOverrideOn = &thinkingOverrideOn
 
 	// 自定义错误返回：总开关关闭时，子开关与状态码都不生效。
-	// 显式关闭总开关会同时关闭子开关；只打开子开关时一并打开总开关。
+	// 显式关闭总开关会同时关闭「始终返回错误」；「不覆盖不可重试状态码」
+	// 属于保留配置，关闭总开关时不清空，重新开启后继续生效。
 	errorEnabled := m.CustomErrorEnabled()
 	errorAlways := m.CustomErrorAlways()
+	errorKeepNoRetry := m.ErrorKeepNoRetryOn()
 	if req.ErrorEnabled != nil {
 		errorEnabled = *req.ErrorEnabled
 		if !errorEnabled {
@@ -485,6 +490,9 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		if errorAlways {
 			errorEnabled = true
 		}
+	}
+	if req.ErrorKeepNoRetry != nil {
+		errorKeepNoRetry = *req.ErrorKeepNoRetry
 	}
 	if !errorEnabled {
 		errorAlways = false
@@ -512,6 +520,7 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	}
 	m.ErrorEnabled = &errorEnabled
 	m.ErrorAlways = &errorAlways
+	m.ErrorKeepNoRetry = &errorKeepNoRetry
 
 	// 系统提示词注入：开启后请求里自带的系统提示词全部丢弃，
 	// 只用这里配置的内容作为唯一的系统提示词。

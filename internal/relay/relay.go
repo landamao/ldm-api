@@ -1085,8 +1085,9 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		// 也不再尝试后面的路由。是否命中由模型配置决定。
 		if resolved.Model.NoRetryStatusSet().Match(status) {
 			// 开启「失败时重写」时不在这里写出上游原始错误，
-			// 交给 Do 在最终失败时统一换成配置的错误。
-			if _, rewrite := customErrorOf(resolved.Model); rewrite {
+			// 交给 Do 在最终失败时统一换成配置的错误；
+			// 但开启「不覆盖不可重试状态码」时仍然原样透传。
+			if _, rewrite := customErrorOf(resolved.Model); rewrite && !resolved.Model.CustomErrorKeepNoRetry() {
 				return attemptOutcome{status: status, err: errors.New(msg), retryable: false,
 					upstreamRaw: raw, upstreamHdr: resp.Header, skipRouteCooldown: true}
 			}

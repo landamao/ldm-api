@@ -259,10 +259,14 @@ type Model struct {
 	// 关闭时只在请求最终失败（上游错误、超时、无可用路由等）时用它替代原始错误。
 	// ErrorStatus 是返回给调用方的状态码（400–599），ErrorMessage 是错误详情，
 	// 为空时使用默认文案。
-	ErrorEnabled *bool  `json:"error_enabled,omitempty"`
-	ErrorAlways  *bool  `json:"error_always,omitempty"`
-	ErrorStatus  int    `json:"error_status,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
+	// ErrorKeepNoRetry 开启后，命中 NoRetryStatus 的上游错误保持原样返回，
+	// 不被自定义错误覆盖；只在「失败时重写」模式下有意义。
+	// nil 表示旧数据未设置，按默认开启处理；显式 false 表示关闭。
+	ErrorEnabled     *bool  `json:"error_enabled,omitempty"`
+	ErrorAlways      *bool  `json:"error_always,omitempty"`
+	ErrorStatus      int    `json:"error_status,omitempty"`
+	ErrorMessage     string `json:"error_message,omitempty"`
+	ErrorKeepNoRetry *bool  `json:"error_keep_no_retry,omitempty"`
 
 	// 自定义内容返回。
 	// ContentEnabled 开启后，所有调用都直接返回 ContentText，不再请求上游；
@@ -322,6 +326,16 @@ func (m Model) CustomErrorEnabled() bool {
 // CustomErrorAlways 返回是否始终返回自定义错误。总开关关闭时永远为 false。
 func (m Model) CustomErrorAlways() bool {
 	return m.CustomErrorEnabled() && m.ErrorAlways != nil && *m.ErrorAlways
+}
+
+// ErrorKeepNoRetryOn 返回配置值，未设置时默认开启。
+func (m Model) ErrorKeepNoRetryOn() bool {
+	return m.ErrorKeepNoRetry == nil || *m.ErrorKeepNoRetry
+}
+
+// CustomErrorKeepNoRetry 返回命中不可重试状态码时是否保留上游原始错误。
+func (m Model) CustomErrorKeepNoRetry() bool {
+	return m.CustomErrorEnabled() && m.ErrorKeepNoRetryOn()
 }
 
 // CustomContentEnabled 返回自定义内容返回总开关。
