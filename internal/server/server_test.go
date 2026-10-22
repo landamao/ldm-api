@@ -995,6 +995,32 @@ func TestDiscoverFallsBackToSavedKey(t *testing.T) {
 	}
 }
 
+// 模型列表接口失败时必须把上游原文透出来，不能被「渠道未配置任何模型」这类通用提示盖掉。
+func TestDiscoverSurfacesUpstreamListError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"Incorrect API key provided: sk-test","type":"invalid_request_error"}}`))
+	}))
+	defer srv.Close()
+	s, _ := newTestServer(t, "d6")
+
+	code, out := callDiscover(t, s, map[string]any{
+		"id": "A", "type": "openai", "base_url": srv.URL, "api_key": "sk-test",
+	})
+	if code != http.StatusBadGateway {
+		t.Fatalf("状态码 %d: %v", code, out)
+	}
+	errObj, _ := out["error"].(map[string]any)
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, "401") || !strings.Contains(msg, "Incorrect API key provided") {
+		t.Fatalf("应透出上游原始错误，得到 %q", msg)
+	}
+	if strings.Contains(msg, "渠道未配置任何模型") {
+		t.Fatalf("通用提示不应盖住上游错误，得到 %q", msg)
+	}
+}
+
 func TestDiscoverRejectsIncompleteInput(t *testing.T) {
 	s, _ := newTestServer(t, "d3")
 

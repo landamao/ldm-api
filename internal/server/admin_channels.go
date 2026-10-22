@@ -727,6 +727,35 @@ func (s *Server) probeChannel(ch store.Channel) probeResult {
 	return last
 }
 
+// fetchChannelModels 请求上游的模型列表接口。
+// 失败时返回的 errMsg 保留上游状态码和响应体原文，让「获取模型列表」能展示真实原因；
+// 探测渠道时再决定是否回退到对话请求。
+func fetchChannelModels(client *http.Client, ch store.Channel) ([]string, string) {
+	base := upstream.NormalizeBase(ch.BaseURL)
+	if base == "" {
+		return nil, "该渠道还没有填写接口地址"
+	}
+	listPath := "/v1/models"
+	if ch.Type == store.ChannelGemini {
+		listPath = "/v1beta/models"
+	}
+	req, err := http.NewRequest(http.MethodGet, upstream.JoinURL(base, listPath, ch.ShouldAppendV1()), nil)
+	if err != nil {
+		return nil, "请求模型列表失败: " + err.Error()
+	}
+	upstream.Get(ch.Type).Auth(req, ch)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "请求模型列表失败: " + err.Error()
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateErr(string(raw)))
+	}
+	return parseModelIDs(raw), ""
+}
+
 // probeChannelOnce 用最轻量的方式验证单个 Key 是否可用。
 func (s *Server) probeChannelOnce(ch store.Channel) probeResult {
 	start := time.Now()
@@ -737,33 +766,18 @@ func (s *Server) probeChannelOnce(ch store.Channel) probeResult {
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	// 先试模型列表接口，它最省额度
-	listPath := "/v1/models"
-	if ch.Type == store.ChannelGemini {
-		listPath = "/v1beta/models"
-	}
-	if ch.Type == store.ChannelAnthropic {
-		listPath = "/v1/models"
-	}
-	req, err := http.NewRequest(http.MethodGet, upstream.JoinURL(base, listPath, ch.ShouldAppendV1()), nil)
-	if err == nil {
-		upstream.Get(ch.Type).Auth(req, ch)
-		if resp, err := client.Do(req); err == nil {
-			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			resp.Body.Close()
-			if resp.StatusCode < 400 {
-				models := parseModelIDs(raw)
-				msg := fmt.Sprintf("连接成功，上游返回 %d 个模型", len(models))
-				if len(models) == 0 {
-					msg = "连接成功"
-				}
-				return probeResult{OK: true, Message: msg, Latency: time.Since(start).Milliseconds(), Models: models}
-			}
+	models, listErr := fetchChannelModels(client, ch)
+	if listErr == "" {
+		msg := fmt.Sprintf("连接成功，上游返回 %d 个模型", len(models))
+		if len(models) == 0 {
+			msg = "连接成功"
 		}
+		return probeResult{OK: true, Message: msg, Latency: time.Since(start).Milliseconds(), Models: models}
 	}
 
 	// 回退到一次极小的对话请求
 	if len(ch.Models) == 0 {
-		return probeResult{OK: false, Message: "渠道未配置任何模型，且模型列表接口不可用", Latency: time.Since(start).Milliseconds()}
+		return probeResult{OK: false, Message: "渠道未配置任何模型，且模型列表接口不可用：" + listErr, Latency: time.Since(start).Milliseconds()}
 	}
 	model := ch.Models[0]
 	payload := map[string]any{
@@ -786,7 +800,7 @@ func (s *Server) probeChannelOnce(ch store.Channel) probeResult {
 		}
 	}
 	body, _ := json.Marshal(payload)
-	req, err = http.NewRequest(http.MethodPost, upstream.JoinURL(base, path, ch.ShouldAppendV1()), strings.NewReader(string(body)))
+	req, err := http.NewRequest(http.MethodPost, upstream.JoinURL(base, path, ch.ShouldAppendV1()), strings.NewReader(string(body)))
 	if err != nil {
 		return probeResult{OK: false, Message: err.Error(), Latency: time.Since(start).Milliseconds()}
 	}
@@ -897,12 +911,16 @@ func (s *Server) discoverChannelModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := s.probeChannelOnce(ch)
-	if !res.OK {
-		writeErr(w, http.StatusBadGateway, res.Message)
+	// 只关心模型列表接口本身：对话回退给不出模型列表，还会把上游的真实错误盖掉。
+	start := time.Now()
+	models, listErr := fetchChannelModels(&http.Client{Timeout: 30 * time.Second}, ch)
+	if listErr != "" {
+		writeErr(w, http.StatusBadGateway, listErr)
 		return
 	}
 	writeOK(w, map[string]any{
-		"models": res.Models, "message": res.Message, "latency_ms": res.Latency,
+		"models":     models,
+		"message":    fmt.Sprintf("上游返回 %d 个模型", len(models)),
+		"latency_ms": time.Since(start).Milliseconds(),
 	})
 }

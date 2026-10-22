@@ -2,7 +2,7 @@
 # 交叉编译各平台的单文件可执行程序到 dist/
 set -euo pipefail
 
-VERSION="${1:-1.16.10}"
+VERSION="${1:-1.16.11}"
 OUT="dist"
 LDFLAGS="-s -w -X main.version=${VERSION}"
 
