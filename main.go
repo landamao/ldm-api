@@ -22,15 +22,18 @@ import (
 	"ldmapi/internal/termtitle"
 )
 
-var version = "1.17.0"
+var version = "1.17.2"
 
 func main() {
+	// 先读 .env，让其中的环境变量成为命令行参数的默认值
+	loadDotEnv()
+
 	var (
-		host     = flag.String("host", "127.0.0.1", "监听地址")
-		port     = flag.Int("port", 6700, "监听端口")
-		dataDir  = flag.String("data", "", "数据目录（默认：可执行文件同级的 data 目录）")
-		password = flag.String("password", "", "重置管理端密码后启动（可选）")
-		open     = flag.Bool("open", false, "启动后自动打开浏览器")
+		host     = flag.String("host", envString("LDMAPI_HOST", "127.0.0.1"), "监听地址（环境变量 LDMAPI_HOST）")
+		port     = flag.Int("port", envInt("LDMAPI_PORT", 6700), "监听端口（环境变量 LDMAPI_PORT）")
+		dataDir  = flag.String("data", envString("LDMAPI_DATA", ""), "数据目录（环境变量 LDMAPI_DATA；默认：可执行文件同级的 data 目录）")
+		password = flag.String("password", envString("LDMAPI_PASSWORD", ""), "重置管理端密码后启动（环境变量 LDMAPI_PASSWORD；可选）")
+		open     = flag.Bool("open", envBool("LDMAPI_OPEN", false), "启动后自动打开浏览器（环境变量 LDMAPI_OPEN）")
 		ver      = flag.Bool("version", false, "打印版本号")
 	)
 	flag.Parse()
@@ -70,10 +73,17 @@ func main() {
 		log.Fatalf("初始化密码失败: %v", err)
 	}
 	if *password != "" {
-		if err := srv.SetPassword(*password); err != nil {
-			log.Fatalf("设置密码失败: %v", err)
+		source := passwordSource()
+		if srv.CheckPassword(*password) {
+			// 已经是这个密码：不再重置，避免每次启动都轮换会话密钥、踢掉登录状态
+			log.Printf("管理端密码已经是 %s 配置的值，跳过重置", source)
+		} else {
+			if err := srv.SetPassword(*password); err != nil {
+				log.Fatalf("设置管理端密码失败: %v（来源：%s。该配置的值就是新的管理端密码，至少 6 位，不是开关；不需要重置时删除它）", err, source)
+			}
+			log.Printf("已通过 %s 重置管理端密码", source)
+			isDefaultPwd = false
 		}
-		isDefaultPwd = false
 	}
 
 	// 首次启动时生成一个可直接使用的 API 密钥

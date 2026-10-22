@@ -36,7 +36,7 @@ chmod +x ldmapi-linux-amd64
 
 ```
   ╭──────────────────────────────────────────────────────────────╮
-  │  🐱 懒大猫 API   v1.17.0                                     │
+  │  🐱 懒大猫 API   v1.17.2                                     │
   │                                                              │
   │  控制台     http://127.0.0.1:6700                            │
   │  API 地址   http://127.0.0.1:6700/v1                         │
@@ -59,6 +59,33 @@ chmod +x ldmapi-linux-amd64
 | `-version` | — | 打印版本号 |
 
 > 可执行文件所在目录不可写时（例如放在 `/usr/local/bin`），数据会自动落到 `~/.ldmapi/`。
+
+### 环境变量与 .env
+
+除了命令行参数，也可以用环境变量配置。程序启动时会自动读取 `.env` 文件：先看当前工作目录，再看可执行文件所在目录；也可以用真实环境变量 `LDMAPI_ENV_FILE` 指定其它路径（这个变量不能写在 `.env` 里）。
+
+优先级从高到低：**命令行参数 > 真实环境变量 > `.env` > 默认值**。
+
+| 环境变量 | 对应参数 | 说明 |
+| --- | --- | --- |
+| `LDMAPI_HOST` | `-host` | 监听地址 |
+| `LDMAPI_PORT` | `-port` | 监听端口 |
+| `LDMAPI_DATA` | `-data` | 数据目录；相对路径以启动时的工作目录为准 |
+| `LDMAPI_PASSWORD` | `-password` | 启动时把管理端密码重置为该值（至少 6 位；这里填密码本身，不是开关） |
+| `LDMAPI_OPEN` | `-open` | `1`/`true`/`yes`/`on` 视为开启 |
+| `LDMAPI_DEV` | — | 前端资源目录，开发时使用（如 `web`） |
+| `LDMAPI_ENV_FILE` | — | 指定要加载的 `.env` 路径 |
+
+`.env` 示例（完整模板见仓库里的 [.env.example](.env.example)）：
+
+```ini
+LDMAPI_PORT=6700
+LDMAPI_DATA=/opt/ldmapi/data
+```
+
+`.env` 支持 `KEY=VALUE`、`export KEY=VALUE`、`#` 注释、单引号原样值和双引号转义（`\n`、`\t`、`\"`、`\\`），不支持多行值和变量展开；同一个变量写多次时以最后一次为准。密码里包含空格或 `#` 时建议用引号包起来。
+
+`LDMAPI_PASSWORD` 每次启动都会把密码重置为该值（与当前密码相同时跳过，不会让已登录会话失效）。它会以明文保存在文件里，注意权限（`chmod 600 .env`）；仓库的 `.gitignore` 已忽略 `.env`，不要把它提交到版本库。
 
 ---
 
@@ -515,7 +542,7 @@ Windows 产物的图标和版本信息来自 `assets/ldmapi.ico`，由 `go-winre
 go install github.com/tc-hib/go-winres@latest
 go-winres simply --arch amd64,arm64 --icon assets/ldmapi.ico \
   --product-name "懒大猫 API" --file-description "懒大猫 API - 模型聚合网关" \
-  --product-version 1.17.0 --file-version 1.17.0 --original-filename ldmapi.exe
+  --product-version 1.17.2 --file-version 1.17.2 --original-filename ldmapi.exe
 ```
 
 修改前端时不必重新编译，让程序直接从磁盘读取前端资源即可：
@@ -545,11 +572,13 @@ python scripts/gen_demo_data.py --force
 ```
 .
 ├── main.go                     启动流程、命令行参数
+├── env.go                      .env 加载与环境变量默认值
 ├── internal/
 │   ├── store/                  数据模型 + bbolt 持久化
 │   ├── upstream/               三种上游协议的请求/响应/流式转换
 │   ├── relay/                  路由解析、失败切换、能力裁剪、用量统计
 │   ├── server/                 HTTP 路由、管理接口、鉴权
+│   ├── dotenv/                 .env 文件解析
 │   └── termtitle/              设置终端窗口标题
 ├── assets/                     Windows 图标源文件
 ├── scripts/
