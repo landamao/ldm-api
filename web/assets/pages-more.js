@@ -342,7 +342,7 @@
                   <td>${colorBadge(l.model_id)}</td>
                   <td>${l.channel_id ? `<span class="code">${esc(l.channel_id)}</span>` : '<span class="muted">—</span>'}</td>
                   <td class="right num">${esc(fmtDuration(l.latency_ms))}</td>
-                  <td class="right num" title="${fmtInt(l.total_tokens)}">${fmtDash(l.total_tokens)}</td>
+                  <td class="right num" title="${fmtInt(l.total_tokens)}">${fmtDash(l.total_tokens)}${l.usage_estimate ? ' <span class="muted fs-12">(估算)</span>' : ''}</td>
                   <td>${l.canceled
                     ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
                     : (logOK(l)
@@ -3852,6 +3852,10 @@
       const tok = (n) => (logUnit.on
         ? `<span title="${fmtInt(n)}">${fmtUnit(n)}</span>`
         : fmtInt(n));
+      // 上游没有上报用量时网关会估算，标一下避免把估算值当成真实用量。
+      const estMark = (l) => (l.usage_estimate
+        ? ' <span class="muted fs-12">(估算)</span>'
+        : '');
 
       function renderTable() {
         if (lastItems == null) return;
@@ -3897,9 +3901,9 @@
                   : '<span class="muted">未命中渠道</span>'}
               </td>
               <td class="fs-12">${colorBadge(l.token_name)}</td>
-              <td class="right num">${tok(l.prompt_tokens)}
+              <td class="right num">${tok(l.prompt_tokens)}${estMark(l)}
                 ${l.cached_tokens ? `<div class="muted fs-12">缓存读 ${tok(l.cached_tokens)}</div>` : ''}</td>
-              <td class="right num">${tok(l.completion_tokens)}
+              <td class="right num">${tok(l.completion_tokens)}${estMark(l)}
                 ${l.reasoning_tokens
                   ? `<div class="muted fs-12">思考 ${tok(l.reasoning_tokens)}</div>`
                   : (l.reasoning_chars ? `<div class="muted fs-12">思考 ${tok(l.reasoning_chars)} 字</div>` : '')}

@@ -2340,6 +2340,28 @@ func TestRecordPersistsAttempts(t *testing.T) {
 	}
 }
 
+// 估算出来的用量要落进日志，前端才能在 token 旁标注「估算」。
+func TestRecordPersistsUsageEstimate(t *testing.T) {
+	s, st := newTestServer(t, "usage-estimate")
+	res := &relay.Result{
+		ModelID: "x", ChannelID: "A", StatusCode: http.StatusOK,
+		Usage:         upstream.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12},
+		UsageEstimate: true,
+	}
+	s.record(store.Token{ID: "tk", Name: "测试密钥"}, &relay.Request{Path: "/v1/chat/completions"}, res)
+
+	logs, _, err := st.QueryLogs(store.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("应写入 1 条日志，得到 %d", len(logs))
+	}
+	if !logs[0].UsageEstimate {
+		t.Error("估算标记未持久化")
+	}
+}
+
 // 日志要把「调用方实际看到的错误」和「内部原因」分开存：
 // 渠道全在冷却时对外只有笼统提示，排查时还得能看到冷却这个真实原因。
 func TestRecordLogsClientErrorAndInternalReason(t *testing.T) {

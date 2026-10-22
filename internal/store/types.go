@@ -393,13 +393,15 @@ type Log struct {
 	KeyMasked string `json:"key_masked,omitempty"`
 	KeyNote   string `json:"key_note,omitempty"`
 	// KeyAffinity 表示最终尝试使用的 Key 命中了 Key 亲和。
-	KeyAffinity      bool  `json:"key_affinity,omitempty"`
-	PromptTokens     int   `json:"prompt_tokens"`
-	CompletionTokens int   `json:"completion_tokens"`
-	TotalTokens      int   `json:"total_tokens"`
-	LatencyMs        int64 `json:"latency_ms"`
-	FirstByteMs      int64 `json:"first_byte_ms"`
-	StatusCode       int   `json:"status_code"`
+	KeyAffinity      bool `json:"key_affinity,omitempty"`
+	PromptTokens     int  `json:"prompt_tokens"`
+	CompletionTokens int  `json:"completion_tokens"`
+	TotalTokens      int  `json:"total_tokens"`
+	// UsageEstimate 表示 token 用量是网关估算的（上游没有上报），前端会标注「估算」。
+	UsageEstimate bool  `json:"usage_estimate,omitempty"`
+	LatencyMs     int64 `json:"latency_ms"`
+	FirstByteMs   int64 `json:"first_byte_ms"`
+	StatusCode    int   `json:"status_code"`
 	// Error 是内部失败原因，可能包含渠道、上游地址等细节，只用于后台排查。
 	Error string `json:"error,omitempty"`
 	// ClientError 是实际返回给调用方的错误内容。网关对外会收敛成笼统提示，
