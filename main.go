@@ -22,7 +22,7 @@ import (
 	"ldmapi/internal/termtitle"
 )
 
-var version = "1.16.15"
+var version = "1.17.0"
 
 func main() {
 	var (
