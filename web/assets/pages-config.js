@@ -209,17 +209,14 @@
           <span class="code" style="font-weight:650">${esc(c.id)}</span>
           ${c.enabled ? '' : badge('已禁用', 'gray')}
         </div>
-        ${c.name ? `<div class="muted fs-12" style="margin-top:2px">${esc(c.name)}</div>` : ''}
       </td>
+      <td>${c.name
+        ? `<span class="truncate" style="display:block;max-width:240px" title="${esc(c.name)}">${esc(c.name)}</span>`
+        : '<span class="muted">—</span>'}</td>
       <td>${badge(typeLabel(c.type), typeTone(c.type))}${multiKeyOn && keyCount > 1
         ? ` <span class="badge badge--gray" title="${esc(keyTip)}">${keyCount} Keys</span>`
         : ''}</td>
-      <td><span class="muted fs-12 truncate" style="display:block;max-width:220px" title="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
-      <td class="num">${names.length}</td>
-      <td class="num">
-        <span class="strong">${c.added_count || 0}</span>
-        <span class="muted">/ ${names.length}</span>
-      </td>
+      <td><span class="muted fs-12 truncate" style="display:block;max-width:170px" title="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
       <td>
         <div class="badge-group">
           ${names.slice(0, 4).map((m) => `<span class="badge mono">${esc(m)}</span>`).join('')}
@@ -398,12 +395,11 @@
           <table class="tbl">
             <thead><tr>
               ${channelListState.multi ? '<th style="width:34px"><input type="checkbox" id="ch-checkall" aria-label="全选"></th>' : ''}
-              <th style="min-width:150px">渠道 ID</th>
+              <th style="min-width:150px">ID</th>
+              <th style="min-width:120px">名称</th>
               <th>类型</th>
-              <th>接口地址</th>
-              <th class="right">模型数</th>
-              <th class="right">已接入</th>
-              <th style="min-width:230px">可用模型</th>
+              <th>地址</th>
+              <th style="min-width:185px">模型</th>
               ${channelListState.multi ? '' : '<th style="width:150px"></th>'}
             </tr></thead>
             <tbody>${list.map(channelRow).join('')}</tbody>
