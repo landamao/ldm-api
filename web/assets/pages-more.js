@@ -3223,9 +3223,14 @@
         if (sending) stopStream();
         else doSend();
       };
-      root.querySelector('#chat-clear').onclick = () => {
+      root.querySelector('#chat-clear').onclick = async () => {
         if (history.length) {
-          const ok = window.confirm('确定清空本地保存的对话记录吗？');
+          const ok = await confirmDialog({
+            title: '清空对话',
+            message: `将删除本地保存的 ${history.length} 条消息，清空后无法恢复。`,
+            confirmText: '清空',
+            danger: true,
+          });
           if (!ok) return;
         }
         reset();
