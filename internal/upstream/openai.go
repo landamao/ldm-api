@@ -102,32 +102,73 @@ func stripImagesOpenAI(body map[string]any) {
 	}
 }
 
+// openAIUsage 同时兼容 Chat Completions 和 Responses API 的用量字段。
+// Responses API 用 input_tokens/output_tokens，思考与缓存命中分别放在
+// output_tokens_details/input_tokens_details 里。
+type openAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	PromptDetails    struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+	// DeepSeek 等用这个字段名表示缓存命中
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	InputDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
+	OutputDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
+}
+
+func (u openAIUsage) usage() Usage {
+	prompt, completion := u.PromptTokens, u.CompletionTokens
+	if prompt == 0 {
+		prompt = u.InputTokens
+	}
+	if completion == 0 {
+		completion = u.OutputTokens
+	}
+	total := u.TotalTokens
+	if total == 0 {
+		total = prompt + completion
+	}
+	cached := pickCached(u.PromptDetails.CachedTokens, u.PromptCacheHitTokens)
+	if cached == 0 {
+		cached = u.InputDetails.CachedTokens
+	}
+	reasoning := u.CompletionDetails.ReasoningTokens
+	if reasoning == 0 {
+		reasoning = u.OutputDetails.ReasoningTokens
+	}
+	return Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      total,
+		ReasoningTokens:  reasoning,
+		CachedTokens:     cached,
+	}
+}
+
 func openAIDecode(raw []byte, _ string) ([]byte, Usage, error) {
 	var u struct {
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-			PromptDetails    struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"prompt_tokens_details"`
-			CompletionDetails struct {
-				ReasoningTokens int `json:"reasoning_tokens"`
-			} `json:"completion_tokens_details"`
-			// DeepSeek 等用这个字段名表示缓存命中
-			PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
-		} `json:"usage"`
+		Usage    openAIUsage `json:"usage"`
+		Response struct {
+			Usage openAIUsage `json:"usage"`
+		} `json:"response"`
 	}
 	_ = json.Unmarshal(raw, &u)
-	us := Usage{
-		PromptTokens:     u.Usage.PromptTokens,
-		CompletionTokens: u.Usage.CompletionTokens,
-		TotalTokens:      u.Usage.TotalTokens,
-		ReasoningTokens:  u.Usage.CompletionDetails.ReasoningTokens,
-		CachedTokens:     pickCached(u.Usage.PromptDetails.CachedTokens, u.Usage.PromptCacheHitTokens),
-	}
-	if us.TotalTokens == 0 {
-		us.TotalTokens = us.PromptTokens + us.CompletionTokens
+	us := u.Usage.usage()
+	if us.Empty() {
+		// 少数网关会把 Responses 响应再包一层 response 字段。
+		us = u.Response.Usage.usage()
 	}
 	return raw, us, nil
 }
@@ -151,18 +192,13 @@ func (s *openAIStream) Translate(line []byte) []byte {
 			s.done = true
 		} else {
 			var probe struct {
-				Usage *struct {
-					PromptTokens     int `json:"prompt_tokens"`
-					CompletionTokens int `json:"completion_tokens"`
-					TotalTokens      int `json:"total_tokens"`
-					PromptDetails    struct {
-						CachedTokens int `json:"cached_tokens"`
-					} `json:"prompt_tokens_details"`
-					CompletionDetails struct {
-						ReasoningTokens int `json:"reasoning_tokens"`
-					} `json:"completion_tokens_details"`
-					PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
-				} `json:"usage"`
+				Usage    *openAIUsage `json:"usage"`
+				Response *struct {
+					Usage *openAIUsage `json:"usage"`
+				} `json:"response"`
+				// Responses API 的事件类型，例如 response.output_text.delta。
+				Type    string          `json:"type"`
+				Delta   json.RawMessage `json:"delta"`
 				Choices []struct {
 					Delta struct {
 						Content          string `json:"content"`
@@ -172,16 +208,13 @@ func (s *openAIStream) Translate(line []byte) []byte {
 				} `json:"choices"`
 			}
 			if err := json.Unmarshal(payload, &probe); err == nil {
-				if probe.Usage != nil {
-					s.usage = Usage{
-						PromptTokens:     probe.Usage.PromptTokens,
-						CompletionTokens: probe.Usage.CompletionTokens,
-						TotalTokens:      probe.Usage.TotalTokens,
-						ReasoningTokens:  probe.Usage.CompletionDetails.ReasoningTokens,
-						CachedTokens:     pickCached(probe.Usage.PromptDetails.CachedTokens, probe.Usage.PromptCacheHitTokens),
-					}
-					if s.usage.TotalTokens == 0 {
-						s.usage.TotalTokens = s.usage.PromptTokens + s.usage.CompletionTokens
+				usage := probe.Usage
+				if usage == nil && probe.Response != nil {
+					usage = probe.Response.Usage
+				}
+				if usage != nil {
+					if us := usage.usage(); !us.Empty() {
+						s.usage = us
 					}
 				}
 				for _, c := range probe.Choices {
@@ -190,6 +223,21 @@ func (s *openAIStream) Translate(line []byte) []byte {
 					}
 					s.chars += len([]rune(c.Delta.Content))
 					s.reasonCh += len([]rune(c.Delta.ReasoningContent))
+				}
+				// Responses API 的流没有 finish_reason，以 response.completed 收尾；
+				// 正文和思考都放在顶层 delta 里，用于上游没给用量时估算。
+				switch {
+				case probe.Type == "response.completed" || probe.Type == "response.incomplete":
+					s.done = true
+				case strings.HasSuffix(probe.Type, ".delta"):
+					var delta string
+					if json.Unmarshal(probe.Delta, &delta) == nil {
+						if strings.HasPrefix(probe.Type, "response.reasoning") {
+							s.reasonCh += len([]rune(delta))
+						} else {
+							s.chars += len([]rune(delta))
+						}
+					}
 				}
 			}
 		}

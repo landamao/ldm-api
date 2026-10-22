@@ -1600,6 +1600,63 @@ func TestUpstreamStreamDisconnectMarksFailure(t *testing.T) {
 	}
 }
 
+// /v1/responses 的用量字段是 input_tokens/output_tokens，必须按上游上报记账，
+// 不能退化成「输入有、输出 0」的估算结果。
+func TestResponsesStreamUsageRecorded(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("上游路径错误: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `data: {"type":"response.created","response":{"id":"r1","usage":null}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"你好"}`+"\n\n")
+		io.WriteString(w, `data: {"type":"response.completed","response":{"usage":`+
+			`{"input_tokens":50,"output_tokens":12,"total_tokens":62,`+
+			`"input_tokens_details":{"cached_tokens":40},`+
+			`"output_tokens_details":{"reasoning_tokens":3}}}}`+"\n\n")
+	}))
+	defer up.Close()
+
+	if err := st.SaveChannel(store.Channel{
+		ID: "resp-ch", Name: "Responses", Type: store.ChannelOpenAI, BaseURL: up.URL,
+		APIKey: "k", Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "resp/model", Type: store.ModelTypeChannel, ChannelID: "resp-ch", Upstream: "m",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model":"resp/model","stream":true,"input":[{"role":"user","content":"hi"}]}`)
+	req := &Request{
+		Path: "/v1/responses", Method: http.MethodPost,
+		Header: http.Header{}, Body: body, Stream: true,
+		JSON: map[string]any{"model": "resp/model", "stream": true},
+	}
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, req)
+
+	if res.StatusCode != http.StatusOK || res.Err != "" {
+		t.Fatalf("请求应成功: status=%d err=%q", res.StatusCode, res.Err)
+	}
+	if res.UsageEstimate {
+		t.Error("上游已上报用量，不应走估算")
+	}
+	if res.Usage.PromptTokens != 50 || res.Usage.CompletionTokens != 12 || res.Usage.TotalTokens != 62 {
+		t.Errorf("Responses 用量记账错误: %+v", res.Usage)
+	}
+	if res.CachedTokens != 40 || res.ReasoningTokens != 3 {
+		t.Errorf("缓存/思考 token 记账错误: cached=%d reasoning=%d", res.CachedTokens, res.ReasoningTokens)
+	}
+}
+
 // 上游已经发出 [DONE]（响应内容完整）后客户端立刻关闭连接，是很多客户端的
 // 正常行为，不能记成「客户端中途断开」。
 func TestClientDisconnectAfterDoneCountsAsSuccess(t *testing.T) {

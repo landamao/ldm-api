@@ -713,6 +713,49 @@ func TestOpenAIStreamPassthroughAndUsage(t *testing.T) {
 	}
 }
 
+func TestOpenAIDecodeResponsesUsage(t *testing.T) {
+	raw := []byte(`{"id":"resp_1","object":"response","status":"completed",` +
+		`"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,` +
+		`"input_tokens_details":{"cached_tokens":80},"output_tokens_details":{"reasoning_tokens":10}}}`)
+	_, u, err := openAIDecode(raw, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.PromptTokens != 100 || u.CompletionTokens != 20 || u.TotalTokens != 120 {
+		t.Errorf("Responses 用量解析错误: %+v", u)
+	}
+	if u.CachedTokens != 80 || u.ReasoningTokens != 10 {
+		t.Errorf("缓存/思考 token 解析错误: %+v", u)
+	}
+}
+
+func TestOpenAIStreamResponsesUsage(t *testing.T) {
+	st := &openAIStream{}
+	st.Translate([]byte(`data: {"type":"response.created","response":{"id":"r1","usage":null}}`))
+	st.Translate([]byte(`data: {"type":"response.output_text.delta","delta":"你好"}`))
+	st.Translate([]byte(`data: {"type":"response.reasoning_summary_text.delta","delta":"想"}`))
+	st.Translate([]byte(`data: {"type":"response.output_text.delta","delta":"世界"}`))
+	if st.Done() {
+		t.Error("response.completed 之前不应标记结束")
+	}
+	st.Translate([]byte(`data: {"type":"response.completed","response":{"usage":` +
+		`{"input_tokens":50,"output_tokens":12,"total_tokens":62,` +
+		`"input_tokens_details":{"cached_tokens":40},"output_tokens_details":{"reasoning_tokens":3}}}}`))
+	u := st.Usage()
+	if u.PromptTokens != 50 || u.CompletionTokens != 12 || u.TotalTokens != 62 {
+		t.Errorf("流式 Responses 用量解析错误: %+v", u)
+	}
+	if u.CachedTokens != 40 || u.ReasoningTokens != 3 {
+		t.Errorf("流式缓存/思考 token 解析错误: %+v", u)
+	}
+	if st.OutputChars() != 4 || st.ReasoningChars() != 1 {
+		t.Errorf("输出字符数错误: output=%d reasoning=%d", st.OutputChars(), st.ReasoningChars())
+	}
+	if !st.Done() {
+		t.Error("response.completed 之后应标记结束")
+	}
+}
+
 func TestErrorResponseNormalization(t *testing.T) {
 	raw := []byte(`{"error":{"type":"invalid_request_error","message":"bad model"}}`)
 	out, _, err := anthropicDecode(raw, "m")
