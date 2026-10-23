@@ -585,9 +585,6 @@ func normalizeModelNames(in []string) ([]string, error) {
 			out = append(out, name)
 		}
 	}
-	if len(out) == 0 {
-		return out, nil
-	}
 	return out, nil
 }
 

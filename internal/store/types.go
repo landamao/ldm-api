@@ -487,7 +487,6 @@ type Settings struct {
 	// 留空则使用内置的默认图标。
 	Logo             string `json:"logo"`
 	Theme            string `json:"theme"` // light | dark
-	PrimaryColor     string `json:"primary_color"`
 	LogRetentionDays int    `json:"log_retention_days"`
 	RootPasswordHash string `json:"root_password_hash"`
 	RootPasswordSalt string `json:"root_password_salt"`

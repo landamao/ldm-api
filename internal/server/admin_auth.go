@@ -204,7 +204,6 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		SiteSubtitle     *string `json:"site_subtitle"`
 		Logo             *string `json:"logo"`
 		Theme            *string `json:"theme"`
-		PrimaryColor     *string `json:"primary_color"`
 		LogRetentionDays *int    `json:"log_retention_days"`
 		AllowOrigins     *string `json:"allow_origins"`
 	}
@@ -228,9 +227,6 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Theme != nil && (*req.Theme == "light" || *req.Theme == "dark") {
 		st.Theme = *req.Theme
-	}
-	if req.PrimaryColor != nil {
-		st.PrimaryColor = strings.TrimSpace(*req.PrimaryColor)
 	}
 	if req.LogRetentionDays != nil && *req.LogRetentionDays >= 0 {
 		st.LogRetentionDays = *req.LogRetentionDays

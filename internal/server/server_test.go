@@ -2739,6 +2739,132 @@ func TestV1APICORSAllowsOriginWithoutCredentials(t *testing.T) {
 	}
 }
 
+// 配置 allow_origins 白名单后，/v1 只对列表内的来源回显 CORS 头；
+// 留空或 * 恢复默认的反射行为。
+func TestV1APICORSAllowOriginsList(t *testing.T) {
+	s, st := newTestServer(t, "cors-allowlist")
+	key, err := s.EnsureDefaultToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+
+	probe := func(origin string) string {
+		req, err := http.NewRequest(http.MethodGet, gw.URL+"/v1/models", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.Header.Get("Access-Control-Allow-Origin")
+	}
+
+	// 未配置白名单：任意来源都反射
+	if got := probe("http://evil.example"); got != "http://evil.example" {
+		t.Fatalf("未配置白名单时应反射来源，得到 %q", got)
+	}
+
+	cur, err := st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.AllowOrigins = "https://a.example, https://b.example"
+	if err := st.SaveSettings(cur); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := probe("https://a.example"); got != "https://a.example" {
+		t.Errorf("白名单内的来源应放行，得到 %q", got)
+	}
+	if got := probe("http://evil.example"); got != "" {
+		t.Errorf("白名单外的来源不应回显 CORS，得到 %q", got)
+	}
+	if got := probe("https://a.EXAMPLE"); got == "" {
+		t.Errorf("来源比较应忽略大小写")
+	}
+
+	cur.AllowOrigins = "*"
+	if err := st.SaveSettings(cur); err != nil {
+		t.Fatal(err)
+	}
+	if got := probe("http://any.example"); got != "http://any.example" {
+		t.Errorf("* 应放行全部来源，得到 %q", got)
+	}
+}
+
+// POST /api/models 只用于新建：ID 已被占用（无论被渠道模型还是自定义模型占用）
+// 必须返回 409，不能把请求当成编辑静默覆盖已有模型。PUT 编辑自身不受影响。
+func TestSaveModelRejectsCreateOnExistingID(t *testing.T) {
+	s, _ := newTestServer(t, "model-create-conflict")
+	save := func(method, pathValue, body string) int {
+		t.Helper()
+		req := httptest.NewRequest(method, "/api/models", strings.NewReader(body))
+		if pathValue != "" {
+			req.SetPathValue("id", pathValue)
+		}
+		rec := httptest.NewRecorder()
+		s.saveModel(rec, req)
+		return rec.Code
+	}
+
+	if code := save(http.MethodPost, "", `{"id":"A/glm","type":"custom","routes":[]}`); code != http.StatusOK {
+		t.Fatalf("新建自定义模型应成功，得到 %d", code)
+	}
+	if code := save(http.MethodPost, "", `{"id":"A/glm","type":"custom","routes":[]}`); code != http.StatusConflict {
+		t.Errorf("POST 占用已存在的 ID 应返回 409，得到 %d", code)
+	}
+	if code := save(http.MethodPost, "", `{"id":"A/glm","type":"channel","channel_id":"A","upstream":"glm"}`); code != http.StatusConflict {
+		t.Errorf("POST 渠道模型占用已存在的 ID 应返回 409，得到 %d", code)
+	}
+	if code := save(http.MethodPut, "A/glm", `{"id":"A/glm","type":"custom","routes":[],"display_name":"改名测试"}`); code != http.StatusOK {
+		t.Errorf("PUT 编辑已有模型应成功，得到 %d", code)
+	}
+	m, err := s.store.GetModel("A/glm")
+	if err != nil || m.Type != store.ModelTypeCustom || m.DisplayName != "改名测试" {
+		t.Errorf("PUT 编辑后模型应保持自定义类型并更新字段，得到 %+v err=%v", m, err)
+	}
+}
+
+// 已有渠道模型的归属（channel_id / upstream）不允许修改：
+// 派生 ID 变化会绕过改名检查，旧记录不删、按新 ID 覆盖已有模型。
+func TestSaveModelRejectsChannelBelongingChange(t *testing.T) {
+	s, _ := newTestServer(t, "model-channel-belonging")
+	save := func(pathValue, body string) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/models", strings.NewReader(body))
+		req.SetPathValue("id", pathValue)
+		rec := httptest.NewRecorder()
+		s.saveModel(rec, req)
+		return rec.Code
+	}
+
+	if code := save("ch1/glm", `{"id":"ch1/glm","type":"channel","channel_id":"ch1","upstream":"glm"}`); code != http.StatusOK {
+		t.Fatalf("新建渠道模型应成功，得到 %d", code)
+	}
+	if code := save("ch1/glm", `{"id":"ch1/glm","type":"channel","channel_id":"ch2","upstream":"glm"}`); code != http.StatusBadRequest {
+		t.Errorf("修改渠道归属应返回 400，得到 %d", code)
+	}
+	if code := save("ch1/glm", `{"id":"ch1/glm","type":"channel","channel_id":"ch1","upstream":"glm4"}`); code != http.StatusBadRequest {
+		t.Errorf("修改上游模型名应返回 400，得到 %d", code)
+	}
+	if code := save("ch1/glm", `{"id":"ch1/glm","type":"channel","channel_id":"ch1","upstream":"glm","timeout":120}`); code != http.StatusOK {
+		t.Errorf("原归属保存应成功，得到 %d", code)
+	}
+	if _, err := s.store.GetModel("ch2/glm"); err == nil {
+		t.Errorf("不应产生 ch2/glm 脏记录")
+	}
+	if m, err := s.store.GetModel("ch1/glm"); err != nil || m.Timeout != 120 {
+		t.Errorf("原记录应保留且字段已更新，得到 %+v err=%v", m, err)
+	}
+}
+
 // 同站（同主机不同端口）的页面也能带上 SameSite=Lax 的 Cookie，
 // 因此管理端写操作必须校验 Origin / Sec-Fetch-Site。
 func TestAdminMutationRejectsCrossSite(t *testing.T) {

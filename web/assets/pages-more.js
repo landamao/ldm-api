@@ -1325,15 +1325,34 @@
         return `${Math.round(s)} 秒`;
       };
 
+      // 上游返回的图片 / 附件地址可能被恶意渠道投毒（javascript: 等），
+      // 只允许这三种协议进入 href / src；与下载按钮的白名单保持一致。
+      const safeUrl = (u) => {
+        if (typeof u !== 'string' || !u) return '';
+        if (u.startsWith('data:') || u.startsWith('blob:') || /^https?:\/\//i.test(u)) return u;
+        return '';
+      };
+
       const appendImage = (box, url) => {
+        const src = safeUrl(url);
+        if (!src) {
+          // 协议不在白名单内的地址不做成链接，退化为纯文本展示
+          if (url) {
+            const tip = document.createElement('div');
+            tip.className = 'muted fs-12';
+            tip.textContent = String(url);
+            box.appendChild(tip);
+          }
+          return;
+        }
         const link = document.createElement('a');
         link.className = 'msg__image-link';
-        link.href = url;
+        link.href = src;
         link.target = '_blank';
         link.rel = 'noopener';
         const img = document.createElement('img');
         img.className = 'msg__image';
-        img.src = url;
+        img.src = src;
         img.alt = '图片';
         img.loading = 'lazy';
         link.appendChild(img);
@@ -1471,16 +1490,16 @@
               + '<div class="attachment-unsupported__title">该附件没有可预览的文本</div>'
               + '</div>';
           }
-        } else if (kind === 'image' && att.data) {
+        } else if (kind === 'image' && safeUrl(att.data)) {
           const img = document.createElement('img');
           img.className = 'attachment-preview__image';
-          img.src = att.data;
+          img.src = safeUrl(att.data);
           img.alt = name;
           preview.appendChild(img);
         } else if (kind === 'pdf' && att.data) {
           // 浏览器内置 PDF 阅读器可以直接显示 Blob URL；
           // 比 data URL 可靠，也不会受远程地址的 X-Frame-Options 影响。
-          pdfHref = att.data;
+          pdfHref = safeUrl(att.data);
           if (String(pdfHref).startsWith('data:')) {
             const blob = dataUrlToBlob(pdfHref);
             if (blob) {
@@ -1520,7 +1539,7 @@
           tempUrls.push(url);
           href = url;
         }
-        if (href && (String(href).startsWith('data:') || String(href).startsWith('blob:') || /^https?:\/\//.test(String(href)))) {
+        if (href && safeUrl(href)) {
           const download = document.createElement('a');
           download.className = 'btn btn--sm btn--primary';
           download.href = href;
@@ -1530,10 +1549,10 @@
           download.innerHTML = icon('download', 13) + '下载附件';
           actions.appendChild(download);
         }
-        if (kind === 'image' && att.data) {
+        if (kind === 'image' && safeUrl(att.data)) {
           const open = document.createElement('a');
           open.className = 'btn btn--sm';
-          open.href = att.data;
+          open.href = safeUrl(att.data);
           open.target = '_blank';
           open.rel = 'noopener';
           open.innerHTML = icon('eye', 13) + '新标签页打开';
@@ -4030,6 +4049,12 @@
                 <input class="input" id="s-retention" type="number" min="0" value="${settings.log_retention_days || 0}" placeholder="0 表示永久保留">
                 <div class="field__hint">超过天数的调用日志与统计数据会被自动清理；0 表示永久保留。</div>
               </div>
+              <div class="field">
+                <label class="field__label">API 跨域白名单</label>
+                <input class="input mono" id="s-cors" value="${esc(settings.allow_origins || '')}"
+                       placeholder="留空允许所有来源访问 /v1 接口">
+                <div class="field__hint">限制浏览器跨域调用 <code>/v1</code> 接口的来源，多个用逗号分隔，例如 <code>https://a.com, https://b.com</code>；<code>*</code> 或留空表示不限制。不影响 curl 等非浏览器调用。</div>
+              </div>
               <button class="btn btn--primary mt-8" id="s-save">${icon('check', 14)}保存设置</button>
             </div>
           </div>
@@ -4214,6 +4239,7 @@
             logo: q('#s-logo').value.trim(),
             theme: q('#s-theme .tristate__opt.is-on').dataset.value,
             log_retention_days: Number(q('#s-retention').value) || 0,
+            allow_origins: q('#s-cors').value.trim(),
           });
           Toast.success('设置已保存');
           window.LDM.applyLogo(q('#s-logo').value.trim());

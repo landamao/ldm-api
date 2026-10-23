@@ -1345,7 +1345,7 @@
   window.LDM.renderNav = renderNav;
 
   // ---------- 登录 ----------
-  function showLogin(hint) {
+  function showLogin() {
     const app = document.getElementById('app');
     app.innerHTML = `
       <div class="login-page">
@@ -1359,7 +1359,6 @@
             <div class="field__error" id="login-err" style="display:none"></div>
           </div>
           <button class="btn btn--primary btn--block" id="login-btn" style="height:40px;margin-top:6px">登录</button>
-          ${hint ? `<div class="login-hint">${icon('info', 14)} 首次使用请用默认密码 <code>landamao</code> 登录，登录后请立即在「系统设置」中修改。</div>` : ''}
           <a class="login-github" href="${REPO_URL}" target="_blank" rel="noopener noreferrer">${githubIcon(15)}<span>GitHub</span></a>
         </div>
       </div>`;
@@ -1399,7 +1398,9 @@
     try {
       me = await API.get('/api/auth/me');
     } catch (e) {
-      showLogin(true);
+      // 登录页对任何访客可见，不能在这里提示默认密码；
+      // 默认口令的修改提醒只在登录成功后以 Toast 展示。
+      showLogin();
       return;
     }
     State.me = me;

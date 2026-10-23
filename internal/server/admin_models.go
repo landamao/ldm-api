@@ -321,6 +321,15 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "模型 ID 不能为空")
 		return
 	}
+	// POST 只用于新建：目标 ID 已被占用（无论是渠道模型还是自定义模型）一律拒绝。
+	// 不做这个检查时，POST 会被下面的逻辑当成「编辑」处理，静默覆盖已有模型的
+	// 类型与全部配置——两个自定义模型同名、自定义模型顶掉渠道模型都从这里来。
+	if r.PathValue("id") == "" {
+		if _, err := s.store.GetModel(targetID); err == nil {
+			writeErr(w, http.StatusConflict, "模型 ID "+targetID+" 已存在")
+			return
+		}
+	}
 
 	existing, err := s.store.GetModel(currentID)
 	isNew := errors.Is(err, store.ErrNotFound)
@@ -377,6 +386,13 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		// 渠道模型的 ID 必须与「渠道ID/上游模型名」一致，保证可追溯
 		m.ID = m.ChannelID + "/" + m.Upstream
 		req.ID = m.ID
+		// 归属决定派生 ID：已有渠道模型的 channel_id / upstream 不允许改。
+		// 否则派生 ID 的变化会绕过上面的改名检查——旧记录不删、按新 ID 覆盖
+		// 已有模型。要换归属请删除后重新添加。
+		if !isNew && m.ID != existing.ID {
+			writeErr(w, http.StatusBadRequest, "渠道模型的归属（渠道 / 上游模型名）不能修改，请删除后重新添加")
+			return
+		}
 		if isNew {
 			if _, err := s.store.GetModel(m.ID); err == nil {
 				writeErr(w, http.StatusConflict, "该渠道模型已添加过了")

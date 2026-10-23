@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"hash/fnv"
 	"io"
 	"io/fs"
@@ -122,7 +121,7 @@ func (s *Server) Handler() http.Handler {
 	// ---- 前端 ----
 	mux.HandleFunc("/", s.serveStatic)
 
-	return withCORS(withRecover(withLogger(mux)))
+	return s.withCORS(withRecover(withLogger(mux)))
 }
 
 // ---------- 中间件 ----------
@@ -144,9 +143,10 @@ func withRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				// 详情只进日志；对外给固定文案，避免 panic 内容带出内部路径等细节
 				log.Printf("panic on %s %s: %v", r.Method, r.URL.Path, rec)
 				writeJSON(w, http.StatusInternalServerError, map[string]any{
-					"error": map[string]any{"message": fmt.Sprint(rec), "type": "internal_error"},
+					"error": map[string]any{"message": "服务内部错误，请稍后重试", "type": "internal_error"},
 				})
 			}
 		}()
@@ -154,7 +154,7 @@ func withRecover(next http.Handler) http.Handler {
 	})
 }
 
-func withCORS(next http.Handler) http.Handler {
+func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 只有对外的 /v1 接口需要 CORS：浏览器端 SDK 会用 Authorization 头携带
 		// API 密钥，不依赖 Cookie，因此不回显 Allow-Credentials。
@@ -162,12 +162,16 @@ func withCORS(next http.Handler) http.Handler {
 		// admin 中间件里的同源校验拦截。
 		if strings.HasPrefix(r.URL.Path, "/v1/") {
 			if origin := r.Header.Get("Origin"); origin != "" {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Vary", "Origin")
+				// 响应是否带 CORS 头取决于 Origin 与设置的比较结果，必须声明 Vary，
+				// 避免中间缓存把放行结果错发给别的来源。
+				w.Header().Add("Vary", "Origin")
+				if s.originAllowed(origin) {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Access-Control-Allow-Headers", "*")
+					w.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,POST,OPTIONS")
+					w.Header().Set("Access-Control-Max-Age", "600")
+				}
 			}
-			w.Header().Set("Access-Control-Allow-Headers", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,POST,OPTIONS")
-			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -177,6 +181,31 @@ func withCORS(next http.Handler) http.Handler {
 	})
 }
 
+// originAllowed 判断 /v1 的 CORS 是否放行该 Origin。
+// 设置里 allow_origins 为空时保持默认行为：反射任意 Origin（/v1 用 API 密钥
+// 认证、不依赖 Cookie，开放跨域没有风险）。配置了白名单则只放行列表内的
+// Origin：逗号 / 分号 / 空白分隔，"*" 仍表示全部放行。
+// 读设置失败时退回默认行为，避免存储异常把对外接口的浏览器调用全部打断。
+func (s *Server) originAllowed(origin string) bool {
+	st, err := s.store.GetSettings()
+	if err != nil {
+		return true
+	}
+	list := strings.TrimSpace(st.AllowOrigins)
+	if list == "" || list == "*" {
+		return true
+	}
+	for _, item := range strings.FieldsFunc(list, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	}) {
+		item = strings.TrimSpace(item)
+		if item == "*" || strings.EqualFold(item, origin) {
+			return true
+		}
+	}
+	return false
+}
+
 type statusWriter struct {
 	http.ResponseWriter
 	status  int
@@ -184,10 +213,13 @@ type statusWriter struct {
 }
 
 func (w *statusWriter) WriteHeader(code int) {
-	if !w.written {
-		w.status = code
-		w.written = true
+	// 只把第一次的状态码透传给底层 writer；重复调用直接吞掉，
+	// 否则标准库会记一条 superfluous response.WriteHeader 告警日志
+	if w.written {
+		return
 	}
+	w.status = code
+	w.written = true
 	w.ResponseWriter.WriteHeader(code)
 }
 

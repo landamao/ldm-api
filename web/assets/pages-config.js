@@ -4701,10 +4701,14 @@
           const btn = mo.foot.querySelector('[data-act=save]');
           btn.disabled = true;
           btn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';
-          // URL 里放改名前的 ID，body 里是目标 ID，后端据此完成重命名
-          const urlID = isNew ? newID : m.id;
           try {
-            await API.put('/api/models/' + encodeURIComponent(urlID), payload);
+            if (isNew) {
+              // 新建走 POST：ID 已被占用时后端返回 409，而不是把已有模型当成编辑覆盖掉
+              await API.post('/api/models', payload);
+            } else {
+              // 编辑走 PUT：URL 里放改名前的 ID，body 里是目标 ID，后端据此完成重命名
+              await API.put('/api/models/' + encodeURIComponent(m.id), payload);
+            }
             // 新建或改名后把展开状态落到新的模型 ID，之后编辑时能直接恢复。
             if (isNew || newID !== m.id) {
               try {
