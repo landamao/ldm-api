@@ -253,24 +253,28 @@ type Model struct {
 	// 显式空字符串表示所有状态码都可重试。
 	NoRetryStatus *string `json:"no_retry_status,omitempty"`
 
-	// 自定义错误返回。
+	// 错误覆写。
 	// ErrorEnabled 是总开关：关闭时以下配置均不生效。
 	// ErrorAlways 开启后不请求上游，所有调用直接返回配置的错误；
 	// 关闭时只在请求最终失败（上游错误、超时、无可用路由等）时用它替代原始错误。
 	// ErrorStatus 是返回给调用方的状态码（400–599），ErrorMessage 是错误详情，
 	// 为空时使用默认文案。
-	// ErrorKeepNoRetry 开启后，命中 NoRetryStatus 的上游错误保持原样返回，
-	// 不被自定义错误覆盖；只在「失败时重写」模式下有意义。
+	// ErrorAsContent 开启后不按错误返回，而是把错误详情当成正常正文，
+	// 以 HTTP 200 返回（流式请求按 SSE 输出）。此时 ErrorStatus 不再生效。
+	// ErrorKeepNoRetry 开启后，命中 NoRetryStatus 的上游错误跳过覆写、原样返回；
+	// 只在「失败时重写」模式下有意义，对「覆写为正文」同样生效，
+	// 即命中规则的错误仍然是上游的原始错误，不会变成 200 正文。
 	// nil 表示旧数据未设置，按默认开启处理；显式 false 表示关闭。
 	ErrorEnabled     *bool  `json:"error_enabled,omitempty"`
 	ErrorAlways      *bool  `json:"error_always,omitempty"`
 	ErrorStatus      int    `json:"error_status,omitempty"`
 	ErrorMessage     string `json:"error_message,omitempty"`
+	ErrorAsContent   *bool  `json:"error_as_content,omitempty"`
 	ErrorKeepNoRetry *bool  `json:"error_keep_no_retry,omitempty"`
 
 	// 自定义内容返回。
 	// ContentEnabled 开启后，所有调用都直接返回 ContentText，不再请求上游；
-	// 优先级高于自定义错误返回，两者同时开启时错误配置不生效。
+	// 优先级高于错误覆写，两者同时开启时错误配置不生效。
 	// ContentReasoning 是可选的思考内容，为空时不输出思考字段。
 	// ContentFirstByteMs / ContentSpeed / ContentLatencyMs 用于模拟响应耗时：
 	// 首字等待（毫秒）、流式每秒输出字符数、非流式延迟（毫秒）。
@@ -318,12 +322,12 @@ func (m Model) RouteCooldownSec() int {
 	return *m.CooldownSec
 }
 
-// CustomErrorEnabled 返回自定义错误返回总开关。
+// CustomErrorEnabled 返回错误覆写总开关。
 func (m Model) CustomErrorEnabled() bool {
 	return m.ErrorEnabled != nil && *m.ErrorEnabled
 }
 
-// CustomErrorAlways 返回是否始终返回自定义错误。总开关关闭时永远为 false。
+// CustomErrorAlways 返回是否始终返回覆写结果。总开关关闭时永远为 false。
 func (m Model) CustomErrorAlways() bool {
 	return m.CustomErrorEnabled() && m.ErrorAlways != nil && *m.ErrorAlways
 }
@@ -333,7 +337,12 @@ func (m Model) ErrorKeepNoRetryOn() bool {
 	return m.ErrorKeepNoRetry == nil || *m.ErrorKeepNoRetry
 }
 
-// CustomErrorKeepNoRetry 返回命中不可重试状态码时是否保留上游原始错误。
+// CustomErrorAsContent 返回错误是否覆写为正文（HTTP 200）。总开关关闭时永远为 false。
+func (m Model) CustomErrorAsContent() bool {
+	return m.CustomErrorEnabled() && m.ErrorAsContent != nil && *m.ErrorAsContent
+}
+
+// CustomErrorKeepNoRetry 返回命中不可重试状态码时是否跳过覆写、保留上游原始错误。
 func (m Model) CustomErrorKeepNoRetry() bool {
 	return m.CustomErrorEnabled() && m.ErrorKeepNoRetryOn()
 }

@@ -88,12 +88,14 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		// 回填开关的生效值，前端直接按布尔值渲染（nil 表示未配置）。
 		errorEnabled := m.CustomErrorEnabled()
 		errorAlways := m.CustomErrorAlways()
+		errorAsContent := m.CustomErrorAsContent()
 		errorKeepNoRetry := m.ErrorKeepNoRetryOn()
 		contentEnabled := m.CustomContentEnabled()
 		thinkingOverrideOn := m.ThinkingOverrideEnabled()
 		systemPromptOn := m.SystemPromptEnabled()
 		v.ErrorEnabled = &errorEnabled
 		v.ErrorAlways = &errorAlways
+		v.ErrorAsContent = &errorAsContent
 		v.ErrorKeepNoRetry = &errorKeepNoRetry
 		v.ContentEnabled = &contentEnabled
 		v.ThinkingOverrideOn = &thinkingOverrideOn
@@ -236,6 +238,7 @@ type modelRequest struct {
 	ErrorAlways          *bool          `json:"error_always"`
 	ErrorStatus          *int           `json:"error_status"`
 	ErrorMessage         *string        `json:"error_message"`
+	ErrorAsContent       *bool          `json:"error_as_content"`
 	ErrorKeepNoRetry     *bool          `json:"error_keep_no_retry"`
 	ContentEnabled       *bool          `json:"content_enabled"`
 	ContentText          *string        `json:"content_text"`
@@ -433,7 +436,7 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		m.NoRetryStatus = &empty
 	}
 
-	// 自定义内容返回：开启后所有调用都直接返回配置内容，优先于自定义错误。
+	// 自定义内容返回：开启后所有调用都直接返回配置内容，优先于错误覆写。
 	contentEnabled := m.CustomContentEnabled()
 	if req.ContentEnabled != nil {
 		contentEnabled = *req.ContentEnabled
@@ -473,11 +476,13 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	}
 	m.ThinkingOverrideOn = &thinkingOverrideOn
 
-	// 自定义错误返回：总开关关闭时，子开关与状态码都不生效。
-	// 显式关闭总开关会同时关闭「始终返回错误」；「不覆盖不可重试状态码」
+	// 错误覆写：总开关关闭时，子开关与状态码都不生效。
+	// 显式关闭总开关会同时关闭「始终返回错误」；「跳过不可重试状态码」
 	// 属于保留配置，关闭总开关时不清空，重新开启后继续生效。
 	errorEnabled := m.CustomErrorEnabled()
 	errorAlways := m.CustomErrorAlways()
+	// 覆写为正文属于保留配置：总开关关闭时也按原值保留，重新开启后继续生效。
+	errorAsContent := m.ErrorAsContent != nil && *m.ErrorAsContent
 	errorKeepNoRetry := m.ErrorKeepNoRetryOn()
 	if req.ErrorEnabled != nil {
 		errorEnabled = *req.ErrorEnabled
@@ -491,13 +496,20 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 			errorEnabled = true
 		}
 	}
+	if req.ErrorAsContent != nil {
+		errorAsContent = *req.ErrorAsContent
+		// 单独打开覆写为正文时一并打开总开关；显式关闭总开关时以总开关为准。
+		if errorAsContent && req.ErrorEnabled == nil {
+			errorEnabled = true
+		}
+	}
 	if req.ErrorKeepNoRetry != nil {
 		errorKeepNoRetry = *req.ErrorKeepNoRetry
 	}
 	if !errorEnabled {
 		errorAlways = false
 	}
-	// 内容返回开启时自动关闭自定义错误，与前端行为保持一致。
+	// 内容返回开启时自动关闭错误覆写，与前端行为保持一致。
 	if contentEnabled {
 		errorEnabled = false
 		errorAlways = false
@@ -505,7 +517,7 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	if req.ErrorStatus != nil {
 		status := *req.ErrorStatus
 		if status != 0 && (status < 400 || status > 599) {
-			writeErr(w, http.StatusBadRequest, "自定义错误状态码需在 400–599 之间")
+			writeErr(w, http.StatusBadRequest, "错误覆写的状态码需在 400–599 之间")
 			return
 		}
 		m.ErrorStatus = status
@@ -513,13 +525,15 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	if req.ErrorMessage != nil {
 		m.ErrorMessage = strings.TrimSpace(*req.ErrorMessage)
 	}
-	// 内容返回开启时错误配置不生效，允许暂时没有有效状态码。
-	if errorEnabled && m.ErrorStatus == 0 && !contentEnabled {
-		writeErr(w, http.StatusBadRequest, "开启自定义错误返回时请填写 400–599 的状态码")
+	// 内容返回开启时错误配置不生效，允许暂时没有有效状态码；
+	// 覆写为正文时状态码固定为 200，同样不需要配置。
+	if errorEnabled && m.ErrorStatus == 0 && !contentEnabled && !errorAsContent {
+		writeErr(w, http.StatusBadRequest, "开启错误覆写时请填写 400–599 的状态码，或改为「覆写为正文」")
 		return
 	}
 	m.ErrorEnabled = &errorEnabled
 	m.ErrorAlways = &errorAlways
+	m.ErrorAsContent = &errorAsContent
 	m.ErrorKeepNoRetry = &errorKeepNoRetry
 
 	// 系统提示词注入：开启后请求里自带的系统提示词全部丢弃，

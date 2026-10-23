@@ -2,7 +2,9 @@
 # 交叉编译各平台的单文件可执行程序到 dist/
 set -euo pipefail
 
-VERSION="${1:-1.17.2}"
+# 版本号默认取 main.go 里的 version，避免脚本和代码不一致；
+# 需要临时指定时传第一个参数，例如 ./build.sh 1.17.3。
+VERSION="${1:-$(sed -n 's/^var version = "\([^"]*\)".*/\1/p' main.go)}"
 OUT="dist"
 LDFLAGS="-s -w -X main.version=${VERSION}"
 

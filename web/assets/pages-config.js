@@ -24,22 +24,23 @@
     <div style="margin-bottom:8px">命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。</div>
     <div style="margin-bottom:8px">留空表示所有状态码都可重试（未配置过的旧数据也按留空处理）；点击「填入模板」填入 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）。</div>
     <div>401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。</div>`;
-  const CUSTOM_CONTENT_HELP_TEXT = '开启后自定义错误功能将不可用。每次请求都直接返回这里填写的内容，不再请求上游；可附加思考内容并模拟首字、速度和延迟。关闭后恢复正常路由。';
+  const CUSTOM_CONTENT_HELP_TEXT = '开启后错误覆写将不可用。每次请求都直接返回这里填写的内容，不再请求上游；可附加思考内容并模拟首字、速度和延迟。关闭后恢复正常路由。';
   const CUSTOM_CONTENT_HELP_HTML = `
-    <div style="margin-bottom:8px"><b>开启后自定义错误功能将不可用。</b></div>
+    <div style="margin-bottom:8px"><b>开启后错误覆写将不可用。</b></div>
     <div style="margin-bottom:8px"><b>总开关</b>：开启后所有调用都直接返回这里填写的内容，不请求上游，也不解析路由。</div>
     <div style="margin-bottom:8px">返回内容按 OpenAI 兼容格式输出：流式请求返回 SSE，非流式请求返回完整 JSON；对话、补全、Responses 等端点会按各自的响应结构返回。</div>
     <div style="margin-bottom:8px"><b>思考内容</b>：填写后会在正文前输出思考内容；留空时响应里不会出现思考字段。</div>
     <div style="margin-bottom:8px"><b>耗时模拟</b>：流式首字是发送第一块数据前的等待（毫秒）；流式速度是每秒输出的字符数，按这个速度分块发送；非流式延迟是返回完整 JSON 前的等待（毫秒）。填 0 表示不模拟。</div>
-    <div><b>优先级</b>：开启自定义内容返回会自动关闭自定义错误返回；关闭内容返回后，可以重新打开错误返回，之前填写的状态码和详情仍会保留。</div>`;
-  const CUSTOM_ERROR_HELP_TEXT = '开启自定义内容返回后，此功能将不可用。总开关关闭时以下配置都不生效。只开总开关：请求最终失败时，用这里的错误替代上游原始错误，成功请求不受影响；再开「始终返回错误」：所有调用都直接返回这里的错误，不再请求上游。「不覆盖不可重试状态码」默认开启，命中模型不可重试状态码的上游错误仍原样返回。状态码支持 400–599，错误详情留空时返回默认文案。';
+    <div><b>优先级</b>：开启自定义内容返回会自动关闭错误覆写；关闭内容返回后，可以重新打开错误覆写，之前填写的状态码和详情仍会保留。</div>`;
+  const CUSTOM_ERROR_HELP_TEXT = '开启自定义内容返回后，此功能将不可用。总开关关闭时以下配置都不生效。只开总开关：请求最终失败时，用这里的错误替代上游原始错误，成功请求不受影响；再开「始终返回错误」：所有调用都直接返回这里的错误，不再请求上游。开「覆写为正文」时把错误详情当成正常回复、以 200 返回。「跳过不可重试状态码」默认开启，命中模型不可重试状态码的上游错误不参与任何覆写，原样返回。状态码支持 400–599，错误详情留空时返回默认文案。';
   const CUSTOM_ERROR_HELP_HTML = `
     <div style="margin-bottom:8px"><b>开启自定义内容返回后，此功能将不可用。</b></div>
     <div style="margin-bottom:8px"><b>总开关</b>：开启后才会读取下面的状态码和错误详情；关闭时以下配置都不生效。</div>
     <div style="margin-bottom:8px"><b>只开总开关</b>：请求最终失败时（上游报错、超时、无可用路由等），用这里配置的错误替代原始错误；成功的请求不受影响。</div>
     <div style="margin-bottom:8px"><b>始终返回错误</b>：总开关开启后才能使用。开启后不请求上游，所有调用都直接返回这里配置的错误。</div>
-    <div style="margin-bottom:8px"><b>不覆盖不可重试状态码</b>：默认开启。开启后，命中模型「不可重试状态码」的上游错误保持原样返回，不会被这里的错误替代；其它失败仍然重写。开启「始终返回错误」时本项不生效。</div>
-    <div>状态码支持 <code>400–599</code>；错误详情留空时返回默认文案。流式响应一旦开始输出，中途失败无法改写已经发出的内容。</div>`;
+    <div style="margin-bottom:8px"><b>覆写为正文</b>：把错误详情当成模型正常回复，用 <code>200</code> 返回给客户端。非流式按 OpenAI 兼容 JSON 输出，流式按 SSE 输出；此时状态码配置不再生效，所有失败都会被改写成正文（命中「跳过不可重试状态码」的除外）。适合让客户端在模型故障时照常收到一段兜底文案。</div>
+    <div style="margin-bottom:8px"><b>跳过不可重试状态码</b>：默认开启。开启后，命中模型「不可重试状态码」的上游错误不参与覆写，原样返回给调用方——普通模式保持上游状态码和错误体，覆写为正文时也不会变成 200 正文；其它失败仍按配置覆写。开启「始终返回错误」时本项不生效（那种模式下根本不请求上游）。</div>
+    <div>状态码支持 <code>400–599</code>（开启「覆写为正文」时不需要填写）；错误详情留空时返回默认文案。流式响应一旦开始输出，中途失败无法改写已经发出的内容。</div>`;
   const SYSTEM_PROMPT_HELP_TEXT = '开启后，请求里自带的系统提示词会被全部移除，只把这里填写的内容作为唯一的系统提示词放在最前面。支持 OpenAI 对话的 system/developer 消息、Anthropic 原生 system 字段和 Responses 的 instructions。';
   const SYSTEM_PROMPT_HELP_HTML = `
     <div style="margin-bottom:8px">开启后，网关会在转发前删除请求里自带的全部系统提示词：OpenAI 对话的 <code>system</code> / <code>developer</code> 消息、Anthropic 原生的顶层 <code>system</code> 字段、Responses API 的 <code>instructions</code> 以及 input 里的系统条目。</div>
@@ -2069,7 +2070,10 @@
     const statusHtml = (() => {
       if (!m.enabled) return statusBadge(false, '', '已禁用');
       if (m.status === 'custom_content') return badge('始终返回内容', 'green');
-      if (m.status === 'custom_error') return badge(`始终错误 (${m.error_status})`, 'red');
+      if (m.status === 'custom_error') {
+        // 覆写为正文时状态码是 200，标签换成更贴切的说明。
+        return m.error_as_content ? badge('始终返回正文', 'blue') : badge(`始终错误 (${m.error_status})`, 'red');
+      }
       if (m.status === 'channel_disabled') return badge('渠道已禁用', 'red');
       if (m.status === 'channel_missing' || m.status === 'model_missing') return badge('渠道模型不存在', 'red');
       if (m.status === 'ok') return statusBadge(true, '可用');
@@ -3038,9 +3042,9 @@
           </div>
           <div class="field">
             <div class="field__head">
-              <label class="field__label">自定义错误返回
+              <label class="field__label">错误覆写
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="m-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看自定义错误返回机制">?</button>
+                        id="m-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看错误覆写机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="m-error-enabled" ${m.error_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
@@ -3049,10 +3053,11 @@
                 <input class="input mono" id="m-error-status" type="number" min="400" max="599" step="1"
                        value="${m.error_status || ''}" placeholder="状态码" style="width:130px">
                 <input class="input" id="m-error-message"
-                       value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试">
+                       value="${esc(m.error_message || '')}" placeholder="错误详情 / 覆写后的正文，例如：该模型维护中，请稍后再试">
               </div>
+              <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-as-content" ${m.error_as_content ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">覆写为正文（错误改成 200 正文返回）</span></label>
               <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-always" ${m.error_always ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
-              <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-keep-no-retry" ${m.error_keep_no_retry ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">不覆盖不可重试状态码</span></label>
+              <label class="switch" style="margin-top:10px"><input type="checkbox" id="m-error-keep-no-retry" ${m.error_keep_no_retry ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">跳过不可重试状态码</span></label>
             </div>
           </div>
         </div>
@@ -3082,6 +3087,7 @@
         const errorEnabledEl = mo.body.querySelector('#m-error-enabled');
         const errorDetailEl = mo.body.querySelector('#m-error-detail');
         const errorAlwaysEl = mo.body.querySelector('#m-error-always');
+        const errorAsContentEl = mo.body.querySelector('#m-error-as-content');
         const errorKeepNoRetryEl = mo.body.querySelector('#m-error-keep-no-retry');
         const errorStatusEl = mo.body.querySelector('#m-error-status');
         const errorMessageEl = mo.body.querySelector('#m-error-message');
@@ -3100,10 +3106,14 @@
           }
           const on = errorEnabledEl.checked;
           const errorActive = on && !contentOn;
-          errorStatusEl.disabled = !errorActive;
+          // 覆写为正文时状态码固定 200，不需要也不能配置。
+          const asContent = errorAsContentEl.checked;
+          errorStatusEl.disabled = !errorActive || asContent;
           errorMessageEl.disabled = !errorActive;
           errorAlwaysEl.disabled = !errorActive;
-          // 「始终返回错误」不请求上游，保留原始错误的选项没有意义。
+          errorAsContentEl.disabled = !errorActive;
+          // 「始终返回错误」不请求上游，跳过不可重试状态码没有意义；
+          // 覆写为正文时本项仍然有效：命中规则的错误不参与覆写。
           const keepNoRetryDisabled = !errorActive || errorAlwaysEl.checked;
           errorKeepNoRetryEl.disabled = keepNoRetryDisabled;
           errorEnabledEl.disabled = contentOn;
@@ -3129,6 +3139,8 @@
           if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
           const alwaysSwitch = errorAlwaysEl.closest('.switch');
           if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
+          const asContentSwitch = errorAsContentEl.closest('.switch');
+          if (asContentSwitch) asContentSwitch.classList.toggle('is-disabled', !errorActive);
           const keepSwitch = errorKeepNoRetryEl.closest('.switch');
           if (keepSwitch) keepSwitch.classList.toggle('is-disabled', keepNoRetryDisabled);
           const thinkOverrideSwitch = thinkOverrideEnabledEl.closest('.switch');
@@ -3140,6 +3152,7 @@
         contentEnabledEl.onchange = syncAdvancedFields;
         errorEnabledEl.onchange = syncAdvancedFields;
         errorAlwaysEl.onchange = syncAdvancedFields;
+        errorAsContentEl.onchange = syncAdvancedFields;
         sysPromptEnabledEl.onchange = syncAdvancedFields;
         thinkOverrideEnabledEl.onchange = syncAdvancedFields;
         syncAdvancedFields();
@@ -3147,7 +3160,7 @@
           openHelpModal('自定义内容返回', CUSTOM_CONTENT_HELP_HTML);
         };
         mo.body.querySelector('#m-error-help').onclick = () => {
-          openHelpModal('自定义错误返回', CUSTOM_ERROR_HELP_HTML);
+          openHelpModal('错误覆写', CUSTOM_ERROR_HELP_HTML);
         };
         mo.body.querySelector('#m-no-retry-help').onclick = () => {
           openHelpModal('不可重试状态码', NO_RETRY_STATUS_HELP_HTML);
@@ -3184,15 +3197,17 @@
           }
           const errorEnabled = mo.body.querySelector('#m-error-enabled').checked;
           const errorAlways = errorEnabled && mo.body.querySelector('#m-error-always').checked;
+          const errorAsContent = mo.body.querySelector('#m-error-as-content').checked;
           const errorStatus = Math.round(Number(mo.body.querySelector('#m-error-status').value) || 0);
-          // 内容返回开启时错误配置不生效，不再校验错误状态码。
-          if (!contentEnabled) {
+          // 内容返回开启时错误配置不生效，不再校验错误状态码；
+          // 覆写为正文时状态码固定 200，也不需要填写。
+          if (!contentEnabled && !errorAsContent) {
             if (errorStatus && (errorStatus < 400 || errorStatus > 599)) {
-              Toast.warn('自定义错误状态码需在 400–599 之间');
+              Toast.warn('错误覆写的状态码需在 400–599 之间');
               return;
             }
             if (errorEnabled && !errorStatus) {
-              Toast.warn('开启自定义错误返回时请填写 400–599 的状态码');
+              Toast.warn('开启错误覆写时请填写 400–599 的状态码，或改为「覆写为正文」');
               return;
             }
           }
@@ -3225,6 +3240,7 @@
               content_latency_ms: contentLatency,
               error_enabled: errorEnabled,
               error_always: errorAlways,
+              error_as_content: errorAsContent,
               error_status: errorStatus,
               error_message: mo.body.querySelector('#m-error-message').value.trim(),
               error_keep_no_retry: mo.body.querySelector('#m-error-keep-no-retry').checked,
@@ -3512,7 +3528,7 @@
       caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
       no_retry_status: '', content_enabled: false, content_text: '',
       thinking_override_enabled: false, thinking_override_text: '',
-      error_enabled: false, error_always: false, error_status: 0, error_message: '',
+      error_enabled: false, error_always: false, error_as_content: false, error_status: 0, error_message: '',
       error_keep_no_retry: true,
       system_prompt_enabled: false, system_prompt: '',
     };
@@ -3659,9 +3675,9 @@
           </div>
           <div class="field">
             <div class="field__head">
-              <label class="field__label">自定义错误返回
+              <label class="field__label">错误覆写
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="cm-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看自定义错误返回机制">?</button>
+                        id="cm-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看错误覆写机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="cm-error-enabled" ${m.error_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
@@ -3670,10 +3686,11 @@
                 <input class="input mono" id="cm-error-status" type="number" min="400" max="599" step="1"
                        value="${m.error_status || ''}" placeholder="状态码" style="width:130px">
                 <input class="input" id="cm-error-message"
-                       value="${esc(m.error_message || '')}" placeholder="错误详情，例如：该模型维护中，请稍后再试">
+                       value="${esc(m.error_message || '')}" placeholder="错误详情 / 覆写后的正文，例如：该模型维护中，请稍后再试">
               </div>
+              <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-as-content" ${m.error_as_content ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">覆写为正文（错误改成 200 正文返回）</span></label>
               <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-always" ${m.error_always ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">始终返回错误（不请求上游）</span></label>
-              <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-keep-no-retry" ${m.error_keep_no_retry ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">不覆盖不可重试状态码</span></label>
+              <label class="switch" style="margin-top:10px"><input type="checkbox" id="cm-error-keep-no-retry" ${m.error_keep_no_retry ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">跳过不可重试状态码</span></label>
             </div>
           </div>
         </div>
@@ -3723,6 +3740,7 @@
         const errorEnabledEl = mo.body.querySelector('#cm-error-enabled');
         const errorDetailEl = mo.body.querySelector('#cm-error-detail');
         const errorAlwaysEl = mo.body.querySelector('#cm-error-always');
+        const errorAsContentEl = mo.body.querySelector('#cm-error-as-content');
         const errorKeepNoRetryEl = mo.body.querySelector('#cm-error-keep-no-retry');
         const errorStatusEl = mo.body.querySelector('#cm-error-status');
         const errorMessageEl = mo.body.querySelector('#cm-error-message');
@@ -3741,10 +3759,14 @@
           }
           const on = errorEnabledEl.checked;
           const errorActive = on && !contentOn;
-          errorStatusEl.disabled = !errorActive;
+          // 覆写为正文时状态码固定 200，不需要也不能配置。
+          const asContent = errorAsContentEl.checked;
+          errorStatusEl.disabled = !errorActive || asContent;
           errorMessageEl.disabled = !errorActive;
           errorAlwaysEl.disabled = !errorActive;
-          // 「始终返回错误」不请求上游，保留原始错误的选项没有意义。
+          errorAsContentEl.disabled = !errorActive;
+          // 「始终返回错误」不请求上游，跳过不可重试状态码没有意义；
+          // 覆写为正文时本项仍然有效：命中规则的错误不参与覆写。
           const keepNoRetryDisabled = !errorActive || errorAlwaysEl.checked;
           errorKeepNoRetryEl.disabled = keepNoRetryDisabled;
           errorEnabledEl.disabled = contentOn;
@@ -3770,6 +3792,8 @@
           if (errorSwitch) errorSwitch.classList.toggle('is-disabled', contentOn);
           const alwaysSwitch = errorAlwaysEl.closest('.switch');
           if (alwaysSwitch) alwaysSwitch.classList.toggle('is-disabled', !errorActive);
+          const asContentSwitch = errorAsContentEl.closest('.switch');
+          if (asContentSwitch) asContentSwitch.classList.toggle('is-disabled', !errorActive);
           const keepSwitch = errorKeepNoRetryEl.closest('.switch');
           if (keepSwitch) keepSwitch.classList.toggle('is-disabled', keepNoRetryDisabled);
           const thinkOverrideSwitch = thinkOverrideEnabledEl.closest('.switch');
@@ -3781,6 +3805,7 @@
         contentEnabledEl.onchange = syncAdvancedFields;
         errorEnabledEl.onchange = syncAdvancedFields;
         errorAlwaysEl.onchange = syncAdvancedFields;
+        errorAsContentEl.onchange = syncAdvancedFields;
         sysPromptEnabledEl.onchange = syncAdvancedFields;
         thinkOverrideEnabledEl.onchange = syncAdvancedFields;
         syncAdvancedFields();
@@ -3791,7 +3816,7 @@
           openHelpModal('自定义内容返回', CUSTOM_CONTENT_HELP_HTML);
         };
         mo.body.querySelector('#cm-error-help').onclick = () => {
-          openHelpModal('自定义错误返回', CUSTOM_ERROR_HELP_HTML);
+          openHelpModal('错误覆写', CUSTOM_ERROR_HELP_HTML);
         };
         mo.body.querySelector('#cm-no-retry-help').onclick = () => {
           openHelpModal('不可重试状态码', NO_RETRY_STATUS_HELP_HTML);
@@ -4619,15 +4644,17 @@
           }
           const errorEnabled = mo.body.querySelector('#cm-error-enabled').checked;
           const errorAlways = errorEnabled && mo.body.querySelector('#cm-error-always').checked;
+          const errorAsContent = mo.body.querySelector('#cm-error-as-content').checked;
           const errorStatus = Math.round(Number(mo.body.querySelector('#cm-error-status').value) || 0);
-          // 内容返回开启时错误配置不生效，不再校验错误状态码。
-          if (!contentEnabled) {
+          // 内容返回开启时错误配置不生效，不再校验错误状态码；
+          // 覆写为正文时状态码固定 200，也不需要填写。
+          if (!contentEnabled && !errorAsContent) {
             if (errorStatus && (errorStatus < 400 || errorStatus > 599)) {
-              Toast.warn('自定义错误状态码需在 400–599 之间');
+              Toast.warn('错误覆写的状态码需在 400–599 之间');
               return;
             }
             if (errorEnabled && !errorStatus) {
-              Toast.warn('开启自定义错误返回时请填写 400–599 的状态码');
+              Toast.warn('开启错误覆写时请填写 400–599 的状态码，或改为「覆写为正文」');
               return;
             }
           }
@@ -4656,6 +4683,7 @@
             content_latency_ms: contentLatency,
             error_enabled: errorEnabled,
             error_always: errorAlways,
+            error_as_content: errorAsContent,
             error_status: errorStatus,
             error_message: mo.body.querySelector('#cm-error-message').value.trim(),
             error_keep_no_retry: mo.body.querySelector('#cm-error-keep-no-retry').checked,

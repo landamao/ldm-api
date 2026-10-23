@@ -115,6 +115,25 @@ func TestModelCustomErrorSwitches(t *testing.T) {
 	}
 }
 
+func TestModelCustomErrorAsContentSwitch(t *testing.T) {
+	on, off := true, false
+	if (Model{}).CustomErrorAsContent() {
+		t.Error("未配置开关时不应覆写为正文")
+	}
+	// 覆写为正文属于错误覆写的子项：总开关关闭时不生效。
+	if (Model{ErrorEnabled: &off, ErrorAsContent: &on}).CustomErrorAsContent() {
+		t.Error("总开关关闭时覆写为正文不应生效")
+	}
+	asContent := Model{ErrorEnabled: &on, ErrorAsContent: &on, ErrorKeepNoRetry: &on}
+	if !asContent.CustomErrorAsContent() {
+		t.Error("总开关与覆写为正文都开时应生效")
+	}
+	// 跳过不可重试状态码与覆写为正文互不影响：两者可以同时生效。
+	if !asContent.CustomErrorKeepNoRetry() {
+		t.Error("覆写为正文时跳过不可重试状态码也应继续生效")
+	}
+}
+
 func TestModelCustomContentSwitch(t *testing.T) {
 	if (Model{}).CustomContentEnabled() {
 		t.Error("未配置开关时应为关闭")

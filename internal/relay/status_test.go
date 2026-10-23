@@ -410,7 +410,7 @@ func TestModelCustomErrorWithoutRoutes(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "暂不可用") {
 		t.Errorf("未填写错误详情时应返回默认文案: %s", rec.Body.String())
 	}
-	if res.ClientErr == "" || !strings.Contains(res.Err, "自定义错误") {
+	if res.ClientErr == "" || !strings.Contains(res.Err, "错误覆写") {
 		t.Errorf("日志应区分自定义错误与普通无可用渠道: %+v", res)
 	}
 }
@@ -670,6 +670,201 @@ func TestModelCustomErrorRewriteLeavesSuccessUntouched(t *testing.T) {
 	}
 	if res.Err != "" || res.ClientErr != "" {
 		t.Errorf("成功请求不应记录错误: %+v", res)
+	}
+}
+
+// 开启「覆写为正文」且始终返回时：不请求上游，错误文案以 200 正文返回。
+func TestModelErrorAsContentAlways(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok"}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "ac", srv.URL, []string{"key-ac-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "ac/a", Type: store.ModelTypeChannel, ChannelID: "ac", Upstream: "a",
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(true), ErrorAsContent: boolp(true),
+		ErrorMessage: "维护中，请稍后再试",
+		NoRetryStatus: strp(""),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("ac/a"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("覆写为正文应返回 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"object":"chat.completion"`) || !strings.Contains(body, "维护中，请稍后再试") {
+		t.Errorf("应按正常对话响应返回错误文案: %s", body)
+	}
+	if strings.Contains(body, `"error"`) {
+		t.Errorf("覆写为正文不应出现 error 字段: %s", body)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("始终返回时不应请求上游，实际 %d 次", got)
+	}
+	if res.StatusCode != http.StatusOK || res.ClientErr != "维护中，请稍后再试" {
+		t.Errorf("结果应记录实际返回给调用方的状态与文案: %+v", res)
+	}
+}
+
+// 只开总开关 + 覆写为正文：上游失败时把错误文案写成 200 正文。
+func TestModelErrorAsContentRewritesFailure(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, `{"error":{"message":"upstream boom"}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "af", srv.URL, []string{"key-af-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "af/a", Type: store.ModelTypeChannel, ChannelID: "af", Upstream: "a",
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(false), ErrorAsContent: boolp(true),
+		ErrorMessage: "上游异常，请稍后再试",
+		NoRetryStatus: strp(""),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("af/a"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("失败被覆写为正文时应返回 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "上游异常，请稍后再试") || strings.Contains(body, "upstream boom") {
+		t.Errorf("应只返回配置的文案，不透传上游错误: %s", body)
+	}
+	if !strings.Contains(res.Err, "500") {
+		t.Errorf("日志应保留内部失败原因: %+v", res.Err)
+	}
+}
+
+// 覆写为正文时，流式请求按 SSE 输出错误文案，状态码仍是 200。
+func TestModelErrorAsContentStream(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "acs", Type: store.ModelTypeCustom, Routes: []store.Route{},
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(true), ErrorAsContent: boolp(true),
+		ErrorMessage: "维护中，请稍后再试",
+		Enabled:     true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := statusTestRequest("acs")
+	req.Stream = true
+	req.JSON = map[string]any{"model": "acs", "stream": true}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("流式覆写为正文应返回 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("流式覆写为正文应按 SSE 返回，Content-Type 为 %s", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"content":"维护中，请稍后再试"`) || !strings.Contains(body, "data: [DONE]") {
+		t.Errorf("SSE 应包含正文分块与结束标记: %s", body)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("结果状态码应为 200，得到 %d", res.StatusCode)
+	}
+}
+
+// 跳过不可重试状态码与覆写为正文同时开启：命中的错误原样返回，不变成 200 正文。
+func TestModelErrorAsContentSkipsNoRetryStatus(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"message":"bad request from upstream"}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "ak", srv.URL, []string{"key-ak-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "ak/a", Type: store.ModelTypeChannel, ChannelID: "ak", Upstream: "a",
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(false), ErrorAsContent: boolp(true),
+		ErrorKeepNoRetry: boolp(true), ErrorMessage: "出错了，请稍后再试",
+		NoRetryStatus: strp("400"),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	New(st).Do(context.Background(), rec, statusTestRequest("ak/a"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("命中不可重试状态码时应原样返回上游 400，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "bad request from upstream") || strings.Contains(body, "出错了，请稍后再试") {
+		t.Errorf("应透传上游原始错误，不做任何覆写: %s", body)
+	}
+}
+
+// 关闭「跳过不可重试状态码」后，覆写为正文连命中的错误也改成 200 正文。
+func TestModelErrorAsContentWithoutSkipNoRetry(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"message":"bad request from upstream"}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "as2", srv.URL, []string{"key-as2-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "as2/a", Type: store.ModelTypeChannel, ChannelID: "as2", Upstream: "a",
+		ErrorEnabled: boolp(true), ErrorAlways: boolp(false), ErrorAsContent: boolp(true),
+		ErrorKeepNoRetry: boolp(false), ErrorMessage: "出错了，请稍后再试",
+		NoRetryStatus: strp("400"),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	New(st).Do(context.Background(), rec, statusTestRequest("as2/a"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("关闭跳过后应把错误覆写成 200 正文，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "出错了，请稍后再试") {
+		t.Errorf("应返回配置的文案: %s", body)
 	}
 }
 

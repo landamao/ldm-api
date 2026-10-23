@@ -162,7 +162,7 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 自定义内容返回不依赖路由，开启后模型始终可调用；
-		// 同时它优先于自定义错误，广场状态以内容返回为准。
+		// 同时它优先于错误覆写，广场状态以内容返回为准。
 		if m.Enabled && m.CustomContentEnabled() {
 			item.Available = true
 			item.Status = statusCustomContent

@@ -293,6 +293,63 @@ func TestSaveModelCustomError(t *testing.T) {
 	}
 }
 
+// 覆写为正文：开启后不需要状态码，关闭总开关时配置保留。
+func TestSaveModelErrorAsContent(t *testing.T) {
+	s, st := newTestServer(t, "model-error-as-content")
+
+	put := func(id, payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/models/"+id, strings.NewReader(payload))
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		s.saveModel(rec, req)
+		return rec
+	}
+
+	// 只开总开关 + 覆写为正文：没有状态码也应允许保存
+	rec := put("keep", `{"id":"keep","type":"custom","routes":[],"error_enabled":true,"error_as_content":true,"error_message":"维护中"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("覆写为正文时不应要求状态码，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, err := st.GetModel("keep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.CustomErrorAsContent() || m.ErrorStatus != 0 {
+		t.Fatalf("覆写为正文未正确保存: %+v", m)
+	}
+
+	// 单独打开覆写为正文会一并打开总开关，列表里能读到生效值
+	rec = put("keep2", `{"id":"keep2","type":"custom","routes":[],"error_as_content":true,"error_status":503}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("keep2")
+	if !m.CustomErrorEnabled() || !m.CustomErrorAsContent() {
+		t.Fatalf("打开覆写为正文应一并打开总开关: %+v", m)
+	}
+
+	// 关闭总开关时保留覆写为正文的配置
+	rec = put("keep", `{"error_enabled":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("keep")
+	if m.CustomErrorAsContent() || m.ErrorAsContent == nil || !*m.ErrorAsContent {
+		t.Fatalf("总开关关闭时应保留覆写为正文的配置: %+v", m)
+	}
+
+	// 前端会连着保留的子开关一起提交，显式关闭总开关仍要生效
+	rec = put("keep", `{"error_enabled":false,"error_as_content":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, _ = st.GetModel("keep")
+	if m.CustomErrorEnabled() {
+		t.Fatalf("显式关闭总开关后不应被覆写为正文重新打开: %+v", m)
+	}
+}
+
 // 通过完整 HTTP 入口验证：模型配置自定义错误后，调用方收到配置的状态码和文案，
 // 且不会向上游发起请求。
 func TestModelCustomErrorOverHTTP(t *testing.T) {

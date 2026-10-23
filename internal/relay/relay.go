@@ -239,31 +239,54 @@ type ErrUpstream struct {
 
 func (e *ErrUpstream) Error() string { return fmt.Sprintf("upstream status %d", e.Status) }
 
-// customError 是模型配置的自定义错误返回。
+// customError 是模型配置的错误覆写。
 type customError struct {
 	status  int
 	message string
+	// asContent 表示把错误详情当成正常正文返回（HTTP 200），status 此时固定为 200。
+	asContent bool
 }
 
-// customErrorOf 返回模型生效的自定义错误。总开关关闭或状态码无效时返回 false。
+// customErrorOf 返回模型生效的错误覆写配置。总开关关闭时返回 false；
+// 未开启「覆写为正文」时还要求状态码在 400–599 之间。
 func customErrorOf(m store.Model) (customError, bool) {
-	if !m.CustomErrorEnabled() || m.ErrorStatus < 400 || m.ErrorStatus > 599 {
+	if !m.CustomErrorEnabled() {
 		return customError{}, false
 	}
 	msg := strings.TrimSpace(m.ErrorMessage)
 	if msg == "" {
 		msg = clientErrorMessage(m.ID)
 	}
+	if m.CustomErrorAsContent() {
+		return customError{status: http.StatusOK, message: msg, asContent: true}, true
+	}
+	if m.ErrorStatus < 400 || m.ErrorStatus > 599 {
+		return customError{}, false
+	}
 	return customError{status: m.ErrorStatus, message: msg}, true
 }
 
-// writeCustomError 按 OpenAI 兼容格式写出配置的错误。
-func writeCustomError(w http.ResponseWriter, ce customError) {
-	typ := "invalid_request_error"
-	if ce.status >= http.StatusInternalServerError {
-		typ = "server_error"
+// writeCustomError 写出错误覆写的结果。
+// 普通模式按 OpenAI 兼容格式返回配置的状态码；「覆写为正文」模式下
+// 把文案当成正常回复以 200 写出，流式请求按 SSE、非流式按完整 JSON。
+func writeCustomError(ctx context.Context, w http.ResponseWriter, req *Request, model string,
+	ce customError, started time.Time) {
+
+	if !ce.asContent {
+		typ := "invalid_request_error"
+		if ce.status >= http.StatusInternalServerError {
+			typ = "server_error"
+		}
+		writeAPIError(w, ce.status, typ, ce.message)
+		return
 	}
-	writeAPIError(w, ce.status, typ, ce.message)
+	cc := customContent{text: ce.message}
+	usage := customContentUsage(req, cc)
+	if req.Stream {
+		writeCustomContentStream(ctx, w, req, model, cc, usage, started)
+		return
+	}
+	writeCustomContent(w, req, model, cc, usage)
 }
 
 // customContent 是模型配置的自定义内容返回。
@@ -736,7 +759,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		return res
 	}
 	// 「自定义内容返回」优先级最高：开启后每次请求都直接返回配置的内容，
-	// 不解析路由、不请求上游，自定义错误返回也不再生效。
+	// 不解析路由、不请求上游，错误覆写也不再生效。
 	if cc, ok := customContentOf(resolved.Model); ok {
 		usage := customContentUsage(req, cc)
 		res.Usage = usage
@@ -767,12 +790,16 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		return res
 	}
 	// 「始终返回错误」模式：不解析路由、不请求上游，直接把配置的
-	// 状态码和错误详情返回给调用方。
+	// 状态码和错误详情返回给调用方（开启「覆写为正文」时按 200 正文返回）。
 	if ce, ok := customErrorOf(resolved.Model); ok && resolved.Model.CustomErrorAlways() {
-		writeCustomError(w, ce)
+		writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
 		res.StatusCode = ce.status
 		res.ClientErr = ce.message
-		res.Err = fmt.Sprintf("模型配置了自定义错误返回（始终返回 %d）", ce.status)
+		if ce.asContent {
+			res.Err = "模型配置了错误覆写（始终把错误写成正文返回）"
+		} else {
+			res.Err = fmt.Sprintf("模型配置了错误覆写（始终返回 %d）", ce.status)
+		}
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
 	}
@@ -780,7 +807,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		// 客户端只看到笼统结论，具体原因（渠道已禁用等）只写进日志，避免泄露内部信息。
 		// 开启「失败时重写」后，这种失败也换成模型配置的错误。
 		if ce, ok := customErrorOf(resolved.Model); ok {
-			writeCustomError(w, ce)
+			writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
 			res.StatusCode = ce.status
 			res.ClientErr = ce.message
 			res.Err = resolved.NoRoute
@@ -941,7 +968,7 @@ outer:
 	rewritten := false
 	if lastErr != "" && !wrote {
 		if ce, ok := customErrorOf(resolved.Model); ok {
-			writeCustomError(w, ce)
+			writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
 			res.StatusCode = ce.status
 			res.ClientErr = ce.message
 			rewritten = true
@@ -1099,8 +1126,8 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		// 也不再尝试后面的路由。是否命中由模型配置决定。
 		if resolved.Model.NoRetryStatusSet().Match(status) {
 			// 开启「失败时重写」时不在这里写出上游原始错误，
-			// 交给 Do 在最终失败时统一换成配置的错误；
-			// 但开启「不覆盖不可重试状态码」时仍然原样透传。
+			// 交给 Do 在最终失败时统一换成配置的错误（覆写为正文时换成 200 正文）；
+			// 但开启「跳过不可重试状态码」时仍然原样透传，不参与任何覆写。
 			if _, rewrite := customErrorOf(resolved.Model); rewrite && !resolved.Model.CustomErrorKeepNoRetry() {
 				return attemptOutcome{status: status, err: errors.New(msg), retryable: false,
 					upstreamRaw: raw, upstreamHdr: resp.Header, skipRouteCooldown: true}
