@@ -2363,10 +2363,9 @@
     let sourceHtml;
     if (isCustom) {
       if (m.routes && m.routes.length) {
-        // 路由可能有十几条，列表里只露第一条 + 条数，完整链路放 title
-        const ids = m.routes.map((r) => r.model_id);
-        const short = ids.length > 1 ? `${ids[0]} 等 ${ids.length} 条` : ids[0];
-        sourceHtml = `<div class="truncate" style="max-width:230px;font-family:var(--mono);font-size:11.5px" title="${esc(ids.join(' → '))}">${esc(short)}</div>`;
+        // 完整链路直接铺开，宽度不够由 CSS 省略号截断，完整内容放 title
+        const chain = m.routes.map((r) => r.model_id).join(' → ');
+        sourceHtml = `<div class="truncate" style="max-width:320px;font-family:var(--mono);font-size:11.5px" title="${esc(chain)}">${esc(chain)}</div>`;
       } else if (m.status === 'custom_content') {
         sourceHtml = badge('始终返回内容', 'green');
       } else {
