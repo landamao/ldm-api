@@ -535,7 +535,7 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 .tbl .nowrap { white-space: nowrap; }
 .tbl--flat { border: none; }
 .tbl--flat thead th { background: transparent; }
-.tbl .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.tbl .row-actions { display: flex; gap: 6px; justify-content: flex-start; }
 /* 多选模式：整行可点切换选中 */
 .tbl tbody tr.is-selectable { cursor: pointer; }
 .tbl tbody tr.is-selectable.is-selected { background: var(--primary-soft); }
@@ -919,32 +919,120 @@ html[data-theme="dark"] .ldm-select[aria-expanded="true"] { background-color: rg
 .input-group .input { flex: 1; }
 
 /* ---------- 渠道测试弹窗 ---------- */
-.ct-keyrow { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-.ct-card { border: 1px solid var(--border-line); border-radius: 10px; padding: 12px 14px; }
+/* 标题第二行：类型标签 + 接口地址，两种不同样式 */
+.ct-desc { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ct-desc__type {
+  display: inline-flex; align-items: center; height: 18px;
+  padding: 0 7px; border-radius: 99px;
+  font-size: 11px; font-weight: 620; line-height: 1; white-space: nowrap;
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-border);
+  color: var(--primary);
+}
+.ct-desc__url {
+  font-family: var(--mono); font-size: 11.5px;
+  color: var(--text-3); word-break: break-all;
+}
+
+.ct-keyrow { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.ct-keyrow .field__label { margin-bottom: 0; }
+
+.ct-card {
+  border: 1px solid var(--border-line);
+  border-radius: 14px;
+  background: var(--surface-2);
+  padding: 0 12px 8px;
+  transition: border-color .18s;
+}
+.ct-card:hover { border-color: var(--border-strong); }
 .ct-card + .ct-card { margin-top: 12px; }
-.ct-card__head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.ct-card__head > .ct-card__title { flex: 1; min-width: 0; }
-.ct-card__title { font-weight: 650; font-size: 13.5px; }
-.ct-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border-line); }
+
+.ct-card__head {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 0;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border-line);
+}
+.ct-card__head > .ct-card__title { flex: 1 1 auto; min-width: 0; }
+.ct-card__title {
+  display: flex; align-items: center; gap: 6px;
+  font-weight: 650; font-size: 13.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.ct-card__title > .icon { color: var(--text-3); flex-shrink: 0; }
+.ct-count {
+  font-size: 10.5px; font-weight: 700; line-height: 1;
+  padding: 3px 6px; border-radius: 99px;
+  background: var(--primary-soft); color: var(--primary);
+}
+
+/* 搜索框与「并发 / 测试选中」同一行 */
+.ct-search { flex: 0 1 240px; min-width: 132px; margin: 0; }
+.ct-search .input { height: 28px; font-size: 12.5px; }
+.ct-switch { flex-shrink: 0; }
+
+/* 测试进行中：按钮切成「停止」配色，图标换成方块，文字仍是「测试中」，点一下停掉剩下的模型 */
+.ct-run-btn { min-width: 96px; }
+.ct-run-btn.is-running,
+.ct-run-btn.is-running:hover {
+  background: var(--red-50);
+  border-color: var(--red-200);
+  color: var(--red-500);
+  box-shadow: none;
+}
+.ct-run-btn.is-running:hover { border-color: var(--red-500); }
+.ct-run-btn.is-stopping,
+.ct-run-btn.is-stopping:hover {
+  background: var(--red-50);
+  border-color: var(--red-200);
+  color: var(--red-500);
+  opacity: .7;
+  cursor: default;
+  box-shadow: none;
+}
+.ct-stop {
+  width: 9px; height: 9px; border-radius: 2px;
+  background: currentColor; flex-shrink: 0;
+}
+
+.ct-list-res { padding: 8px 0 2px; min-height: 22px; }
+.ct-empty { padding: 10px 0 4px; }
+
+.ct-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 7px;
+  margin: 0 -7px;
+  border-top: 1px solid var(--border-line);
+  border-radius: 9px;
+  transition: background .14s;
+}
 .ct-row:first-child { border-top: none; }
 .ct-row[data-mrow] { cursor: pointer; }
-.ct-search { width: 100%; margin: 2px 0 8px; }
+.ct-row[data-mrow]:hover { background: var(--surface-hover); }
+.ct-row:has(input[data-msel]:checked) { background: var(--primary-soft); }
 .ct-row__name {
-  flex: 0 1 auto; min-width: 80px; max-width: 55%;
+  flex: 0 0 30%; min-width: 96px; max-width: 200px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12.5px;
 }
-.ct-row__res { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ct-row__res {
+  flex: 1; min-width: 0; min-height: 20px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+}
 .ct-err {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 auto; min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12px; color: var(--red-500);
 }
 .ct-reply {
-  min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 auto; min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12px; color: var(--text-3);
 }
 /* 模型列表拉取成功后：默认折叠的展开按钮 + 可点击测试的模型名标签 */
-.ct-toggle { margin-top: 8px; }
+.ct-toggle { margin: 8px 0 2px; }
 .ct-toggle__chev { display: inline-flex; transition: transform .15s ease; }
 .ct-toggle.is-open .ct-toggle__chev { transform: rotate(180deg); }
 .ct-fetched { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -953,6 +1041,11 @@ html[data-theme="dark"] .ldm-select[aria-expanded="true"] { background-color: rg
 .ct-fm--busy { opacity: .6; }
 .ct-fm--ok { border-color: var(--green-200) !important; color: var(--green-500) !important; }
 .ct-fm--fail { border-color: var(--red-200) !important; color: var(--red-500) !important; }
+
+/* 窄屏：搜索框独占一行，避免和按钮互相挤压 */
+@media (max-width: 680px) {
+  .ct-search { flex: 1 1 100%; order: 9; }
+}
 
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 640px) { .form-row { grid-template-columns: 1fr; } }

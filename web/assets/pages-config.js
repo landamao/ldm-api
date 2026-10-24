@@ -227,10 +227,10 @@
       </td>
       ${multi ? '' : `<td>
         <div class="row-actions">
-          <button class="btn btn--sm btn--icon" data-act="test" data-id="${esc(c.id)}" title="测试连通性" aria-label="测试连通性">${icon('zap', 13)}</button>
-          <button class="btn btn--sm btn--icon" data-act="toggle" data-id="${esc(c.id)}" title="${c.enabled ? '禁用' : '启用'}" aria-label="${c.enabled ? '禁用渠道' : '启用渠道'}">${c.enabled ? icon('pause', 13) : icon('play', 13)}</button>
-          <button class="btn btn--sm btn--icon" data-act="edit" data-id="${esc(c.id)}" title="编辑" aria-label="编辑渠道">${icon('edit', 13)}</button>
-          <button class="btn btn--sm btn--icon btn--danger" data-act="del" data-id="${esc(c.id)}" title="删除" aria-label="删除渠道">${icon('trash', 13)}</button>
+          <button class="btn btn--sm" data-act="test" data-id="${esc(c.id)}" title="测试连通性">${icon('zap', 12)}测试</button>
+          <button class="btn btn--sm" data-act="toggle" data-id="${esc(c.id)}" title="${c.enabled ? '禁用渠道' : '启用渠道'}">${c.enabled ? icon('pause', 12) : icon('play', 12)}${c.enabled ? '禁用' : '启用'}</button>
+          <button class="btn btn--sm" data-act="edit" data-id="${esc(c.id)}" title="编辑渠道">${icon('edit', 12)}编辑</button>
+          <button class="btn btn--sm btn--icon btn--danger" data-act="del" data-id="${esc(c.id)}" title="删除渠道" aria-label="删除渠道">${icon('trash', 13)}</button>
         </div>
       </td>`}
     </tr>`;
@@ -401,7 +401,7 @@
               <th>类型</th>
               <th>地址</th>
               <th style="min-width:185px">模型</th>
-              ${channelListState.multi ? '' : '<th style="width:150px"></th>'}
+              ${channelListState.multi ? '' : '<th style="width:250px">操作</th>'}
             </tr></thead>
             <tbody>${list.map(channelRow).join('')}</tbody>
           </table>
@@ -826,46 +826,53 @@
         <input type="checkbox" data-msel aria-label="选择 ${esc(m)}">
         <span class="code ct-row__name" title="${esc(m)}">${esc(m)}</span>
         <span class="ct-row__res" data-res>${PENDING}</span>
-        <button class="btn btn--sm btn--icon" data-tbtn title="测试该模型" aria-label="测试 ${esc(m)}">${icon('zap', 13)}</button>
+        <button class="btn btn--sm" data-tbtn title="测试该模型" aria-label="测试 ${esc(m)}">${icon('zap', 12)}测试</button>
       </div>`;
 
     openModal({
-      title: `测试渠道 ${esc(ch.id)}`,
-      desc: `${esc(ch.name ? ch.name + ' · ' : '')}${esc(typeLabel(ch.type))} · ${esc(ch.base_url || '默认地址')}`,
+      size: 'lg',
+      title: `测试渠道：${ch.id}${ch.name ? `（${ch.name}）` : ''}`,
+      desc: `<span class="ct-desc">
+          <span class="ct-desc__type">${esc(typeLabel(ch.type))}</span>
+          <span class="ct-desc__url">${esc(ch.base_url || '默认地址')}</span>
+        </span>`,
       body: `
         ${keyRows.length > 1 ? `
         <div class="ct-keyrow">
           <label class="field__label" for="ct-key">测试用 Key</label>
-          <select class="select" id="ct-key" aria-label="选择测试用的 Key" style="width:100%">
+          <select class="select" id="ct-key" aria-label="选择测试用的 Key">
             ${keyOptions}
           </select>
         </div>` : ''}
         <div class="ct-card">
           <div class="ct-card__head">
-            <div class="ct-card__title">获取模型列表</div>
+            <div class="ct-card__title">${icon('list', 14)}获取模型列表</div>
             <button class="btn btn--sm" id="ct-list-btn">${icon('zap', 13)}测试</button>
           </div>
-          <div class="ct-row__res" id="ct-list-res" style="min-height:20px">${PENDING}</div>
+          <div class="ct-row__res ct-list-res" id="ct-list-res">${PENDING}</div>
           <div class="ct-fetched" id="ct-list-models"></div>
         </div>
         <div class="ct-card">
           <div class="ct-card__head">
             ${models.length ? '<input type="checkbox" id="ct-checkall" aria-label="全选 / 取消全选" title="全选 / 取消全选">' : ''}
-            <div class="ct-card__title">渠道模型（${models.length}）</div>
+            <div class="ct-card__title">
+              渠道模型<span class="ct-count">${models.length}</span>
+            </div>
             ${models.length ? `
-            <label class="switch" style="white-space:nowrap" title="勾选的模型并行发起测试">
+            <div class="search ct-search">
+              <span class="search__icon">${icon('search', 14)}</span>
+              <input class="input" id="ct-model-search" placeholder="搜索模型名…" aria-label="搜索模型名" data-nofocus>
+            </div>
+            <label class="switch ct-switch" title="勾选的模型并行发起测试">
               <input type="checkbox" id="ct-concurrent">
               <span class="switch__track"></span>
               <span class="switch__label">并发</span>
             </label>
-            <button class="btn btn--sm" id="ct-sel-btn">${icon('zap', 13)}测试选中</button>` : ''}
+            <button class="btn btn--sm ct-run-btn" id="ct-sel-btn">${icon('zap', 13)}测试选中</button>` : ''}
           </div>
-          ${models.length ? `
-          <div class="search ct-search">
-            <span class="search__icon">${icon('search', 14)}</span>
-            <input class="input" id="ct-model-search" placeholder="搜索模型名…" style="width:100%">
-          </div>
-          <div id="ct-model-rows">${models.map(modelRowHtml).join('')}</div>` : '<div class="muted fs-13">该渠道还没有配置模型。</div>'}
+          ${models.length
+            ? `<div id="ct-model-rows">${models.map(modelRowHtml).join('')}</div>`
+            : '<div class="muted fs-13 ct-empty">该渠道还没有配置模型。</div>'}
         </div>`,
       footer: '<div class="spacer"></div><button class="btn" data-close>关闭</button>',
       onMount(mo) {
@@ -1015,40 +1022,59 @@
         });
 
         // 测试选中：默认串行逐个跑；「并发」开关打开时用 5 路池并行。
-        // 弹窗关掉即停。
+        // 跑的过程中按钮变成「停止」样式（文字仍是测试中），点一下停掉剩下的模型；
+        // 弹窗关掉也会停。
+        const RUNNING_HTML = '<span class="ct-stop" aria-hidden="true"></span>测试中';
+        const STOPPING_HTML = '<span class="spinner" style="width:11px;height:11px"></span>停止中';
         const selBtn = mo.body.querySelector('#ct-sel-btn');
         const concSwitch = mo.body.querySelector('#ct-concurrent');
         let running = false;
+        let stopRequested = false;
         const syncState = () => {
-          if (selBtn) selBtn.disabled = running || !rows.some((r) => r.sel.checked);
+          if (!selBtn) return;
+          // 运行中按钮要可点，点它是「停止」
+          selBtn.disabled = running ? false : !rows.some((r) => r.sel.checked);
         };
         if (selBtn) {
           rows.forEach((row) => row.sel.addEventListener('change', () => { syncState(); syncCheckall(); }));
           syncState();
           syncCheckall();
           selBtn.onclick = async () => {
-            if (selBtn.disabled || running) return;
+            if (running) {
+              if (stopRequested) return;
+              stopRequested = true;
+              selBtn.classList.add('is-stopping');
+              selBtn.removeAttribute('title');
+              selBtn.innerHTML = STOPPING_HTML;
+              return;
+            }
             const picked = rows.filter((r) => r.sel.checked);
             if (!picked.length) return;
             running = true;
-            selBtn.disabled = true;
-            const old = selBtn.innerHTML;
-            selBtn.innerHTML = '<span class="spinner" style="width:11px;height:11px"></span>测试中';
+            stopRequested = false;
+            const idleHTML = selBtn.innerHTML;
+            selBtn.classList.add('is-running');
+            selBtn.title = '点击停止测试';
+            selBtn.innerHTML = RUNNING_HTML;
             const finish = () => {
               running = false;
+              stopRequested = false;
               if (!alive()) return;
-              selBtn.innerHTML = old;
+              selBtn.classList.remove('is-running', 'is-stopping');
+              selBtn.removeAttribute('title');
+              selBtn.innerHTML = idleHTML;
               syncState();
             };
+            const stopped = () => !alive() || stopRequested;
             if (!concSwitch.checked) {
               for (const row of picked) {
-                if (!alive()) return;
+                if (stopped()) break;
                 await testOne(row);
               }
             } else {
               let next = 0;
               const worker = async () => {
-                while (alive()) {
+                while (!stopped()) {
                   const idx = next++;
                   if (idx >= picked.length) return;
                   await testOne(picked[idx]);
@@ -2091,10 +2117,9 @@
               <th style="min-width:200px">模型 ID</th>
               <th>类型</th>
               <th>提供商</th>
-              <th style="min-width:180px">来源</th>
-              <th style="min-width:200px">能力</th>
+              <th style="min-width:220px">来源</th>
               <th>状态</th>
-              ${modelState.multi ? '' : '<th style="width:150px"></th>'}
+              ${modelState.multi ? '' : '<th style="width:250px">操作</th>'}
             </tr></thead>
             <tbody>${list.map((m) => modelRow(m, channels, providerByID)).join('')}</tbody>
           </table>
@@ -2338,8 +2363,10 @@
     let sourceHtml;
     if (isCustom) {
       if (m.routes && m.routes.length) {
-        const routeStr = m.routes.map((r) => r.model_id).join(' → ');
-        sourceHtml = `<div class="truncate" style="max-width:280px;font-family:var(--mono);font-size:11.5px" title="${esc(routeStr)}">${esc(routeStr)}</div>`;
+        // 路由可能有十几条，列表里只露第一条 + 条数，完整链路放 title
+        const ids = m.routes.map((r) => r.model_id);
+        const short = ids.length > 1 ? `${ids[0]} 等 ${ids.length} 条` : ids[0];
+        sourceHtml = `<div class="truncate" style="max-width:230px;font-family:var(--mono);font-size:11.5px" title="${esc(ids.join(' → '))}">${esc(short)}</div>`;
       } else if (m.status === 'custom_content') {
         sourceHtml = badge('始终返回内容', 'green');
       } else {
@@ -2347,7 +2374,8 @@
       }
     } else {
       const ch = channels.find((c) => c.id === m.channel_id);
-      sourceHtml = `<span class="code">${esc(m.channel_id)}</span>${ch && ch.name ? `<span class="muted fs-12">${esc(ch.name)}</span>` : ''}`;
+      sourceHtml = `<div class="truncate" style="max-width:230px" title="${esc(m.channel_id + (ch && ch.name ? '（' + ch.name + '）' : ''))}">`
+        + `<span class="code">${esc(m.channel_id)}</span>${ch && ch.name ? `<span class="muted fs-12">${esc(ch.name)}</span>` : ''}</div>`;
     }
 
     // 路由摘要：N 组 / M 条，附带亲和标记
@@ -2375,16 +2403,13 @@
         ? `<span class="provider-tag">${providerIcon(provider.icon, 15)}${esc(provider.name)}</span>`
         : '<span class="muted fs-12">未设置</span>'}</td>
       <td>${sourceHtml}</td>
-      <td>
-        ${window.LDM.capBadges(m.caps, { showNeg: true })}
-      </td>
       <td>${statusHtml}</td>
       ${multi ? '' : `<td>
         <div class="row-actions">
-          <button class="btn btn--sm btn--icon" data-mact="test" data-mid="${esc(m.id)}" title="测试模型" aria-label="测试模型">${icon('zap', 13)}</button>
-          <button class="btn btn--sm btn--icon" data-mact="toggle" data-mid="${esc(m.id)}" title="${m.enabled ? '禁用' : '启用'}" aria-label="${m.enabled ? '禁用模型' : '启用模型'}">${m.enabled ? icon('pause', 13) : icon('play', 13)}</button>
-          <button class="btn btn--sm btn--icon" data-mact="edit" data-mid="${esc(m.id)}" title="编辑" aria-label="编辑模型">${icon('edit', 13)}</button>
-          <button class="btn btn--sm btn--icon btn--danger" data-mact="del" data-mid="${esc(m.id)}" title="删除" aria-label="删除模型">${icon('trash', 13)}</button>
+          <button class="btn btn--sm" data-mact="test" data-mid="${esc(m.id)}" title="测试模型">${icon('zap', 12)}测试</button>
+          <button class="btn btn--sm" data-mact="toggle" data-mid="${esc(m.id)}" title="${m.enabled ? '禁用模型' : '启用模型'}">${m.enabled ? icon('pause', 12) : icon('play', 12)}${m.enabled ? '禁用' : '启用'}</button>
+          <button class="btn btn--sm" data-mact="edit" data-mid="${esc(m.id)}" title="编辑模型">${icon('edit', 12)}编辑</button>
+          <button class="btn btn--sm btn--icon btn--danger" data-mact="del" data-mid="${esc(m.id)}" title="删除模型" aria-label="删除模型">${icon('trash', 13)}</button>
         </div>
       </td>`}
     </tr>`;
@@ -2928,7 +2953,7 @@
                 <th>ID</th>
                 <th style="min-width:190px">自动匹配关键词</th>
                 <th>模型数</th>
-                <th style="width:150px"></th>
+                <th style="width:150px">操作</th>
               </tr></thead>
               <tbody>${providers.map((p) => `<tr data-pid="${esc(p.id)}">
                 <td><div class="provider-tag">${providerIcon(p.icon, 20)}<b>${esc(p.name)}</b>${p.builtin ? ' ' + badge('内置', 'gray') : ''}</div></td>
@@ -2937,7 +2962,7 @@
                 <td>${p.model_count || 0}</td>
                 <td><div class="row-actions">
                   <button class="btn btn--sm" data-pedit="${esc(p.id)}">${icon('edit', 13)}编辑</button>
-                  <button class="btn btn--sm btn--icon btn--danger" data-pdel="${esc(p.id)}" title="删除">${icon('trash', 13)}</button>
+                  <button class="btn btn--sm btn--icon btn--danger" data-pdel="${esc(p.id)}" title="删除提供商" aria-label="删除提供商">${icon('trash', 13)}</button>
                 </div></td>
               </tr>`).join('')}</tbody>
             </table>

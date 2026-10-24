@@ -499,13 +499,7 @@
             ${m.description ? `<div class="model-card__desc">${esc(m.description)}</div>` : ''}
             <div class="model-card__caps">
               ${m.status === 'custom_content' ? badge('始终返回内容', 'green') : ''}
-              ${m.caps && m.caps.context_length ? badge('上下文 ' + fmtContext(m.caps.context_length), 'gray') : ''}
-              ${m.caps && m.caps.tool_calling === true ? badge('工具调用', 'green')
-                : m.caps && m.caps.tool_calling === false ? badge('不支持工具', 'gray') : ''}
-              ${m.caps && m.caps.thinking === true ? badge('思考', 'violet')
-                : m.caps && m.caps.thinking === false ? badge('不支持思考', 'gray') : ''}
-              ${m.caps && m.caps.vision === true ? badge('图片', 'pink')
-                : m.caps && m.caps.vision === false ? badge('不支持图片', 'gray') : ''}
+              ${window.LDM.capBadges(m.caps, { showNeg: true })}
               ${(m.tags || []).map((t) => badge(t, 'gray')).join('')}
             </div>
             ${isCustom && m.routes && m.routes.length ? `<div class="fs-12 muted truncate" style="font-family:var(--mono)" title="${esc(m.routes.map((r) => r.model_id).join(' → '))}">
@@ -579,10 +573,13 @@
   });
 
   // ---------- 模型详情抽屉 ----------
-  const capLabel = (v) => (v === true ? '支持' : v === false ? '不支持' : '从上游透传');
-  const capBadge = (v, err) => (v === true
-    ? badge('支持', 'green')
-    : (v === false ? badge(err ? '不支持（报错）' : '不支持', 'red') : badge('从上游透传', 'gray')));
+  // 能力参数三态：支持 / 不支持 / 未设置（未设置时不改写请求，沿用上游行为）
+  const capLabel = (v) => (v === true ? '支持' : v === false ? '不支持' : '未设置');
+  const capBadge = (v, err) => {
+    if (v === true) return badge('支持', 'green');
+    if (v === false) return badge(err ? '不支持（报错）' : '不支持', 'red');
+    return '<span class="badge badge--gray" title="未设置：请求里不写这个参数，按上游默认处理">未设置</span>';
+  };
 
   function openModelDrawer(m) {
     const isCustom = m.type === 'custom';
@@ -3432,7 +3429,7 @@
         <table class="tbl">
           <thead><tr>
             <th>名称</th><th style="min-width:250px">密钥</th><th>状态</th>
-            <th style="min-width:140px">用量</th><th>模型权限</th><th>IP 限制</th><th>最后使用</th><th style="width:150px"></th>
+            <th style="min-width:140px">用量</th><th>模型权限</th><th>IP 限制</th><th>最后使用</th><th style="width:150px">操作</th>
           </tr></thead>
           <tbody>${tokens.map((t) => {
             const pct = t.used_pct || 0;
