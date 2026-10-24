@@ -674,8 +674,28 @@ func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "渠道不存在")
 		return
 	}
-	result := s.probeChannel(ch)
-	writeOK(w, result)
+	// 测试弹窗会带细分参数；列表页的整渠道探测不带 body，保持旧行为。
+	var req struct {
+		KeyIndex *int   `json:"key_index"` // 指定第几个 Key（从 0 开始）；不传表示按调度规则逐个尝试
+		Mode     string `json:"mode"`      // list = 只测模型列表接口，失败不做对话回退
+		Model    string `json:"model"`     // 非空时改测一次该模型的最小对话请求
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	model := strings.TrimSpace(req.Model)
+	if model != "" {
+		writeOK(w, probeWithKeys(ch, req.KeyIndex, func(c store.Channel) probeResult {
+			return s.probeModelOnce(c, model)
+		}))
+		return
+	}
+	if req.Mode == "list" {
+		writeOK(w, probeWithKeys(ch, req.KeyIndex, probeListOnce))
+		return
+	}
+	writeOK(w, s.probeChannel(ch))
 }
 
 type probeResult struct {
@@ -683,18 +703,35 @@ type probeResult struct {
 	Message string   `json:"message"`
 	Latency int64    `json:"latency_ms"`
 	Models  []string `json:"models,omitempty"`
+	// Content 是模型对话测试成功时上游回复的文本摘要，供前端展示。
+	Content string `json:"content,omitempty"`
 }
 
 // probeChannel 逐个尝试渠道的 Key，任意一个可用即返回成功。
 // 多 Key 渠道里单个 Key 失效不应把整条渠道判成不可用。
 func (s *Server) probeChannel(ch store.Channel) probeResult {
+	return probeWithKeys(ch, nil, s.probeChannelOnce)
+}
+
+// probeWithKeys 按 Key 选择策略执行探测：
+// keyIndex 非空时只测指定的那个 Key（测试弹窗里手动选择的情况，
+// 即使多 Key 模式关闭也允许，测的是用户点名的 Key）；
+// 否则按渠道的调度规则取 Key 集合，逐个尝试到第一个可用为止。
+func probeWithKeys(ch store.Channel, keyIndex *int, probe func(store.Channel) probeResult) probeResult {
 	keys := ch.Keys()
+	if keyIndex != nil {
+		idx := *keyIndex
+		if idx < 0 || idx >= len(keys) {
+			return probeResult{OK: false, Message: fmt.Sprintf("Key 序号超出范围（该渠道共 %d 个 Key）", len(keys))}
+		}
+		return probe(ch.WithKey(keys[idx]))
+	}
 	if !ch.MultiKeyEnabled() && len(keys) > 1 {
 		// 多 Key 模式关闭时只测第一个 Key，与调度行为保持一致。
 		keys = keys[:1]
 	}
 	if len(keys) == 1 && keys[0] == "" {
-		return s.probeChannelOnce(ch)
+		return probe(ch)
 	}
 	start := time.Now()
 	tried := 0
@@ -705,7 +742,7 @@ func (s *Server) probeChannel(ch store.Channel) probeResult {
 			break
 		}
 		tried++
-		res := s.probeChannelOnce(ch.WithKey(key))
+		res := probe(ch.WithKey(key))
 		if res.OK {
 			if len(keys) > 1 {
 				res.Message = fmt.Sprintf("%s（第 %d/%d 个 Key 可用）", res.Message, i+1, len(keys))
@@ -722,6 +759,20 @@ func (s *Server) probeChannel(ch store.Channel) probeResult {
 		}
 	}
 	return last
+}
+
+// probeListOnce 只测模型列表接口并把原始结果带回来，失败不做对话回退。
+func probeListOnce(ch store.Channel) probeResult {
+	start := time.Now()
+	models, listErr := fetchChannelModels(&http.Client{Timeout: 30 * time.Second}, ch)
+	if listErr != "" {
+		return probeResult{OK: false, Message: listErr, Latency: time.Since(start).Milliseconds()}
+	}
+	msg := fmt.Sprintf("连接成功，上游返回 %d 个模型", len(models))
+	if len(models) == 0 {
+		msg = "连接成功（模型列表为空）"
+	}
+	return probeResult{OK: true, Message: msg, Latency: time.Since(start).Milliseconds(), Models: models}
 }
 
 // fetchChannelModels 请求上游的模型列表接口。
@@ -776,24 +827,39 @@ func (s *Server) probeChannelOnce(ch store.Channel) probeResult {
 	if len(ch.Models) == 0 {
 		return probeResult{OK: false, Message: "渠道未配置任何模型，且模型列表接口不可用：" + listErr, Latency: time.Since(start).Milliseconds()}
 	}
-	model := ch.Models[0]
+	return s.probeModelOnce(ch, ch.Models[0])
+}
+
+// probeModelOnce 对指定模型发一次「你好」的最小对话请求验证可用，
+// 与模型管理里的测试保持一致（max_tokens=64），成功时带回回复文本。
+// 模型名不限于渠道已配置的列表——测试弹窗里也可以试刚拉取到、还没添加的模型。
+func (s *Server) probeModelOnce(ch store.Channel, model string) probeResult {
+	start := time.Now()
+	base := upstream.NormalizeBase(ch.BaseURL)
+	if base == "" {
+		return probeResult{OK: false, Message: "该渠道还没有填写接口地址"}
+	}
+	if model == "" {
+		return probeResult{OK: false, Message: "缺少模型名"}
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
 	payload := map[string]any{
 		"model":      model,
-		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
-		"max_tokens": 1,
+		"messages":   []any{map[string]any{"role": "user", "content": "你好"}},
+		"max_tokens": 64,
 	}
 	path := "/v1/chat/completions"
 	if ch.Type == store.ChannelAnthropic {
 		path = "/v1/messages"
-		payload["max_tokens"] = 1
+		payload["max_tokens"] = 64
 		delete(payload, "messages")
-		payload["messages"] = []any{map[string]any{"role": "user", "content": "hi"}}
+		payload["messages"] = []any{map[string]any{"role": "user", "content": "你好"}}
 	}
 	if ch.Type == store.ChannelGemini {
 		path = upstream.Get(ch.Type).UpstreamPath("/v1/chat/completions", model, false)
 		payload = map[string]any{
-			"contents":         []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hi"}}}},
-			"generationConfig": map[string]any{"maxOutputTokens": 1},
+			"contents":         []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "你好"}}}},
+			"generationConfig": map[string]any{"maxOutputTokens": 64},
 		}
 	}
 	body, _ := json.Marshal(payload)
@@ -812,7 +878,34 @@ func (s *Server) probeChannelOnce(ch store.Channel) probeResult {
 		return probeResult{OK: false, Message: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateErr(string(raw))),
 			Latency: time.Since(start).Milliseconds()}
 	}
-	return probeResult{OK: true, Message: "连接成功（模型 " + model + " 可用）", Latency: time.Since(start).Milliseconds()}
+	content := extractReplyText(raw)
+	if ch.Type == store.ChannelGemini {
+		content = extractGeminiReplyText(raw, content)
+	}
+	return probeResult{OK: true, Message: "模型 " + model + " 可用", Latency: time.Since(start).Milliseconds(), Content: content}
+}
+
+// extractGeminiReplyText 从 Gemini 直连格式（candidates[].content.parts）里取回复文本，
+// 取不到时沿用 fallback（extractReplyText 对未知结构返回原文截断）。
+func extractGeminiReplyText(raw []byte, fallback string) string {
+	var g struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(raw, &g); err != nil || len(g.Candidates) == 0 {
+		return fallback
+	}
+	for _, p := range g.Candidates[0].Content.Parts {
+		if p.Text != "" {
+			return truncateText(p.Text, 600)
+		}
+	}
+	return fallback
 }
 
 // parseModelIDs 兼容 OpenAI / Anthropic / Gemini 三种模型列表结构。

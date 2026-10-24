@@ -918,6 +918,42 @@ html[data-theme="dark"] .ldm-select[aria-expanded="true"] { background-color: rg
 .key-rows--single [data-key-del] { display: none; }
 .input-group .input { flex: 1; }
 
+/* ---------- 渠道测试弹窗 ---------- */
+.ct-keyrow { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.ct-card { border: 1px solid var(--border-line); border-radius: 10px; padding: 12px 14px; }
+.ct-card + .ct-card { margin-top: 12px; }
+.ct-card__head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.ct-card__head > .ct-card__title { flex: 1; min-width: 0; }
+.ct-card__title { font-weight: 650; font-size: 13.5px; }
+.ct-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border-line); }
+.ct-row:first-child { border-top: none; }
+.ct-row[data-mrow] { cursor: pointer; }
+.ct-search { width: 100%; margin: 2px 0 8px; }
+.ct-row__name {
+  flex: 0 1 auto; min-width: 80px; max-width: 55%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px;
+}
+.ct-row__res { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ct-err {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--red-500);
+}
+.ct-reply {
+  min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--text-3);
+}
+/* 模型列表拉取成功后：默认折叠的展开按钮 + 可点击测试的模型名标签 */
+.ct-toggle { margin-top: 8px; }
+.ct-toggle__chev { display: inline-flex; transition: transform .15s ease; }
+.ct-toggle.is-open .ct-toggle__chev { transform: rotate(180deg); }
+.ct-fetched { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ct-fetched[hidden] { display: none; }
+.ct-fm { display: inline-flex; align-items: center; gap: 5px; }
+.ct-fm--busy { opacity: .6; }
+.ct-fm--ok { border-color: var(--green-200) !important; color: var(--green-500) !important; }
+.ct-fm--fail { border-color: var(--red-200) !important; color: var(--red-500) !important; }
+
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 640px) { .form-row { grid-template-columns: 1fr; } }
 

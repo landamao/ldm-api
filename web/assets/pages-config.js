@@ -463,7 +463,7 @@
             if (btn.dataset.act === 'edit') openChannelEditor(ch);
             else if (btn.dataset.act === 'del') await removeChannel(ch);
             else if (btn.dataset.act === 'toggle') await toggleChannel(ch);
-            else if (btn.dataset.act === 'test') await testChannel(ch, btn);
+            else if (btn.dataset.act === 'test') openChannelTestDialog(ch);
           };
         });
       };
@@ -804,20 +804,263 @@
     }
   }
 
-  async function testChannel(ch, btn) {
-    const old = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner" style="width:12px;height:12px"></span>测试中';
-    try {
-      const res = await API.post(`/api/channels/${encodeURIComponent(ch.id)}/test`);
-      if (res.ok) Toast.success(`${ch.id}：${res.message}（${res.latency_ms}ms）`, '渠道可用');
-      else Toast.error(`${ch.id}：${res.message}`, '渠道不可用');
-    } catch (e) {
-      Toast.error(e.message, '测试失败');
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = old;
-    }
+  // ---------- 渠道测试弹窗 ----------
+  // 顶部测「获取模型列表」接口，下面逐个测渠道配置的模型；
+  // 多 Key 渠道可以选择本次测试用哪个 Key（或全部逐个尝试）。
+  function openChannelTestDialog(ch) {
+    const keyRows = ch.key_rows || [];
+    const models = ch.models || [];
+    const truncate = (s, n) => (s && s.length > n ? s.slice(0, n) + '…' : s || '');
+
+    const PENDING = '<span class="muted fs-12">未测试</span>';
+    const RUNNING = '<span class="spinner" style="width:11px;height:11px"></span><span class="muted fs-12">测试中…</span>';
+
+    const keyOptions = [
+      '<option value="-1">全部 Key（逐个尝试，第一个可用即停）</option>',
+      ...keyRows.map((r, i) =>
+        `<option value="${i}">#${i + 1} ${esc(r.masked || '（未设置）')}${r.note ? ` (${esc(r.note)})` : ''}</option>`),
+    ].join('');
+
+    const modelRowHtml = (m) => `
+      <div class="ct-row" data-mrow="${esc(m)}">
+        <input type="checkbox" data-msel aria-label="选择 ${esc(m)}">
+        <span class="code ct-row__name" title="${esc(m)}">${esc(m)}</span>
+        <span class="ct-row__res" data-res>${PENDING}</span>
+        <button class="btn btn--sm btn--icon" data-tbtn title="测试该模型" aria-label="测试 ${esc(m)}">${icon('zap', 13)}</button>
+      </div>`;
+
+    openModal({
+      title: `测试渠道 ${esc(ch.id)}`,
+      desc: `${esc(ch.name ? ch.name + ' · ' : '')}${esc(typeLabel(ch.type))} · ${esc(ch.base_url || '默认地址')}`,
+      body: `
+        ${keyRows.length > 1 ? `
+        <div class="ct-keyrow">
+          <label class="field__label" for="ct-key">测试用 Key</label>
+          <select class="select" id="ct-key" aria-label="选择测试用的 Key" style="width:100%">
+            ${keyOptions}
+          </select>
+        </div>` : ''}
+        <div class="ct-card">
+          <div class="ct-card__head">
+            <div class="ct-card__title">获取模型列表</div>
+            <button class="btn btn--sm" id="ct-list-btn">${icon('zap', 13)}测试</button>
+          </div>
+          <div class="ct-row__res" id="ct-list-res" style="min-height:20px">${PENDING}</div>
+          <div class="ct-fetched" id="ct-list-models"></div>
+        </div>
+        <div class="ct-card">
+          <div class="ct-card__head">
+            ${models.length ? '<input type="checkbox" id="ct-checkall" aria-label="全选 / 取消全选" title="全选 / 取消全选">' : ''}
+            <div class="ct-card__title">渠道模型（${models.length}）</div>
+            ${models.length ? `
+            <label class="switch" style="white-space:nowrap" title="勾选的模型并行发起测试">
+              <input type="checkbox" id="ct-concurrent">
+              <span class="switch__track"></span>
+              <span class="switch__label">并发</span>
+            </label>
+            <button class="btn btn--sm" id="ct-sel-btn">${icon('zap', 13)}测试选中</button>` : ''}
+          </div>
+          ${models.length ? `
+          <div class="search ct-search">
+            <span class="search__icon">${icon('search', 14)}</span>
+            <input class="input" id="ct-model-search" placeholder="搜索模型名…" style="width:100%">
+          </div>
+          <div id="ct-model-rows">${models.map(modelRowHtml).join('')}</div>` : '<div class="muted fs-13">该渠道还没有配置模型。</div>'}
+        </div>`,
+      footer: '<div class="spacer"></div><button class="btn" data-close>关闭</button>',
+      onMount(mo) {
+        const keySel = mo.body.querySelector('#ct-key');
+        // 多 Key 模式开启时默认全部尝试；关闭时默认第一个，与实际调度一致
+        if (keySel) keySel.value = ch.multi_key_enabled ? '-1' : '0';
+
+        const payloadFor = (extra) => {
+          const payload = Object.assign({}, extra);
+          if (keySel && keySel.value !== '-1') payload.key_index = Number(keySel.value);
+          return payload;
+        };
+        const alive = () => mo.el.isConnected;
+
+        const resultHtml = (res) => {
+          if (res.ok) {
+            return `<span class="badge badge--green"><span class="dot"></span>通过</span>`
+              + `<span class="fs-12 muted">${res.latency || 0}ms</span>`
+              + (res.content
+                ? `<span class="ct-reply" title="${esc(res.content)}">回复：${esc(truncate(res.content, 48))}</span>`
+                : '');
+          }
+          return `<span class="badge badge--red"><span class="dot"></span>失败</span>`
+            + `<span class="ct-err" title="${esc(res.message || '未知错误')}">${esc(truncate(res.message || '未知错误', 90))}</span>`;
+        };
+        const callTest = async (payload) => {
+          try {
+            const res = await API.post(`/api/channels/${encodeURIComponent(ch.id)}/test`, payload);
+            return {
+              ok: !!(res && res.ok),
+              message: (res && res.message) || '',
+              latency: (res && res.latency_ms) || 0,
+              models: (res && res.models) || [],
+              content: (res && res.content) || '',
+            };
+          } catch (e) {
+            return { ok: false, message: e.message || '测试失败', latency: 0, models: [], content: '' };
+          }
+        };
+
+        // 获取模型列表
+        const listBtn = mo.body.querySelector('#ct-list-btn');
+        const listRes = mo.body.querySelector('#ct-list-res');
+        const listModels = mo.body.querySelector('#ct-list-models');
+        listBtn.onclick = async () => {
+          if (listBtn.disabled) return;
+          listBtn.disabled = true;
+          listRes.innerHTML = RUNNING;
+          listModels.innerHTML = '';
+          const res = await callTest(payloadFor({ mode: 'list' }));
+          if (!alive()) return;
+          listBtn.disabled = false;
+          listRes.innerHTML = resultHtml(res);
+          if (res.ok && res.models.length) {
+            // 模型可能上百个，默认折叠，点按钮再展开
+            listModels.innerHTML = `
+              <button class="btn btn--sm ct-toggle" id="ct-list-toggle" aria-expanded="false">
+                <span class="ct-toggle__chev">${icon('chevron', 12)}</span>展开 ${res.models.length} 个模型
+              </button>
+              <div class="ct-fetched" id="ct-fetched-body" hidden>
+                ${res.models.map((m) => `<button class="badge badge--tag badge--click ct-fm" data-fm="${esc(m)}" title="测试 ${esc(m)}">${esc(m)}</button>`).join('')}
+              </div>`;
+            const toggle = listModels.querySelector('#ct-list-toggle');
+            const body = listModels.querySelector('#ct-fetched-body');
+            toggle.onclick = () => {
+              const open = !body.hidden;
+              body.hidden = open;
+              toggle.classList.toggle('is-open', !open);
+              toggle.setAttribute('aria-expanded', String(!open));
+              toggle.innerHTML = `<span class="ct-toggle__chev">${icon('chevron', 12)}</span>`
+                + (open ? `展开 ${res.models.length} 个模型` : '收起模型列表');
+            };
+          }
+        };
+        // 点击拉取到的模型名 → 用当前 Key 测该模型（转圈 + Toast 提示结果）
+        listModels.addEventListener('click', async (e) => {
+          const b = e.target.closest('[data-fm]');
+          if (!b || b.disabled) return;
+          b.disabled = true;
+          b.classList.add('ct-fm--busy');
+          b.innerHTML = `<span class="spinner" style="width:10px;height:10px"></span>${esc(b.dataset.fm)}`;
+          const res = await callTest(payloadFor({ model: b.dataset.fm }));
+          if (!alive()) return;
+          b.disabled = false;
+          b.classList.remove('ct-fm--busy', 'ct-fm--ok', 'ct-fm--fail');
+          b.classList.add(res.ok ? 'ct-fm--ok' : 'ct-fm--fail');
+          b.textContent = b.dataset.fm;
+          b.title = `${b.dataset.fm}：${res.ok ? `通过（${res.latency}ms）` : res.message}`;
+          if (res.ok) {
+            Toast.show('success', `「${b.dataset.fm}」测试通过`, `${res.latency}ms\n\n上游返回：\n${res.content || '（空响应）'}`, 12000);
+          } else {
+            Toast.show('error', `「${b.dataset.fm}」测试失败`, `${res.latency}ms\n\n${res.message || '未知错误'}`, 12000);
+          }
+        });
+
+        // 渠道模型逐个测试
+        const rows = [];
+        mo.body.querySelectorAll('[data-mrow]').forEach((row) => {
+          rows.push({
+            name: row.dataset.mrow,
+            el: row,
+            btn: row.querySelector('[data-tbtn]'),
+            res: row.querySelector('[data-res]'),
+            sel: row.querySelector('[data-msel]'),
+          });
+        });
+        const testOne = async (row) => {
+          if (row.btn.disabled) return;
+          row.btn.disabled = true;
+          row.res.innerHTML = RUNNING;
+          const r = await callTest(payloadFor({ model: row.name }));
+          if (!alive()) return;
+          row.btn.disabled = false;
+          row.res.innerHTML = resultHtml(r);
+        };
+        rows.forEach((row) => { row.btn.onclick = () => testOne(row); });
+
+        // 全选 / 搜索过滤 / 点行切换勾选。
+        // 全选只作用于搜索后仍然可见的行，隐藏行的勾选状态不被打扰。
+        const checkall = mo.body.querySelector('#ct-checkall');
+        const searchEl = mo.body.querySelector('#ct-model-search');
+        const visRows = () => rows.filter((r) => r.el.style.display !== 'none');
+        const syncCheckall = () => {
+          if (!checkall) return;
+          const vis = visRows();
+          const n = vis.filter((r) => r.sel.checked).length;
+          checkall.checked = vis.length > 0 && n === vis.length;
+          checkall.indeterminate = n > 0 && n < vis.length;
+        };
+        if (checkall) checkall.addEventListener('change', () => {
+          visRows().forEach((r) => { r.sel.checked = checkall.checked; });
+          syncState();
+          syncCheckall();
+        });
+        if (searchEl) searchEl.addEventListener('input', () => {
+          const kw = searchEl.value.trim().toLowerCase();
+          rows.forEach((r) => {
+            r.el.style.display = (!kw || r.name.toLowerCase().includes(kw)) ? '' : 'none';
+          });
+          syncCheckall();
+        });
+        rows.forEach((row) => {
+          row.el.addEventListener('click', (e) => {
+            if (e.target.closest('button, input, a')) return;
+            row.sel.click();
+          });
+        });
+
+        // 测试选中：默认串行逐个跑；「并发」开关打开时用 5 路池并行。
+        // 弹窗关掉即停。
+        const selBtn = mo.body.querySelector('#ct-sel-btn');
+        const concSwitch = mo.body.querySelector('#ct-concurrent');
+        let running = false;
+        const syncState = () => {
+          if (selBtn) selBtn.disabled = running || !rows.some((r) => r.sel.checked);
+        };
+        if (selBtn) {
+          rows.forEach((row) => row.sel.addEventListener('change', () => { syncState(); syncCheckall(); }));
+          syncState();
+          syncCheckall();
+          selBtn.onclick = async () => {
+            if (selBtn.disabled || running) return;
+            const picked = rows.filter((r) => r.sel.checked);
+            if (!picked.length) return;
+            running = true;
+            selBtn.disabled = true;
+            const old = selBtn.innerHTML;
+            selBtn.innerHTML = '<span class="spinner" style="width:11px;height:11px"></span>测试中';
+            const finish = () => {
+              running = false;
+              if (!alive()) return;
+              selBtn.innerHTML = old;
+              syncState();
+            };
+            if (!concSwitch.checked) {
+              for (const row of picked) {
+                if (!alive()) return;
+                await testOne(row);
+              }
+            } else {
+              let next = 0;
+              const worker = async () => {
+                while (alive()) {
+                  const idx = next++;
+                  if (idx >= picked.length) return;
+                  await testOne(picked[idx]);
+                }
+              };
+              await Promise.all(Array.from({ length: Math.min(5, picked.length) }, worker));
+            }
+            finish();
+          };
+        }
+      },
+    });
   }
 
   // ---------- 获取模型列表弹窗 ----------
@@ -1401,7 +1644,9 @@
           }
           preview.innerHTML = `<div class="flex-center gap-8" style="margin-bottom:6px">
               <div class="section-title" style="margin-bottom:0">共 ${list.length} 个模型</div>
-              <div class="ml-auto muted fs-12">点击模型名可复制</div>
+              <div class="ml-auto flex-center gap-8">
+                <button type="button" class="btn btn--sm" id="preview-test-btn" title="打开渠道测试弹窗">${icon('zap', 13)}测试</button>
+              </div>
             </div>
             <div class="badge-group">${list.map((m) => `<button type="button" class="badge badge--click mono" data-copy-model="${esc(m)}" title="点击复制">${esc(m)}</button>`).join('')}</div>
             <div class="field__hint" style="margin-top:8px">接入到「模型管理」后，它们会分别以
@@ -1411,8 +1656,19 @@
         modelsEl.addEventListener('input', renderPreview);
         idEl.addEventListener('input', renderPreview);
         preview.addEventListener('click', (e) => {
-          const el = e.target.closest('[data-copy-model]');
-          if (el) copyText(el.dataset.copyModel, '模型名 ');
+          const cp = e.target.closest('[data-copy-model]');
+          if (cp) {
+            copyText(cp.dataset.copyModel, '模型名 ');
+            return;
+          }
+          // 「测试」按钮 → 弹出该渠道的测试弹窗（走已保存的渠道配置）
+          if (e.target.closest('#preview-test-btn')) {
+            if (!data.id) {
+              Toast.warn('请先保存渠道，再测试');
+              return;
+            }
+            openChannelTestDialog(data);
+          }
         });
 
         mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
