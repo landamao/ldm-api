@@ -320,6 +320,15 @@ API 密钥只能调用模型相关端点。完整白名单：`chat/completions`�
 `/v1/files`、`/v1/fine-tunes`、`/v1/batches`、`/v1/vector_stores` 等账号级接口
 会在网关层直接返回 `404`，不会转发到上游。
 
+除对话模型外，图片生成/编辑、语音转写/翻译/合成、嵌入、重排、内容审核等模型调用同样可用：
+
+- `multipart/form-data` 请求（`/v1/images/edits`、`/v1/audio/transcriptions`、`/v1/audio/translations`）
+  会从表单里读取 `model`，按路由改写成渠道的上游模型名后重建表单转发，图片/音频文件与其它字段原样保留。
+- 转发时使用真实的 `Content-Type`（multipart 会生成新的 boundary），调用方的 `Accept` 也会保留；
+  `/v1/audio/speech` 等二进制响应和转写文本响应都会原样返回。
+- 音频转写/翻译、语音合成、内容审核省略 `model` 时，分别按 `whisper-1`、`tts-1`、
+  `text-moderation-stable` 路由；需要在模型管理里配置同名模型。
+
 密钥不存在、已禁用或已过期时统一返回 `401 invalid_api_key`（对外不区分具体原因）；只有额度用尽才返回
 `403 insufficient_quota`，并在错误信息里带上已用 / 总额度。
 

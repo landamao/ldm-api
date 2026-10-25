@@ -2,7 +2,18 @@
 
 本项目的所有重要变更都会记录在这里。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [1.18.2] - 2026-10-25
+
+### 修复
+
+- 支持语言模型之外的全部模型调用端点（图片生成/编辑、语音转写/翻译/合成、嵌入、重排、内容审核等）：
+  - `multipart/form-data` 请求（`/v1/images/edits`、`/v1/audio/transcriptions`、`/v1/audio/translations`）会从表单里读取 `model`，转发时重建表单并改写成渠道的上游模型名，文件与其它字段原样保留；不再误报「请求体中缺少 model 字段」。
+  - 转发到上游时保留真实的 `Content-Type`（multipart 使用新的 boundary）和调用方的 `Accept`，不会再被渠道默认的 `application/json` 覆盖；音频等二进制响应与文本响应都会原样返回。
+  - `/v1/embeddings` 等 JSON 端点对 Anthropic / Gemini 渠道同样会改写模型名；旧版 `/v1/engines/{model}/embeddings` 会从路径识别模型。
+  - 音频转写/翻译、语音合成、内容审核省略 `model` 时，按 OpenAI 默认值（`whisper-1` / `tts-1` / `text-moderation-stable`）路由；需要在模型管理里配置同名模型。
+  - 表单里的 `prompt` 等文本会计入输入 token 估算；密钥的模型白名单校验同样覆盖表单里的 `model`。
+
+## [1.18.1] - 2026-10-24
 
 ### 变更
 

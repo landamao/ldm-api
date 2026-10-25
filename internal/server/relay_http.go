@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -80,24 +79,16 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		Body:   body,
 		IP:     clientIP(r),
 	}
-	if len(body) > 0 {
-		var m map[string]any
-		dec := json.NewDecoder(strings.NewReader(string(body)))
-		dec.UseNumber()
-		if err := dec.Decode(&m); err == nil {
-			req.JSON = m
-			if sv, ok := m["stream"].(bool); ok {
-				req.Stream = sv
-			}
-			if mv, ok := m["model"].(string); ok && !tokenAllowsModel(token, mv) {
-				writeJSON(w, http.StatusForbidden, map[string]any{
-					"error": map[string]any{
-						"message": "该 API 密钥无权调用模型「" + mv + "」", "type": "permission_error", "code": "model_not_allowed",
-					},
-				})
-				return
-			}
-		}
+	// JSON 用 JSON 解析，图片编辑 / 语音转写用表单解析：
+	// 两种形式的 model 都要拿到，才能做密钥模型白名单校验与路由。
+	req.Prepare()
+	if req.Model != "" && !tokenAllowsModel(token, req.Model) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error": map[string]any{
+				"message": "该 API 密钥无权调用模型「" + req.Model + "」", "type": "permission_error", "code": "model_not_allowed",
+			},
+		})
+		return
 	}
 
 	res := s.relay.Do(r.Context(), w, req)

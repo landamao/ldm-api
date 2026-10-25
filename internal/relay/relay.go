@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -185,8 +187,17 @@ type Request struct {
 	Stream bool
 	JSON   map[string]any
 	IP     string
+	// Model 是从请求体（JSON 或表单）里解析出的模型名。
+	Model string
 	// AllowDisabled 跳过模型与渠道的启用状态检查，仅管理端「测试」使用。
 	AllowDisabled bool
+
+	// prepared 标记 Prepare 已经解析过请求体。
+	prepared bool
+	// multipartForm / formValues 保存表单请求的解析结果；
+	// 转发时需要重建请求体，把 model 改成渠道的上游模型名。
+	multipartForm *multipart.Form
+	formValues    url.Values
 }
 
 // Result 是一次转发的最终结果，用于记日志。
@@ -702,6 +713,9 @@ func customContentID() string {
 
 // Do 执行转发。它会把响应写进 w，并返回用于记账的结果。
 func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Result {
+	// 经过 handleAPI 的请求已经解析过；这里再调一次是防御性的，
+	// 直接调用 Do 的测试与管理端逻辑也能拿到表单里的 model。
+	req.Prepare()
 	start := time.Now()
 	res := &Result{ModelID: modelOf(req), Stream: req.Stream}
 
@@ -1055,20 +1069,37 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	defer timer.Stop()
 
 	body := req.Body
+	sendContentType := ""
 	convertBody := !prov.RawBody && req.JSON != nil && isChatPath(req.Path)
-	if convertBody {
+	switch {
+	case convertBody:
 		// 能力参数已经在 Do 里统一校验/清理过，这里传空 Caps
 		// 让协议转换只做格式映射，避免重复裁剪。
 		converted := prov.BuildBody(req.JSON, route.Upstream, store.Caps{})
 		body = mustJSON(converted)
-	} else if req.JSON != nil && prov.Type == store.ChannelOpenAI {
-		// 非 chat 端点：只改写模型名
+		sendContentType = "application/json"
+	case req.JSON != nil:
+		// 非 chat 端点（图片、语音、向量等）：只改写模型名。
 		patched := make(map[string]any, len(req.JSON)+1)
 		for k, v := range req.JSON {
 			patched[k] = v
 		}
 		patched["model"] = route.Upstream
 		body = mustJSON(patched)
+		sendContentType = "application/json"
+	case req.multipartForm != nil:
+		// 图片编辑、语音转写：按原表单重建，只替换 model。
+		rebuilt, contentType, err := rebuildMultipart(req.multipartForm, route.Upstream)
+		if err != nil {
+			return attemptOutcome{
+				err:       fmt.Errorf("重建 multipart 请求失败: %w", err),
+				retryable: true, status: http.StatusBadGateway,
+			}
+		}
+		body, sendContentType = rebuilt, contentType
+	case req.formValues != nil:
+		body = []byte(replaceFormModel(req.formValues, route.Upstream))
+		sendContentType = "application/x-www-form-urlencoded"
 	}
 
 	base := upstream.NormalizeBase(route.Channel.BaseURL)
@@ -1090,6 +1121,18 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	}
 	copyRequestHeaders(upReq.Header, req.Header)
 	prov.Auth(upReq, route.Channel)
+	// Provider 的 Auth 默认写 JSON 头；表单/二进制请求必须用真实的内容类型，
+	// 否则上游会把 multipart 请求体当成 JSON 解析。渠道自定义头仍然最后生效。
+	contentType := sendContentType
+	if contentType == "" {
+		contentType = req.Header.Get("Content-Type")
+	}
+	if contentType != "" {
+		upReq.Header.Set("Content-Type", contentType)
+	}
+	if accept := req.Header.Get("Accept"); accept != "" {
+		upReq.Header.Set("Accept", accept)
+	}
 	for k, v := range route.Channel.Headers {
 		upReq.Header.Set(k, v)
 	}
@@ -1420,6 +1463,9 @@ func indexByte(b []byte, c byte) int {
 }
 
 func modelOf(req *Request) string {
+	if req.Model != "" {
+		return req.Model
+	}
 	if req.JSON == nil {
 		return ""
 	}

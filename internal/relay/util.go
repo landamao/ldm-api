@@ -67,6 +67,10 @@ func estimateUsage(req *Request) upstream.Usage {
 		sb.WriteString(flattenText(req.JSON["input"]))
 		sb.WriteString(flattenText(req.JSON["tools"]))
 		prompt = estimateTokens(sb.String())
+	} else {
+		// 图片编辑、语音转写等表单请求没有 token 概念，
+		// 只把 prompt / input 这类文本字段计入输入估算。
+		prompt = estimateTokens(formTextOf(req, "prompt", "input", "text", "instructions"))
 	}
 	return upstream.Usage{PromptTokens: prompt, CompletionTokens: 0, TotalTokens: prompt}
 }
