@@ -169,7 +169,7 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		StatusCode:       res.StatusCode,
 		Error:            truncateErr(res.Err),
 		ClientError:      truncateErr(res.ClientErr),
-		Stream:           req.Stream,
+		Stream:           res.Stream,
 		Retries:          res.Retries,
 		Attempts:         res.Attempts,
 		Affinity:         res.Affinity,
@@ -179,7 +179,7 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		CachedTokens:     res.CachedTokens,
 		Canceled:         res.Canceled,
 	}
-	entry.TokensPerSec = tokensPerSecond(entry)
+	entry.TokensPerSec = tokensPerSecond(entry, res.GenMs)
 	_ = s.store.AppendLog(entry)
 	_ = s.store.RecordStat(entry)
 	if res.Usage.TotalTokens > 0 {
@@ -187,18 +187,27 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 	}
 }
 
+// minSpeedWindowMs 是计算输出速度所需的最小生成窗口。
+// 上游把整段响应一次性吐完（缓存命中、上游侧缓冲、假模型）时，首块到末块
+// 只差几毫秒，拿它当分母会算出几万 t/s 这种没有意义的速度，这类记录不给速度。
+const minSpeedWindowMs = 50
+
 // tokensPerSecond 计算流式请求的输出速度。分母用「生成耗时」而不是总耗时：
 // 首字之前的排队、建连时间不应该算进生成速度里。
-// 非流式是一次性返回的，没有有意义的生成窗口，直接返回 0。
-func tokensPerSecond(l store.Log) float64 {
+// genMs 是转发层量到的真实输出窗口（首块内容到末块内容）；为 0 时退回
+// 「总耗时 - 首字耗时」的估算。非流式是一次性返回的，没有有意义的生成窗口，
+// 直接返回 0。
+func tokensPerSecond(l store.Log, genMs int64) float64 {
 	if !l.Stream || l.CompletionTokens <= 0 {
 		return 0
 	}
-	genMs := l.LatencyMs
-	if l.FirstByteMs > 0 && l.FirstByteMs < l.LatencyMs {
-		genMs = l.LatencyMs - l.FirstByteMs
-	}
 	if genMs <= 0 {
+		genMs = l.LatencyMs
+		if l.FirstByteMs > 0 && l.FirstByteMs < l.LatencyMs {
+			genMs = l.LatencyMs - l.FirstByteMs
+		}
+	}
+	if genMs < minSpeedWindowMs {
 		return 0
 	}
 	return float64(l.CompletionTokens) * 1000 / float64(genMs)

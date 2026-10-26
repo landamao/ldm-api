@@ -2077,23 +2077,146 @@ func TestChatRawBodyRequiresModel(t *testing.T) {
 
 func TestTokensPerSecond(t *testing.T) {
 	cases := []struct {
-		name string
-		log  store.Log
-		want float64
+		name  string
+		log   store.Log
+		genMs int64
+		want  float64
 	}{
-		{"没有输出 token", store.Log{Stream: true, LatencyMs: 1000, FirstByteMs: 100}, 0},
-		{"按生成耗时计算", store.Log{Stream: true, CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 25},
-		{"没有首字时间就用总耗时", store.Log{Stream: true, CompletionTokens: 100, LatencyMs: 4000}, 25},
-		{"首字晚于总耗时则退回总耗时", store.Log{Stream: true, CompletionTokens: 50, LatencyMs: 1000, FirstByteMs: 2000}, 50},
-		{"耗时为 0 不除零", store.Log{Stream: true, CompletionTokens: 10, LatencyMs: 0}, 0},
+		{"没有输出 token", store.Log{Stream: true, LatencyMs: 1000, FirstByteMs: 100}, 0, 0},
+		{"按生成耗时计算", store.Log{Stream: true, CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0, 25},
+		{"没有首字时间就用总耗时", store.Log{Stream: true, CompletionTokens: 100, LatencyMs: 4000}, 0, 25},
+		{"首字晚于总耗时则退回总耗时", store.Log{Stream: true, CompletionTokens: 50, LatencyMs: 1000, FirstByteMs: 2000}, 0, 50},
+		{"耗时为 0 不除零", store.Log{Stream: true, CompletionTokens: 10, LatencyMs: 0}, 0, 0},
 		// 非流式一次性返回，没有有意义的生成窗口，不展示速度
-		{"非流式不算速度", store.Log{Stream: false, CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0},
+		{"非流式不算速度", store.Log{Stream: false, CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0, 0},
+		// 转发层量到的真实输出窗口优先于「总耗时 - 首字」
+		{"优先用真实输出窗口", store.Log{Stream: true, CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 2000, 50},
+		// 上游一次性吐完：首块到末块只差几毫秒，速度没有意义
+		{"一次性吐完不算速度", store.Log{Stream: true, CompletionTokens: 800, LatencyMs: 3, FirstByteMs: 3}, 1, 0},
+		{"输出窗口过短不算速度", store.Log{Stream: true, CompletionTokens: 800, LatencyMs: 4000, FirstByteMs: 1000}, 20, 0},
 	}
 	for _, c := range cases {
-		got := tokensPerSecond(c.log)
+		got := tokensPerSecond(c.log, c.genMs)
 		if got != c.want {
 			t.Errorf("%s: tokensPerSecond = %v，期望 %v", c.name, got, c.want)
 		}
+	}
+}
+
+// 日志里的「流式」标记与输出速度都以真实响应为准：
+// 上游一次性吐完不给速度，调用方要流式但上游回 JSON 时不标流式。
+func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
+	sseChunk := `data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"字"}}]}` + "\n\n"
+	sseUsage := `data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],` +
+		`"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}` + "\n\n"
+
+	cases := []struct {
+		name     string
+		upstream http.HandlerFunc
+		wantSSE  bool
+		wantTps  bool
+	}{
+		{
+			// 真正的流式：分块之间有间隔，速度有意义
+			name: "slow-sse",
+			upstream: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				if fl, ok := w.(http.Flusher); ok {
+					fl.Flush()
+				}
+				for i := 0; i < 10; i++ {
+					io.WriteString(w, sseChunk)
+					if fl, ok := w.(http.Flusher); ok {
+						fl.Flush()
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				io.WriteString(w, sseUsage)
+				io.WriteString(w, "data: [DONE]\n\n")
+			},
+			wantSSE: true, wantTps: true,
+		},
+		{
+			// 上游把整段 SSE 一次性吐完：首块到末块只差几毫秒，不给速度
+			name: "burst-sse",
+			upstream: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				for i := 0; i < 10; i++ {
+					io.WriteString(w, sseChunk)
+				}
+				io.WriteString(w, sseUsage)
+				io.WriteString(w, "data: [DONE]\n\n")
+			},
+			wantSSE: true, wantTps: false,
+		},
+		{
+			// 调用方要流式、上游回完整 JSON：输出不是流式，不能标流式也不能算速度
+			name: "json-for-stream-request",
+			upstream: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],`+
+					`"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`)
+			},
+			wantSSE: false, wantTps: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			up := httptest.NewServer(c.upstream)
+			defer up.Close()
+
+			s, st := newTestServer(t, "streamflag-"+c.name)
+			if err := st.SaveChannel(store.Channel{
+				ID: "A", Type: store.ChannelOpenAI, BaseURL: up.URL, APIKey: "k",
+				Models: []string{"a"}, Enabled: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.SaveModel(store.Model{
+				ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a", Enabled: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			key, err := s.EnsureDefaultToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			gw := httptest.NewServer(s.Handler())
+			defer gw.Close()
+
+			body := `{"model":"A/a","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+			req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+key)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+
+			logs, _, err := st.QueryLogs(store.LogFilter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(logs) != 1 {
+				t.Fatalf("应写入 1 条日志，得到 %d", len(logs))
+			}
+			l := logs[0]
+			if l.Stream != c.wantSSE {
+				t.Errorf("流式标记应为 %v，得到 %v", c.wantSSE, l.Stream)
+			}
+			if c.wantTps {
+				if l.TokensPerSec <= 0 || l.TokensPerSec > 2000 {
+					t.Errorf("速度应在合理范围，得到 %v", l.TokensPerSec)
+				}
+			} else if l.TokensPerSec != 0 {
+				t.Errorf("不应记录速度，得到 %v", l.TokensPerSec)
+			}
+		})
 	}
 }
 

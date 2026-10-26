@@ -220,7 +220,14 @@ type Result struct {
 	// ClientErr 是实际返回给调用方的错误文案。网关自身原因对外会收敛成笼统提示，
 	// 与 Err 不同；记录它才能在日志里还原调用方真正看到的内容。
 	ClientErr     string
-	Stream        bool
+	// Stream 表示这次响应是不是真的按 SSE 流式写给客户端的。
+	// 注意与请求体里的 stream 区分：调用方要流式、但上游直接回了完整 JSON 时，
+	// 这里为 false——输出形态才是日志里「流式」标记该反映的东西。
+	Stream bool
+	// GenMs 是流式响应从「首块内容写出」到「最后一块内容写出」的实际窗口，
+	// 输出速度按它计算。上游把整段响应一次性吐完（或直接回 JSON）时为 0，
+	// 表示没有有意义的生成窗口，不统计速度。
+	GenMs         int64
 	UsageEstimate bool
 	// ReasoningChars 是思考内容的字符数，模型没输出思考时为 0。
 	ReasoningChars int
@@ -277,11 +284,11 @@ func customErrorOf(m store.Model) (customError, bool) {
 	return customError{status: m.ErrorStatus, message: msg}, true
 }
 
-// writeCustomError 写出错误覆写的结果。
+// writeCustomError 写出错误覆写的结果，返回这次的响应是不是按 SSE 写出的。
 // 普通模式按 OpenAI 兼容格式返回配置的状态码；「覆写为正文」模式下
 // 把文案当成正常回复以 200 写出，流式请求按 SSE、非流式按完整 JSON。
 func writeCustomError(ctx context.Context, w http.ResponseWriter, req *Request, model string,
-	ce customError, started time.Time) {
+	ce customError, started time.Time) (streamed bool) {
 
 	if !ce.asContent {
 		typ := "invalid_request_error"
@@ -289,15 +296,16 @@ func writeCustomError(ctx context.Context, w http.ResponseWriter, req *Request, 
 			typ = "server_error"
 		}
 		writeAPIError(w, ce.status, typ, ce.message)
-		return
+		return false
 	}
 	cc := customContent{text: ce.message}
 	usage := customContentUsage(req, cc)
 	if req.Stream {
 		writeCustomContentStream(ctx, w, req, model, cc, usage, started)
-		return
+		return true
 	}
 	writeCustomContent(w, req, model, cc, usage)
+	return false
 }
 
 // customContent 是模型配置的自定义内容返回。
@@ -474,9 +482,10 @@ func waitCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// writeCustomContentStream 写出流式响应。返回首字耗时（毫秒）和是否被客户端取消。
+// writeCustomContentStream 写出流式响应。返回首字耗时（毫秒）、
+// 实际输出窗口（首块到末块，毫秒）和是否被客户端取消。
 func writeCustomContentStream(ctx context.Context, w http.ResponseWriter, req *Request, model string,
-	cc customContent, usage upstream.Usage, started time.Time) (int64, bool) {
+	cc customContent, usage upstream.Usage, started time.Time) (int64, int64, bool) {
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -490,15 +499,31 @@ func writeCustomContentStream(ctx context.Context, w http.ResponseWriter, req *R
 			flusher.Flush()
 		}
 	}
+	// 输出窗口：速度按首块到末块的时间算。配置的速度为 0 时所有分块会被
+	// 一次性写出，窗口为 0，表示没有可统计的生成过程。
+	var firstAt, lastAt time.Time
 	writeData := func(v any) {
+		if firstAt.IsZero() {
+			firstAt = time.Now()
+		}
+		lastAt = time.Now()
 		w.Write([]byte("data: "))
 		w.Write(mustJSON(v))
 		w.Write([]byte("\n\n"))
 		flush()
 	}
+	window := func() int64 {
+		if firstAt.IsZero() || lastAt.IsZero() {
+			return 0
+		}
+		if ms := lastAt.Sub(firstAt).Milliseconds(); ms > 0 {
+			return ms
+		}
+		return 0
+	}
 	// 首字等待：连接已建立，但第一块数据按配置延迟发送。
 	if !waitCtx(ctx, cc.firstByte) {
-		return 0, true
+		return 0, 0, true
 	}
 	firstByteMs := time.Since(started).Milliseconds()
 
@@ -507,21 +532,21 @@ func writeCustomContentStream(ctx context.Context, w http.ResponseWriter, req *R
 	switch {
 	case strings.HasSuffix(path, "/completions") && !strings.HasSuffix(path, "/chat/completions"):
 		if writeCustomContentCompletionsStream(ctx, writeData, model, cc, created) {
-			return firstByteMs, true
+			return firstByteMs, window(), true
 		}
 	case strings.HasSuffix(path, "/responses") || strings.HasSuffix(path, "/responses/compact"):
 		if writeCustomContentResponsesStream(ctx, w, writeData, model, cc, usage, created) {
-			return firstByteMs, true
+			return firstByteMs, window(), true
 		}
-		return firstByteMs, false
+		return firstByteMs, window(), false
 	default:
 		if writeCustomContentChatStream(ctx, writeData, model, cc, usage, created) {
-			return firstByteMs, true
+			return firstByteMs, window(), true
 		}
 	}
 	w.Write([]byte("data: [DONE]\n\n"))
 	flush()
-	return firstByteMs, false
+	return firstByteMs, window(), false
 }
 
 // writeCustomContentChatStream 写出 chat.completion.chunk 流。
@@ -717,7 +742,9 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	// 直接调用 Do 的测试与管理端逻辑也能拿到表单里的 model。
 	req.Prepare()
 	start := time.Now()
-	res := &Result{ModelID: modelOf(req), Stream: req.Stream}
+	// Stream 记录的是「响应实际是不是流式」，由真正写出响应的分支设置，
+	// 不能直接用 req.Stream：调用方要流式而上游回了完整 JSON 时，输出不是流式。
+	res := &Result{ModelID: modelOf(req)}
 
 	// 防御性校验：即使调用方绕过 handleAPI，也不允许把非模型端点转发到上游。
 	if !IsAllowedEndpoint(req.Method, req.Path) {
@@ -780,8 +807,10 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		res.UsageEstimate = true
 		res.ReasoningChars = len([]rune(cc.reasoning))
 		if req.Stream {
-			firstByte, canceled := writeCustomContentStream(ctx, w, req, resolved.Model.ID, cc, usage, start)
+			firstByte, genMs, canceled := writeCustomContentStream(ctx, w, req, resolved.Model.ID, cc, usage, start)
 			res.StatusCode = http.StatusOK
+			res.Stream = true
+			res.GenMs = genMs
 			res.FirstByteMs = firstByte
 			res.LatencyMs = time.Since(start).Milliseconds()
 			if canceled {
@@ -806,7 +835,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	// 「始终返回错误」模式：不解析路由、不请求上游，直接把配置的
 	// 状态码和错误详情返回给调用方（开启「覆写为正文」时按 200 正文返回）。
 	if ce, ok := customErrorOf(resolved.Model); ok && resolved.Model.CustomErrorAlways() {
-		writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
+		res.Stream = writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
 		res.StatusCode = ce.status
 		res.ClientErr = ce.message
 		if ce.asContent {
@@ -821,7 +850,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		// 客户端只看到笼统结论，具体原因（渠道已禁用等）只写进日志，避免泄露内部信息。
 		// 开启「失败时重写」后，这种失败也换成模型配置的错误。
 		if ce, ok := customErrorOf(resolved.Model); ok {
-			writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
+			res.Stream = writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
 			res.StatusCode = ce.status
 			res.ClientErr = ce.message
 			res.Err = resolved.NoRoute
@@ -915,6 +944,8 @@ outer:
 				res.Usage = outcome.usage
 				res.UsageEstimate = outcome.estimated
 				res.FirstByteMs = outcome.firstByte
+				res.Stream = outcome.streamed
+				res.GenMs = outcome.genMs
 				res.ReasoningChars = outcome.reasoning
 				res.ReasoningTokens = outcome.usage.ReasoningTokens
 				res.CachedTokens = outcome.usage.CachedTokens
@@ -923,6 +954,12 @@ outer:
 				return res
 			}
 			wrote = wrote || outcome.wrote
+			// 已经写给客户端的形态就是最终形态：中途失败也改不回来，
+			// 日志里的「流式」标记与速度窗口都按它记。
+			if outcome.wrote {
+				res.Stream = outcome.streamed
+				res.GenMs = outcome.genMs
+			}
 			if outcome.err == nil {
 				// 成功：记录亲和（下次优先从它开始），并清掉该条目的冷却
 				MarkSuccess(modelID, route.Channel.ID, route.Upstream)
@@ -931,6 +968,8 @@ outer:
 				res.Usage = outcome.usage
 				res.UsageEstimate = outcome.estimated
 				res.FirstByteMs = outcome.firstByte
+				res.Stream = outcome.streamed
+				res.GenMs = outcome.genMs
 				res.ReasoningChars = outcome.reasoning
 				res.ReasoningTokens = outcome.usage.ReasoningTokens
 				res.CachedTokens = outcome.usage.CachedTokens
@@ -982,7 +1021,7 @@ outer:
 	rewritten := false
 	if lastErr != "" && !wrote {
 		if ce, ok := customErrorOf(resolved.Model); ok {
-			writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
+			res.Stream = writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
 			res.StatusCode = ce.status
 			res.ClientErr = ce.message
 			rewritten = true
@@ -1016,6 +1055,12 @@ type attemptOutcome struct {
 	wrote     bool
 	estimated bool
 	reasoning int
+	// streamed 表示这次响应确实是按 SSE 流式写给客户端的。
+	// 调用方要流式、但上游直接回了完整 JSON 时为 false。
+	streamed bool
+	// genMs 是流式响应从首块内容到末块内容的实际窗口（毫秒）；
+	// 一次性吐完时为 0，表示没有可用的速度样本。
+	genMs int64
 	// canceled 表示这次失败是客户端主动断开造成的，不是上游的问题。
 	canceled bool
 	// keyFailed 表示这次失败应该记到当前上游 Key 头上（认证、限流、超时、网络等），
@@ -1240,6 +1285,32 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	if override, ok := reasoningOverrideOf(resolved.Model); ok {
 		st = newReasoningOverrideStream(st, override.text)
 	}
+	// 输出的实际时间窗口：速度按首块到末块的间隔算。上游把整段响应
+	// 一次性吐完（缓存命中、上游侧做了缓冲、假模型）时窗口接近 0，
+	// 不能拿它当分母，否则会算出几万 t/s 这种没有意义的速度。
+	var firstAt, lastAt time.Time
+	genWindow := func() int64 {
+		if firstAt.IsZero() || lastAt.IsZero() {
+			return 0
+		}
+		if ms := lastAt.Sub(firstAt).Milliseconds(); ms > 0 {
+			return ms
+		}
+		return 0
+	}
+	writeOut := func(b []byte) {
+		if len(b) == 0 {
+			return
+		}
+		if firstAt.IsZero() {
+			firstAt = time.Now()
+		}
+		lastAt = time.Now()
+		w.Write(b)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	buf := make([]byte, 0, 64*1024)
 	tmp := make([]byte, 32*1024)
 	var pending []byte
@@ -1264,20 +1335,14 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				if out := st.Translate(line); len(out) > 0 {
 					buf = append(buf, out...)
 					if len(buf) > 4096 {
-						w.Write(buf)
+						writeOut(buf)
 						buf = buf[:0]
-						if flusher != nil {
-							flusher.Flush()
-						}
 					}
 				}
 			}
 			if len(buf) > 0 {
-				w.Write(buf)
+				writeOut(buf)
 				buf = buf[:0]
-				if flusher != nil {
-					flusher.Flush()
-				}
 			}
 		}
 		if rerr != nil {
@@ -1286,50 +1351,46 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				// Anthropic/Gemini 的 Finish 本身会把 finished 置位。
 				done := st.Done()
 				// 客户端可能已经断开，尽力把收尾事件发出去
-				w.Write(st.Finish())
-				if flusher != nil {
-					flusher.Flush()
-				}
+				writeOut(st.Finish())
 				usage, est := streamUsage(st, req)
 				// 结束标记已经发出去，说明响应内容已经完整；此时客户端关连接
 				// （收到 [DONE] 就挂断很常见）或上游断开都不算这次调用失败。
 				if done && st.Err() == nil {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
-						wrote: true, estimated: est, reasoning: st.ReasoningChars()}
+						wrote: true, estimated: est, reasoning: st.ReasoningChars(),
+						streamed: true, genMs: genWindow()}
 				}
 				// 客户端断开和上游断开要分开记账：前者黄色 200 记成功，后者红色 200 记错误
 				if ctx.Err() != nil {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						err: errors.New("客户端已断开连接"), canceled: true, wrote: true, estimated: est,
-						reasoning: st.ReasoningChars()}
+						reasoning: st.ReasoningChars(), streamed: true, genMs: genWindow()}
 				}
 				if timedOut.Load() {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						err: errors.New("上游响应超时"), retryable: false, wrote: true, estimated: est,
-						reasoning: st.ReasoningChars(), upstreamBroken: true, keyFailed: true}
+						reasoning: st.ReasoningChars(), upstreamBroken: true, keyFailed: true,
+						streamed: true, genMs: genWindow()}
 				}
 				return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 					err: errors.New(cleanNetErr(rerr)), retryable: false, wrote: true, estimated: est,
-					reasoning: st.ReasoningChars(), upstreamBroken: true, keyFailed: true}
+					reasoning: st.ReasoningChars(), upstreamBroken: true, keyFailed: true,
+					streamed: true, genMs: genWindow()}
 			}
 			break
 		}
 	}
 	if len(pending) > 0 {
 		if out := st.Translate(pending); len(out) > 0 {
-			w.Write(out)
+			writeOut(out)
 		}
 	}
-	if out := st.Finish(); len(out) > 0 {
-		w.Write(out)
-	}
-	if flusher != nil {
-		flusher.Flush()
-	}
+	writeOut(st.Finish())
 
 	usage, estimated := streamUsage(st, req)
 	outcome := attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
-		wrote: true, estimated: estimated, reasoning: st.ReasoningChars()}
+		wrote: true, estimated: estimated, reasoning: st.ReasoningChars(),
+		streamed: true, genMs: genWindow()}
 	if err := st.Err(); err != nil {
 		outcome.err = err
 	}
