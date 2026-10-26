@@ -446,6 +446,69 @@ func (s *Store) QueryLogs(f LogFilter) ([]Log, int, error) {
 	return out, total, err
 }
 
+// QueryLogFacets 统计 [start, end] 内日志出现过的模型 / 渠道 / 密钥，供日志页
+// 的筛选下拉使用。start <= 0 表示不限起始时间，end <= 0 表示不限结束时间。
+// 日志按倒序时间写入，所以遇到第一条早于 start 的记录就可以停扫。
+func (s *Store) QueryLogFacets(start, end int64) (LogFacets, error) {
+	out := LogFacets{Models: []LogFacet{}, Channels: []LogFacet{}, Tokens: []LogFacet{}}
+	models := make(map[string]*LogFacet)
+	channels := make(map[string]*LogFacet)
+	tokens := make(map[string]*LogFacet)
+	add := func(m map[string]*LogFacet, id, name string) {
+		if id == "" {
+			return
+		}
+		if f, ok := m[id]; ok {
+			f.Count++
+			if f.Name == "" {
+				f.Name = name
+			}
+			return
+		}
+		m[id] = &LogFacet{ID: id, Name: name, Count: 1}
+	}
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bLogs).Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var l Log
+			if err := json.Unmarshal(v, &l); err != nil {
+				continue
+			}
+			if start > 0 && l.Time < start {
+				break // 倒序写入，后面的只会更早
+			}
+			if end > 0 && l.Time > end {
+				continue
+			}
+			add(models, l.ModelID, "")
+			add(channels, l.ChannelID, l.ChannelName)
+			add(tokens, l.TokenID, l.TokenName)
+		}
+		return nil
+	})
+	if err != nil {
+		return out, err
+	}
+	// 用得多的排前面，同频次按 ID 升序，保证每次渲染顺序稳定。
+	flatten := func(m map[string]*LogFacet) []LogFacet {
+		list := make([]LogFacet, 0, len(m))
+		for _, f := range m {
+			list = append(list, *f)
+		}
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].Count != list[j].Count {
+				return list[i].Count > list[j].Count
+			}
+			return list[i].ID < list[j].ID
+		})
+		return list
+	}
+	out.Models = flatten(models)
+	out.Channels = flatten(channels)
+	out.Tokens = flatten(tokens)
+	return out, nil
+}
+
 // PurgeLogsBefore 删除早于 ts 的日志。
 func (s *Store) PurgeLogsBefore(ts int64) (int, error) {
 	s.mu.Lock()

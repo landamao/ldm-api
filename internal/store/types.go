@@ -452,6 +452,22 @@ type Log struct {
 	Canceled bool `json:"canceled,omitempty"`
 }
 
+// LogFacet 是日志筛选下拉里的一个取值及它在区间内的出现次数。
+type LogFacet struct {
+	ID    string `json:"id"`
+	Name  string `json:"name,omitempty"`
+	Count int    `json:"count"`
+}
+
+// LogFacets 是某个时间区间内日志里实际出现过的模型 / 渠道 / 密钥。
+// 日志页的下拉只列这里的取值：配置里删掉的模型（历史模型）只要区间内还有
+// 记录就仍然可选，反过来没有记录的配置项也不会出现在下拉里。
+type LogFacets struct {
+	Models   []LogFacet `json:"models"`
+	Channels []LogFacet `json:"channels"`
+	Tokens   []LogFacet `json:"tokens"`
+}
+
 // ModelRecent 是某个模型最近若干次调用的结果。
 type ModelRecent struct {
 	Requests int64 `json:"requests"`

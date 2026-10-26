@@ -172,6 +172,22 @@ func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, map[string]any{"items": logs, "total": total})
 }
 
+// logFacets 返回时间区间内日志实际出现过的模型 / 渠道 / 密钥，供筛选下拉使用。
+// 区间内没有记录的配置项不会出现在下拉里；配置里已删除的历史模型只要还有
+// 日志就仍然可选。
+func (s *Server) logFacets(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	facets, err := s.store.QueryLogFacets(
+		int64(atoiDefault(q.Get("start"), 0)),
+		int64(atoiDefault(q.Get("end"), 0)),
+	)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeOK(w, facets)
+}
+
 func (s *Server) clearLogs(w http.ResponseWriter, r *http.Request) {
 	before := time.Now().UnixMilli()
 	if v := r.URL.Query().Get("before"); v != "" {

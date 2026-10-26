@@ -22,7 +22,7 @@ import (
 	"ldmapi/internal/termtitle"
 )
 
-var version = "1.18.3"
+var version = "1.18.4"
 
 func main() {
 	// 先读 .env，让其中的环境变量成为命令行参数的默认值

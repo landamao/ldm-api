@@ -99,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 
 	// ---- 日志 / 统计 ----
 	mux.HandleFunc("GET /api/logs", s.admin(s.listLogs))
+	mux.HandleFunc("GET /api/logs/facets", s.admin(s.logFacets))
 	mux.HandleFunc("DELETE /api/logs", s.admin(s.clearLogs))
 	mux.HandleFunc("GET /api/stats/overview", s.admin(s.statsOverview))
 	mux.HandleFunc("GET /api/stats/series", s.admin(s.statsSeries))

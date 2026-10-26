@@ -734,6 +734,25 @@ html[data-theme="dark"] .textarea:focus { background: rgba(255, 255, 255, .1); }
 }
 .input--sm { height: 28px; font-size: 12.5px; }
 
+/* 调用日志的时间筛选：日期时间框等宽数字，深色主题下把原生日历图标反色 */
+.log-time { font-variant-numeric: tabular-nums; font-size: 12.5px; padding-left: 8px; padding-right: 8px; }
+html[data-theme="dark"] .log-time::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: .6;
+}
+.log-time::-webkit-calendar-picker-indicator { cursor: pointer; opacity: .55; }
+.log-time:hover::-webkit-calendar-picker-indicator { opacity: .9; }
+
+/* 筛选改了但还没点「查询」：按钮右上角点一个小圆点，绝对定位不进布局 */
+.btn.is-dirty { position: relative; }
+.btn.is-dirty::after {
+  content: "";
+  position: absolute; top: -3px; right: -3px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--amber-500);
+  box-shadow: 0 0 0 2px var(--surface-solid, #fff);
+}
+
 /* 多行文本域右上角的扩大按钮：包一层定位容器，避免按钮遮住正文 */
 .textarea-expand { position: relative; display: block; }
 .textarea-expand > .textarea { display: block; width: 100%; padding-right: 36px; }
@@ -1148,6 +1167,12 @@ html[data-theme="dark"] .tristate__opt.is-on { background: rgba(255, 255, 255, .
   border-bottom: 1px solid var(--border-line);
 }
 .toolbar__spacer { flex: 1; }
+/* 工具条里的竖分隔：区分时间筛选与下拉筛选，窄屏换行后也不干扰布局 */
+.toolbar__sep {
+  flex: 0 0 auto;
+  width: 1px; height: 18px; margin: 0 2px;
+  background: var(--border-strong); opacity: .5;
+}
 .search {
   position: relative;
   min-width: 190px;

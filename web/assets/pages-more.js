@@ -3660,10 +3660,46 @@
   // ======================================================================
   // 调用日志
   // ======================================================================
-  const logState = { limit: 30, offset: 0, status: '', model: '', channel: '', token: '' };
   const LOG_UNIT_KEY = 'ldmapi.logs.unit';
   const logUnit = { on: true };
   try { logUnit.on = localStorage.getItem(LOG_UNIT_KEY) !== '0'; } catch (e) { /* 存储不可用时默认开启 */ }
+
+  // 时间筛选预设。默认「今日 00:00 → 现在」，和看板的自然日口径一致。
+  const LOG_RANGES = [
+    { key: 'today', label: '今日' },
+    { key: 'yesterday', label: '昨日' },
+    { key: '7d', label: '近 7 天' },
+    { key: '30d', label: '近 30 天' },
+    { key: 'all', label: '全部时间' },
+    { key: 'custom', label: '自定义' },
+  ];
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const startOfToday = (offsetDays) => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime() - (offsetDays || 0) * 86400000;
+  };
+  // 毫秒时间戳 → <input type="datetime-local"> 需要的本地时间字符串
+  const toLocalInput = (ms) => {
+    if (!ms) return '';
+    const d = new Date(Number(ms));
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  };
+  // start / end 为 0 表示该端不限时间
+  function rangeOfPreset(key) {
+    if (key === 'today') return { start: startOfToday(0), end: Date.now() };
+    if (key === 'yesterday') return { start: startOfToday(1), end: startOfToday(0) };
+    if (key === '7d') return { start: startOfToday(6), end: Date.now() };
+    if (key === '30d') return { start: startOfToday(29), end: Date.now() };
+    if (key === 'all') return { start: 0, end: 0 };
+    return null;
+  }
+
+  // 上一次「查询」真正生效的筛选条件；未点查询前下拉和时间的改动都只是草稿。
+  const logState = {
+    limit: 30, offset: 0, status: '', model: '', channel: '', token: '',
+    start: startOfToday(0), end: Date.now(), preset: 'today',
+  };
 
   window.LDM.registerPage('logs', {
     title: '调用日志',
@@ -3675,7 +3711,11 @@
         State.loadTokens().catch(() => []),
       ]);
 
-      actions.innerHTML = `<button class="btn btn--danger" id="btn-clear-logs">${icon('trash', 14)}清空日志</button>`;
+      // 单位开关与刷新放在页头，和「清空日志」同排，筛选行只留筛选控件
+      actions.innerHTML = `
+        ${switchEl(logUnit.on, '单位', 'id="log-unit" title="开启后 Token 数按 K / M / B 显示，悬停可查看精确值"')}
+        <button class="btn btn--sm" id="btn-reload">${icon('refresh', 13)}刷新</button>
+        <button class="btn btn--danger" id="btn-clear-logs">${icon('trash', 14)}清空日志</button>`;
       actions.querySelector('#btn-clear-logs').onclick = async () => {
         const ok = await confirmDialog({
           title: '清空日志',
@@ -3687,34 +3727,38 @@
           const res = await API.del('/api/logs');
           Toast.success(`已清空 ${res.removed} 条日志`);
           logState.offset = 0;
-          load();
+          await runQuery();
         } catch (e) { Toast.error(e.message); }
       };
 
       root.innerHTML = `
         <div class="card mb-18">
           <div class="toolbar">
-            <select class="select" id="f-model" style="width:auto;min-width:150px">
+            <select class="select" id="f-preset" aria-label="时间范围" style="width:auto;min-width:96px">
+              ${LOG_RANGES.map((r) => `<option value="${r.key}"${logState.preset === r.key ? ' selected' : ''}>${r.label}</option>`).join('')}
+            </select>
+            <input class="input log-time" id="f-start" type="datetime-local" aria-label="开始时间"
+                   value="${toLocalInput(logState.start)}" style="width:auto;min-width:168px">
+            <span class="muted fs-12">至</span>
+            <input class="input log-time" id="f-end" type="datetime-local" aria-label="结束时间"
+                   value="${toLocalInput(logState.end)}" style="width:auto;min-width:168px">
+            <span class="toolbar__sep"></span>
+            <select class="select" id="f-model" style="width:auto;min-width:150px;max-width:208px">
               <option value="">全部模型</option>
-              ${models.map((m) => `<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')}
             </select>
-            <select class="select" id="f-channel" style="width:auto;min-width:130px">
+            <select class="select" id="f-channel" style="width:auto;min-width:118px;max-width:176px">
               <option value="">全部渠道</option>
-              ${channels.map((c) => `<option value="${esc(c.id)}">${esc(c.id)}${c.name ? '（' + esc(c.name) + '）' : ''}</option>`).join('')}
             </select>
-            <select class="select" id="f-token" style="width:auto;min-width:130px">
+            <select class="select" id="f-token" style="width:auto;min-width:118px;max-width:176px">
               <option value="">全部密钥</option>
-              ${tokens.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}
             </select>
-            <select class="select" id="f-status" style="width:auto;min-width:110px">
+            <select class="select" id="f-status" style="width:auto;min-width:104px">
               <option value="">全部状态</option>
               <option value="success">成功</option>
               <option value="error">失败</option>
               <option value="retry">有重试</option>
             </select>
-            <div class="toolbar__spacer"></div>
-            ${switchEl(logUnit.on, '单位', 'id="log-unit" title="开启后 Token 数按 K / M / B 显示，悬停可查看精确值"')}
-            <button class="btn btn--sm" id="btn-reload">${icon('refresh', 13)}刷新</button>
+            <button class="btn btn--primary btn--sm" id="btn-query" title="按当前筛选条件查询">${icon('search', 13)}查询</button>
           </div>
         </div>
         <div class="card">
@@ -3728,34 +3772,140 @@
           </div>
         </div>`;
 
-      const q = (sel) => root.querySelector(sel);
+      const q = (sel) => root.querySelector(sel) || actions.querySelector(sel);
       const channelName = {};
       channels.forEach((c) => { channelName[c.id] = c.name; });
+      const tokenName = {};
+      tokens.forEach((t) => { tokenName[t.id] = t.name; });
+      const modelIDs = new Set(models.map((m) => m.id));
       const channelLabel = (id) => id + (channelName[id] ? `（${channelName[id]}）` : '');
-      q('#f-model').value = logState.model;
-      q('#f-channel').value = logState.channel;
       q('#f-status').value = logState.status;
-      q('#f-token').value = logState.token;
 
-      q('#f-model').onchange = (e) => { logState.model = e.target.value; logState.offset = 0; load(); };
-      q('#f-channel').onchange = (e) => { logState.channel = e.target.value; logState.offset = 0; load(); };
-      q('#f-token').onchange = (e) => { logState.token = e.target.value; logState.offset = 0; load(); };
-      q('#f-status').onchange = (e) => { logState.status = e.target.value; logState.offset = 0; load(); };
-      q('#btn-reload').onclick = () => load();
+      // ---- 筛选草稿 → 「查询」才真正生效 ----
+      // 改动未生效时只在「查询」按钮右上角点一个小圆点（绝对定位，不占布局），
+      // 免得提示文字把同一行的控件挤到下一行。
+      let dirty = false;
+      function markDirty(on) {
+        dirty = on !== false;
+        const btn = q('#btn-query');
+        btn.classList.toggle('is-dirty', dirty);
+        btn.title = dirty ? '筛选已修改，点此查询生效' : '按当前筛选条件查询';
+      }
+
+      // 下拉选项只列当前时间区间内实际出现过的取值：配置里删掉的历史模型
+      // 只要区间内还有日志也照样可选，没有日志的配置项则不占位置。
+      function fillSelect(sel, allLabel, items, labelOf) {
+        const cur = sel.value;
+        sel.innerHTML = `<option value="">${allLabel}</option>`
+          + items.map((it) => `<option value="${esc(it.id)}">${esc(labelOf(it))}</option>`).join('');
+        const keep = cur && items.some((it) => it.id === cur);
+        sel.value = keep ? cur : '';
+        return sel.value;
+      }
+
+      function facetQuery() {
+        const params = new URLSearchParams();
+        if (logState.start) params.set('start', logState.start);
+        if (logState.end) params.set('end', logState.end);
+        const qs = params.toString();
+        return '/api/logs/facets' + (qs ? '?' + qs : '');
+      }
+
+      function syncFilterState() {
+        logState.model = q('#f-model').value;
+        logState.channel = q('#f-channel').value;
+        logState.token = q('#f-token').value;
+        logState.status = q('#f-status').value;
+      }
+
+      async function refreshFacets() {
+        let facets = null;
+        try { facets = await API.get(facetQuery()); } catch (e) { /* 拉不到就保留原选项 */ }
+        if (facets) {
+          fillSelect(q('#f-model'), '全部模型', facets.models || [],
+            (m) => m.id + (modelIDs.has(m.id) ? '' : '（历史）'));
+          fillSelect(q('#f-channel'), '全部渠道', facets.channels || [], (c) => {
+            const name = c.name || channelName[c.id];
+            return name ? `${c.id}（${name}）` : c.id;
+          });
+          fillSelect(q('#f-token'), '全部密钥', facets.tokens || [],
+            (t) => t.name || tokenName[t.id] || t.id);
+        }
+        syncFilterState();
+      }
+
+      function readRange() {
+        const startEl = q('#f-start').value;
+        const endEl = q('#f-end').value;
+        const start = startEl ? new Date(startEl).getTime() : 0;
+        const end = endEl ? new Date(endEl).getTime() : 0;
+        return { start: start || 0, end: end || 0 };
+      }
+
+      let querying = false;
+      async function runQuery() {
+        if (querying) return;
+        const { start, end } = readRange();
+        if (start && end && end < start) {
+          Toast.error('结束时间不能早于开始时间');
+          return;
+        }
+        querying = true;
+        const btn = q('#btn-query');
+        btn.disabled = true;
+        try {
+          logState.start = start;
+          logState.end = end;
+          logState.preset = q('#f-preset').value;
+          logState.status = q('#f-status').value;
+          logState.offset = 0;
+          markDirty(false);
+          await refreshFacets();
+          await load();
+        } finally {
+          querying = false;
+          btn.disabled = false;
+        }
+      }
+
+      q('#btn-query').onclick = () => runQuery();
+      q('#f-model').onchange = () => markDirty();
+      q('#f-channel').onchange = () => markDirty();
+      q('#f-token').onchange = () => markDirty();
+      q('#f-status').onchange = () => markDirty();
+      q('#f-preset').onchange = (e) => {
+        const r = rangeOfPreset(e.target.value);
+        if (!r) { markDirty(); return; } // 自定义：等用户改时间输入框
+        q('#f-start').value = toLocalInput(r.start);
+        q('#f-end').value = toLocalInput(r.end);
+        markDirty();
+      };
+      ['#f-start', '#f-end'].forEach((sel) => {
+        const el = q(sel);
+        el.onchange = () => {
+          q('#f-preset').value = 'custom';
+          markDirty();
+        };
+        el.onkeydown = (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); runQuery(); }
+        };
+      });
+      q('#btn-reload').onclick = () => runQuery();
       const unitInput = q('#log-unit').querySelector('input');
       unitInput.onchange = () => {
         logUnit.on = unitInput.checked;
         try { localStorage.setItem(LOG_UNIT_KEY, logUnit.on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
         renderTable();
       };
-      q('#page-prev').onclick = () => {
-        logState.offset = Math.max(0, logState.offset - logState.limit);
+      // 筛选改过没点查询就翻页时，先按新条件查第一页，避免翻出来的是旧条件的结果
+      const turnPage = (dir) => {
+        if (dirty) { runQuery(); return; }
+        const next = logState.offset + dir * logState.limit;
+        logState.offset = Math.max(0, next);
         load();
       };
-      q('#page-next').onclick = () => {
-        logState.offset += logState.limit;
-        load();
-      };
+      q('#page-prev').onclick = () => turnPage(-1);
+      q('#page-next').onclick = () => turnPage(1);
 
       // 重试历史分两层：先按渠道聚合（模型 → 渠道），渠道内试过多个 Key 时
       // 再下钻（渠道 → Key）。Key 备注在调度时随日志落库，不反查当前配置。
@@ -3954,6 +4104,8 @@
         if (logState.channel) params.set('channel_id', logState.channel);
         if (logState.token) params.set('token_id', logState.token);
         if (logState.status) params.set('status', logState.status);
+        if (logState.start) params.set('start', logState.start);
+        if (logState.end) params.set('end', logState.end);
         try {
           const res = await API.get('/api/logs?' + params.toString());
           const items = res.items || [];
@@ -3968,7 +4120,7 @@
         }
       }
 
-      await load();
+      await runQuery();
     },
   });
 

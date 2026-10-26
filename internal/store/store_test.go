@@ -157,3 +157,69 @@ func TestQueryLogsRetryStatusFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryLogFacets(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "facets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	base := time.Now().UnixMilli()
+	logs := []Log{
+		{ID: "old-gpt", Time: base - 10000, ModelID: "gpt-4o", ChannelID: "c1", ChannelName: "主力", TokenID: "t1", TokenName: "生产", StatusCode: 200},
+		{ID: "new-gpt", Time: base - 3000, ModelID: "gpt-4o", ChannelID: "c1", TokenID: "t1", StatusCode: 200},
+		{ID: "new-legacy", Time: base - 2000, ModelID: "retired-model", ChannelID: "c2", ChannelName: "备用", TokenID: "t2", TokenName: "测试", StatusCode: 200},
+		{ID: "new-legacy2", Time: base - 1000, ModelID: "retired-model", StatusCode: 200},
+	}
+	for _, l := range logs {
+		if err := st.AppendLog(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 全区间：两个模型都在，历史模型（配置里已删）也要出现
+	all, err := st.QueryLogFacets(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Models) != 2 {
+		t.Fatalf("期望 2 个模型，得到 %+v", all.Models)
+	}
+	if all.Models[0].ID != "gpt-4o" || all.Models[0].Count != 2 {
+		t.Fatalf("按出现次数倒序，期望 gpt-4o 出现 2 次，得到 %+v", all.Models)
+	}
+	if len(all.Channels) != 2 || all.Channels[0].ID != "c1" {
+		t.Fatalf("渠道统计异常：%+v", all.Channels)
+	}
+	if all.Channels[1].Name != "备用" && all.Channels[0].Name != "主力" {
+		t.Fatalf("渠道名称应随日志带出：%+v", all.Channels)
+	}
+	if len(all.Tokens) != 2 || all.Tokens[0].ID != "t1" {
+		t.Fatalf("密钥统计异常：%+v", all.Tokens)
+	}
+
+	// 只看最近 2.5 秒：只剩历史模型
+	recent, err := st.QueryLogFacets(base-2500, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent.Models) != 1 || recent.Models[0].ID != "retired-model" || recent.Models[0].Count != 2 {
+		t.Fatalf("时间筛选后的模型统计异常：%+v", recent.Models)
+	}
+	if len(recent.Channels) != 1 || recent.Channels[0].ID != "c2" {
+		t.Fatalf("时间筛选后的渠道统计异常：%+v", recent.Channels)
+	}
+
+	// 空区间：三个列表都要是空数组而不是 null，前端好直接 map
+	empty, err := st.QueryLogFacets(base-100, base-50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Models == nil || empty.Channels == nil || empty.Tokens == nil {
+		t.Fatalf("空区间应返回空数组：%+v", empty)
+	}
+	if len(empty.Models)+len(empty.Channels)+len(empty.Tokens) != 0 {
+		t.Fatalf("空区间不应有取值：%+v", empty)
+	}
+}
