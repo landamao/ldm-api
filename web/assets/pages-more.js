@@ -3734,15 +3734,6 @@
       root.innerHTML = `
         <div class="card mb-18">
           <div class="toolbar">
-            <select class="select" id="f-preset" aria-label="时间范围" style="width:auto;min-width:96px">
-              ${LOG_RANGES.map((r) => `<option value="${r.key}"${logState.preset === r.key ? ' selected' : ''}>${r.label}</option>`).join('')}
-            </select>
-            <input class="input log-time" id="f-start" type="datetime-local" aria-label="开始时间"
-                   value="${toLocalInput(logState.start)}" style="width:auto;min-width:168px">
-            <span class="muted fs-12">至</span>
-            <input class="input log-time" id="f-end" type="datetime-local" aria-label="结束时间"
-                   value="${toLocalInput(logState.end)}" style="width:auto;min-width:168px">
-            <span class="toolbar__sep"></span>
             <select class="select" id="f-model" style="width:auto;min-width:150px;max-width:208px">
               <option value="">全部模型</option>
             </select>
@@ -3758,6 +3749,17 @@
               <option value="error">失败</option>
               <option value="retry">有重试</option>
             </select>
+            <span class="toolbar__sep"></span>
+            <select class="select" id="f-preset" aria-label="时间范围" style="width:auto;min-width:96px">
+              ${LOG_RANGES.map((r) => `<option value="${r.key}"${logState.preset === r.key ? ' selected' : ''}>${r.label}</option>`).join('')}
+            </select>
+            <input class="input log-time" id="f-start" type="datetime-local" aria-label="开始时间"
+                   value="${toLocalInput(logState.start)}" style="width:auto;min-width:168px">
+            <span class="log-range-end">
+              <span class="muted fs-12">至</span>
+              <input class="input log-time" id="f-end" type="datetime-local" aria-label="结束时间"
+                     value="${toLocalInput(logState.end)}" style="width:auto;min-width:168px">
+            </span>
             <button class="btn btn--primary btn--sm" id="btn-query" title="按当前筛选条件查询">${icon('search', 13)}查询</button>
           </div>
         </div>

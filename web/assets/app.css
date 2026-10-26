@@ -734,6 +734,8 @@ html[data-theme="dark"] .textarea:focus { background: rgba(255, 255, 255, .1); }
 }
 .input--sm { height: 28px; font-size: 12.5px; }
 
+/* 「至 + 结束时间」绑成一组：换行时整体换行，不会把「至」留在上一行末尾 */
+.log-range-end { display: inline-flex; align-items: center; gap: 8px; }
 /* 调用日志的时间筛选：日期时间框等宽数字，深色主题下把原生日历图标反色 */
 .log-time { font-variant-numeric: tabular-nums; font-size: 12.5px; padding-left: 8px; padding-right: 8px; }
 html[data-theme="dark"] .log-time::-webkit-calendar-picker-indicator {
