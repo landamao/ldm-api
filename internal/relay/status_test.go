@@ -718,6 +718,9 @@ func TestModelErrorAsContentAlways(t *testing.T) {
 	if res.StatusCode != http.StatusOK || res.ClientErr != "维护中，请稍后再试" {
 		t.Errorf("结果应记录实际返回给调用方的状态与文案: %+v", res)
 	}
+	if !res.AsContent {
+		t.Error("覆写为正文的响应应标记 AsContent，日志按黄色 200 的成功记录记账")
+	}
 }
 
 // 只开总开关 + 覆写为正文：上游失败时把错误文案写成 200 正文。
@@ -756,6 +759,9 @@ func TestModelErrorAsContentRewritesFailure(t *testing.T) {
 	}
 	if !strings.Contains(res.Err, "500") {
 		t.Errorf("日志应保留内部失败原因: %+v", res.Err)
+	}
+	if !res.AsContent || res.StatusCode != http.StatusOK {
+		t.Errorf("覆写为正文应按 200 并标记 AsContent 记账: %+v", res)
 	}
 }
 

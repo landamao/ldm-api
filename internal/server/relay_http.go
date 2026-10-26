@@ -178,6 +178,7 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		ReasoningTokens:  res.ReasoningTokens,
 		CachedTokens:     res.CachedTokens,
 		Canceled:         res.Canceled,
+		AsContent:        res.AsContent,
 	}
 	entry.TokensPerSec = tokensPerSecond(entry, res.GenMs)
 	_ = s.store.AppendLog(entry)

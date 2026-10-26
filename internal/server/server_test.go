@@ -2582,6 +2582,63 @@ func TestRecordLogsClientErrorAndInternalReason(t *testing.T) {
 	}
 }
 
+// 错误覆写「覆写为正文」：调用方收到的是 200 正常回复，日志要按成功归类
+// （前端显示黄色 200），内部原因仍保留，且不计入失败统计。
+func TestRecordErrorAsContentCountsAsSuccess(t *testing.T) {
+	s, st := newTestServer(t, "log-as-content")
+	res := &relay.Result{
+		ModelID:    "x",
+		ChannelID:  "A",
+		StatusCode: http.StatusOK,
+		ClientErr:  "上游异常，请稍后再试",
+		Err:        "upstream status 500",
+		AsContent:  true,
+	}
+	s.record(store.Token{ID: "tk", Name: "测试密钥"}, &relay.Request{Path: "/v1/chat/completions"}, res)
+
+	logs, _, err := st.QueryLogs(store.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("应写入 1 条日志，得到 %d", len(logs))
+	}
+	got := logs[0]
+	if !got.AsContent || got.StatusCode != http.StatusOK {
+		t.Fatalf("覆写为正文应按 200 并带上标记落库: %+v", got)
+	}
+	if got.Error != "upstream status 500" {
+		t.Errorf("内部失败原因应保留用于排查：%q", got.Error)
+	}
+
+	success, total, err := st.QueryLogs(store.LogFilter{Status: "success", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(success) != 1 {
+		t.Errorf("覆写为正文的记录应出现在「成功」筛选里，得到 total=%d", total)
+	}
+	if _, total, err := st.QueryLogs(store.LogFilter{Status: "error", Limit: 10}); err != nil {
+		t.Fatal(err)
+	} else if total != 0 {
+		t.Errorf("覆写为正文不应算作失败，失败筛选里却有 %d 条", total)
+	}
+
+	now := time.Now()
+	buckets, err := st.RangeStats(now.Add(-time.Hour).UnixMilli(), now.Add(time.Hour).UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests, errs int64
+	for _, b := range buckets {
+		requests += b.Requests
+		errs += b.Errors
+	}
+	if requests != 1 || errs != 0 {
+		t.Errorf("统计应为 1 次请求 / 0 次失败，得到 %d / %d", requests, errs)
+	}
+}
+
 // 模型已禁用属于配置侧拒绝：请求直接返回，不写错误日志、不进统计、不消耗额度。
 func TestDisabledModelSkipsLogAndStats(t *testing.T) {
 	s, st := newTestServer(t, "disabled-skip")

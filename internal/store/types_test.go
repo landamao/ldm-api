@@ -167,3 +167,23 @@ func TestModelSystemPromptSwitch(t *testing.T) {
 		t.Error("关闭后不应生效")
 	}
 }
+
+// 失败判定：客户端取消与错误覆写「覆写为正文」都不算失败。
+func TestLogFailed(t *testing.T) {
+	cases := []struct {
+		name string
+		log  Log
+		want bool
+	}{
+		{"正常 200", Log{StatusCode: 200}, false},
+		{"503 失败", Log{StatusCode: 503}, true},
+		{"200 但内部原因非空", Log{StatusCode: 200, Error: "流式中途断开"}, true},
+		{"客户端取消", Log{StatusCode: 200, Error: "客户端已断开连接", Canceled: true}, false},
+		{"覆写为正文", Log{StatusCode: 200, Error: "upstream status 500", AsContent: true}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.log.Failed(); got != tc.want {
+			t.Errorf("%s: Failed()=%v，期望 %v", tc.name, got, tc.want)
+		}
+	}
+}

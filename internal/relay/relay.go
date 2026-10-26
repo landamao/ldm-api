@@ -244,6 +244,9 @@ type Result struct {
 	// Canceled 表示客户端主动断开（例如在线聊天里点了「停止」），
 	// 这种请求不计入渠道失败与成功率统计。
 	Canceled bool
+	// AsContent 表示这次响应是错误覆写里的「覆写为正文」：调用方实际收到的是
+	// 200 的正常回复，日志按成功记账（黄色 200），但内部失败原因仍然保留。
+	AsContent bool
 	// SkipRecord 表示这次请求只做了配置侧拒绝（模型已禁用），
 	// 调用方不要写入日志与统计。
 	SkipRecord bool
@@ -838,6 +841,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		res.Stream = writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
 		res.StatusCode = ce.status
 		res.ClientErr = ce.message
+		res.AsContent = ce.asContent
 		if ce.asContent {
 			res.Err = "模型配置了错误覆写（始终把错误写成正文返回）"
 		} else {
@@ -853,6 +857,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 			res.Stream = writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
 			res.StatusCode = ce.status
 			res.ClientErr = ce.message
+			res.AsContent = ce.asContent
 			res.Err = resolved.NoRoute
 			res.LatencyMs = time.Since(start).Milliseconds()
 			return res
@@ -1024,6 +1029,7 @@ outer:
 			res.Stream = writeCustomError(ctx, w, req, resolved.Model.ID, ce, start)
 			res.StatusCode = ce.status
 			res.ClientErr = ce.message
+			res.AsContent = ce.asContent
 			rewritten = true
 		} else if lastRaw != nil {
 			// 上游自己的错误响应原样返回，但不会带上网关的渠道信息。

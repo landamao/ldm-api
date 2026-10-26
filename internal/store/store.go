@@ -421,8 +421,9 @@ func (s *Store) QueryLogs(f LogFilter) ([]Log, int, error) {
 			if f.ChannelID != "" && l.ChannelID != f.ChannelID {
 				continue
 			}
-			// 失败的定义与统计口径一致：状态码 >= 400，或响应已开始但中途出错（如流式断开）。
-			failed := !l.Canceled && (l.StatusCode >= 400 || l.Error != "")
+			// 失败的定义与统计口径一致，见 Log.Failed：状态码 >= 400、或响应
+			// 中途出错；客户端取消与「覆写为正文」按成功算。
+			failed := l.Failed()
 			if (f.Status == "error" || f.OnlyError) && !failed {
 				continue
 			}
@@ -591,7 +592,7 @@ func (s *Store) RecordStat(l Log) error {
 		bk.ChannelCounts = ensureCounts(bk.ChannelCounts)
 		bk.TokenCounts = ensureCounts(bk.TokenCounts)
 		bk.Requests++
-		failed := !l.Canceled && (l.StatusCode >= 400 || l.Error != "")
+		failed := l.Failed()
 		if failed {
 			bk.Errors++
 		}
@@ -682,7 +683,7 @@ func (s *Store) RecentModelStats(modelIDs []string, limit, maxScan int) (map[str
 			}
 			r := out[l.ModelID]
 			r.Requests++
-			if !l.Canceled && (l.StatusCode >= 400 || l.Error != "") {
+			if l.Failed() {
 				r.Errors++
 			}
 			out[l.ModelID] = r

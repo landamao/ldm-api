@@ -64,6 +64,7 @@ func TestRecentModelStats(t *testing.T) {
 		{ID: "a-mid-err", Time: base - 4000, ModelID: "a", StatusCode: 500, Error: "上游失败"},
 		{ID: "a-new-ok", Time: base - 3000, ModelID: "a", StatusCode: 200},
 		{ID: "b-canceled", Time: base - 2000, ModelID: "b", StatusCode: 200, Canceled: true},
+		{ID: "b-as-content", Time: base - 6000, ModelID: "b", StatusCode: 200, Error: "上游失败", AsContent: true},
 		{ID: "x-err", Time: base - 1000, ModelID: "x", StatusCode: 500},
 	}
 	for _, l := range logs {
@@ -79,8 +80,8 @@ func TestRecentModelStats(t *testing.T) {
 	if r := got["a"]; r.Requests != 2 || r.Errors != 1 {
 		t.Fatalf("a 期望 2 次调用 / 1 次失败，得到 %+v", r)
 	}
-	if r := got["b"]; r.Requests != 1 || r.Errors != 0 {
-		t.Fatalf("b 期望 1 次调用 / 0 次失败，得到 %+v", r)
+	if r := got["b"]; r.Requests != 2 || r.Errors != 0 {
+		t.Fatalf("b 期望 2 次调用 / 0 次失败，得到 %+v", r)
 	}
 	if _, ok := got["c"]; ok {
 		t.Fatal("没有日志的模型不应出现在结果里")
@@ -113,6 +114,7 @@ func TestQueryLogsRetryStatusFilter(t *testing.T) {
 		{ID: "err-plain", Time: base - 3000, StatusCode: 502, Error: "上游失败"},
 		{ID: "err-retried", Time: base - 2000, StatusCode: 502, Error: "上游失败", Retries: 1},
 		{ID: "canceled-retried", Time: base - 1000, StatusCode: 200, Canceled: true, Retries: 1},
+		{ID: "as-content", Time: base - 500, StatusCode: 200, Error: "上游 500", AsContent: true},
 	}
 	for _, l := range logs {
 		if err := st.AppendLog(l); err != nil {
@@ -141,9 +143,9 @@ func TestQueryLogsRetryStatusFilter(t *testing.T) {
 		want   []string
 	}{
 		{"retry", []string{"canceled-retried", "err-retried", "ok-retried"}},
-		{"success", []string{"canceled-retried", "ok-retried", "ok-plain"}},
+		{"success", []string{"as-content", "canceled-retried", "ok-retried", "ok-plain"}},
 		{"error", []string{"err-retried", "err-plain"}},
-		{"", []string{"canceled-retried", "err-retried", "err-plain", "ok-retried", "ok-plain"}},
+		{"", []string{"as-content", "canceled-retried", "err-retried", "err-plain", "ok-retried", "ok-plain"}},
 	}
 	for _, tc := range cases {
 		got := ids(LogFilter{Status: tc.status})

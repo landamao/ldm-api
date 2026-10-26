@@ -22,8 +22,13 @@
 
   // 失败判定：上游错误透传时 error 为空，但 client_error 仍有内容，
   // 状态码 >= 400 或客户端取消也属于失败。成功记录不提供错误弹窗入口。
-  const logOK = (l) => !l.canceled && l.status_code > 0 && l.status_code < 400
-    && !l.error && !l.client_error;
+  // 「覆写为正文」的记录调用方实际收到 200 正常回复，按成功算（黄色 200 标识），
+  // 内部原因仍可从详情里看到。
+  const logOK = (l) => l.as_content === true
+    || (!l.canceled && l.status_code > 0 && l.status_code < 400 && !l.error && !l.client_error);
+
+  // 黄色标识：客户端取消与错误覆写「覆写为正文」都是 200 但需要提示的记录。
+  const logSoft = (l) => l.canceled || l.as_content;
 
   // 模型亲和标记：橙色四角星叠在模型徽章右上角，样式对齐 NewAPI 的渠道亲和标。
   const AFFINITY_STAR = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M10.9 2.4l1.9 5.3a2.6 2.6 0 001.5 1.5l5.3 1.9-5.3 1.9a2.6 2.6 0 00-1.5 1.5l-1.9 5.3-1.9-5.3a2.6 2.6 0 00-1.5-1.5L2.2 11.1l5.3-1.9a2.6 2.6 0 001.5-1.5z"/><path d="M19 2l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z"/></svg>`;
@@ -35,9 +40,11 @@
   // 错误详情弹窗：顶部概要只放请求模型、渠道模型、渠道和状态码，
   // 下面分成「错误详情」和「内部原因」两个独立块。错误详情是调用方实际
   // 收到的内容，内部原因只给后台排查。
+  // 黄色 200 的记录（客户端取消 / 错误覆写「覆写为正文」）也走这个弹窗，
+  // 前者没有响应体、后者正文是配置文案，内部原因里才是真正发生了什么。
   function showLogError(l) {
     const status = l.status_code > 0 ? String(l.status_code) : '—';
-    const statusTone = l.canceled ? 'amber' : 'red';
+    const statusTone = logSoft(l) ? 'amber' : 'red';
     const channelModel = l.channel_id
       ? `${l.channel_id}/${l.upstream_model || '—'}`
       : '—';
@@ -67,7 +74,7 @@
           ${summary.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}
         </dl>
         <div class="log-error__section">
-          <div class="log-error__label">错误详情</div>
+          <div class="log-error__label">${l.as_content ? '返回给调用方的正文' : '错误详情'}</div>
           ${block(l.client_error, statusTone)}
         </div>
         <div class="log-error__section">
@@ -343,7 +350,7 @@
                   <td>${l.channel_id ? `<span class="code">${esc(l.channel_id)}</span>` : '<span class="muted">—</span>'}</td>
                   <td class="right num">${esc(fmtDuration(l.latency_ms))}</td>
                   <td class="right num" title="${fmtInt(l.total_tokens)}">${fmtDash(l.total_tokens)}${l.usage_estimate ? ' <span class="muted fs-12">(估算)</span>' : ''}</td>
-                  <td>${l.canceled
+                  <td>${logSoft(l)
                     ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
                     : (logOK(l)
                       ? '<span class="badge badge--green">成功</span>'
@@ -4079,7 +4086,7 @@
               <td class="right num">${esc(fmtDuration(l.latency_ms))}
                 ${l.first_byte_ms ? `<div class="muted fs-12">首字 ${esc(fmtDuration(l.first_byte_ms))}</div>` : ''}
                 <div class="muted fs-12">总token ${tok(l.total_tokens)}</div></td>
-              <td>${l.canceled
+              <td>${logSoft(l)
                 ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
                 : (logOK(l)
                   ? '<span class="badge badge--green">成功</span>'

@@ -450,6 +450,20 @@ type Log struct {
 	TokensPerSec float64 `json:"tokens_per_sec,omitempty"`
 	// Canceled 表示客户端主动断开（在线聊天点「停止」等），不计入错误统计。
 	Canceled bool `json:"canceled,omitempty"`
+	// AsContent 表示这次响应是错误覆写里的「覆写为正文」：调用方收到的是
+	// 200 正常回复，日志按成功记录（前端显示黄色 200），Error 仍保留内部原因。
+	AsContent bool `json:"as_content,omitempty"`
+}
+
+// Failed 是日志的失败判定，日志筛选、统计与模型成功率共用同一口径：
+// 状态码 >= 400，或响应中途出错（如流式断开）。
+// 客户端主动断开、错误覆写「覆写为正文」都是调用方已经正常拿到 200 响应的
+// 记录，不算失败。
+func (l Log) Failed() bool {
+	if l.Canceled || l.AsContent {
+		return false
+	}
+	return l.StatusCode >= 400 || l.Error != ""
 }
 
 // LogFacet 是日志筛选下拉里的一个取值及它在区间内的出现次数。

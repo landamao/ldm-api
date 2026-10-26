@@ -1091,6 +1091,7 @@
 
   // ---------- 获取模型列表弹窗 ----------
   // 用标签页切换「获取到的模型」和「上游不存在的模型」。
+  // 默认只勾选渠道中已添加的模型（上游新拉到的默认不勾），需要批量添加时用「全选」。
   // 两边都可以勾选/取消，确认后以勾选结果为准：取消勾选已添加的模型即从列表中移除。
   // 模型按名称自动匹配提供商分组，支持展开/折叠。
   async function openFetchedModelsPicker(cfg) {
@@ -1106,8 +1107,9 @@
     const providerByID = {};
     providers.forEach((p) => { providerByID[p.id] = p; });
 
+    // 默认只勾选渠道里已有的模型，上游新拉到的模型默认不勾，避免一次把全部模型都加进渠道。
     const itemHtml = (m, isOld) => `<label class="pick-item" data-search="${esc(m.toLowerCase())}">
-        <input type="checkbox" data-model="${esc(m)}" checked>
+        <input type="checkbox" data-model="${esc(m)}"${beforeSet.has(m) ? ' checked' : ''}>
         <span class="pick-item__name">${esc(m)}</span>
         <span class="pick-item__meta">${isOld ? badge('已添加', 'green') : ''}</span>
       </label>`;
@@ -1189,7 +1191,7 @@
 
     openModal({
       title: '获取模型列表',
-      desc: `上游返回 ${models.length} 个模型，已按提供商自动分组。勾选要加入或保留的模型；取消勾选已添加的模型会在确认后移除。手工填写但上游未返回的模型在「上游不存在的模型」标签页中。`,
+      desc: `上游返回 ${models.length} 个模型，已按提供商自动分组。默认只勾选渠道中已添加的模型，其余需要时用「全选」批量勾选；取消勾选已添加的模型会在确认后移除。手工填写但上游未返回的模型在「上游不存在的模型」标签页中。`,
       body,
       size: 'lg',
       footer: `<div class="spacer"></div>
