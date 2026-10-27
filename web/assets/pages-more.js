@@ -4096,7 +4096,7 @@
                 : (logOK(l)
                   ? '<span class="badge badge--green">成功</span>'
                   : `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || '失败')}</button>`)}</td>
-              <td class="muted fs-12 mono">${esc(l.ip || '—')}</td>
+              <td class="text-strong fs-12 mono">${esc(l.ip || '—')}</td>
             </tr>`).join('')}</tbody>
           </table>
         </div>`;
