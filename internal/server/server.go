@@ -63,7 +63,7 @@ func (s *Server) Handler() http.Handler {
 
 	// ---- 渠道 ----
 	mux.HandleFunc("GET /api/channels", s.admin(s.listChannels))
-	mux.HandleFunc("POST /api/channels", s.admin(s.saveChannel))
+	mux.HandleFunc("POST /api/channels", s.admin(s.createChannel))
 	mux.HandleFunc("PUT /api/channels/{id}", s.admin(s.saveChannel))
 	mux.HandleFunc("DELETE /api/channels/{id}", s.admin(s.deleteChannel))
 	mux.HandleFunc("GET /api/channels/{id}/refs", s.admin(s.listChannelRefs))

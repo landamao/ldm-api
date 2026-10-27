@@ -141,6 +141,21 @@ func (s *Store) SaveChannel(c Channel) error {
 	})
 }
 
+// CreateChannel 只在 ID 未被占用时写入，已存在时返回 ErrConflict。
+// 新建渠道走这里而不是 SaveChannel：后者是 upsert，会把同名渠道整条覆盖掉。
+// 存在性检查和写入在同一个写事务里完成，并发创建同一个 ID 也只有一个能成功。
+func (s *Store) CreateChannel(c Channel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bChannels)
+		if b.Get([]byte(c.ID)) != nil {
+			return ErrConflict
+		}
+		return put(b, c.ID, c)
+	})
+}
+
 func (s *Store) DeleteChannel(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

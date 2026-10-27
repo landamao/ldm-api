@@ -1792,7 +1792,11 @@
           saveBtn.disabled = true;
           saveBtn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';
           try {
-            const res = await API.put('/api/channels/' + encodeURIComponent(id), payload);
+            // 新建走 POST：后端只创建、不覆盖，ID 已存在时返回 409 让用户改 ID；
+            // 编辑走 PUT，只更新这条渠道自己的配置。
+            const res = isNew
+              ? await API.post('/api/channels', payload)
+              : await API.put('/api/channels/' + encodeURIComponent(id), payload);
             // 新建渠道时把本次的展开状态落到真实 ID，之后编辑同一个渠道能直接恢复。
             if (isNew) {
               try {
@@ -1816,7 +1820,7 @@
             State.invalidate('all');
             window.LDM.navigate();
           } catch (e) {
-            Toast.error(e.message, '保存失败');
+            Toast.error(e.message, isNew ? '创建失败' : '保存失败');
             saveBtn.disabled = false;
             saveBtn.textContent = isNew ? '创建渠道' : '保存修改';
           }

@@ -177,26 +177,64 @@ type channelRequest struct {
 	Remark            *string            `json:"remark"`
 }
 
+// saveChannel 处理 PUT /api/channels/{id}：保存已有渠道的配置。
+// 为了兼容旧前端与外部脚本，目标 ID 不存在时仍按新建处理。
 func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
+	s.saveChannelWith(w, r, false)
+}
+
+// createChannel 处理 POST /api/channels：只新建渠道。
+// 它刻意不是 upsert —— 表单里填了一个已存在的 ID 时直接拒绝（409），
+// 不能像以前那样把同名渠道的接口地址、密钥、模型整条覆盖掉。
+func (s *Server) createChannel(w http.ResponseWriter, r *http.Request) {
+	s.saveChannelWith(w, r, true)
+}
+
+// channelIDTaken 是创建渠道时 ID 已被占用的统一提示。
+func channelIDTaken(id string) string {
+	return "渠道 ID “" + id + "” 已存在，请换一个 ID"
+}
+
+func (s *Server) saveChannelWith(w http.ResponseWriter, r *http.Request, create bool) {
 	var req channelRequest
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	id := strings.TrimSpace(req.ID)
+	// 编辑时以路径里的 ID 为准：渠道 ID 创建后不可修改，
+	// 请求体里带了不同的 ID 时直接拒绝，避免借一次保存覆盖到另一条渠道。
+	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
-		id = strings.TrimSpace(r.PathValue("id"))
+		id = strings.TrimSpace(req.ID)
+	} else if bodyID := strings.TrimSpace(req.ID); bodyID != "" && bodyID != id {
+		writeErr(w, http.StatusBadRequest, "渠道 ID 创建后不可修改")
+		return
 	}
 	if err := validateChannelID(id); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	existing, err := s.store.GetChannel(id)
-	isNew := errors.Is(err, store.ErrNotFound)
-	if err != nil && !isNew {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
+	var existing store.Channel
+	var err error
+	isNew := create
+	if create {
+		// 先读一次给出明确提示；真正的防覆盖由 CreateChannel 的写事务兜住
+		// （两次请求同时创建同一个 ID 时，只有一个能写进去）。
+		if _, err := s.store.GetChannel(id); err == nil {
+			writeErr(w, http.StatusConflict, channelIDTaken(id))
+			return
+		} else if !errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	} else {
+		existing, err = s.store.GetChannel(id)
+		isNew = errors.Is(err, store.ErrNotFound)
+		if err != nil && !isNew {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 
 	ch := existing
@@ -333,7 +371,16 @@ func (s *Server) saveChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	ch.UpdatedAt = time.Now().UnixMilli()
 
-	if err := s.store.SaveChannel(ch); err != nil {
+	if create {
+		err = s.store.CreateChannel(ch)
+		if errors.Is(err, store.ErrConflict) {
+			writeErr(w, http.StatusConflict, channelIDTaken(id))
+			return
+		}
+	} else {
+		err = s.store.SaveChannel(ch)
+	}
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

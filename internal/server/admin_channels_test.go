@@ -160,3 +160,57 @@ func TestTestChannelModelRequest(t *testing.T) {
 		t.Errorf("单 Key 渠道应直接用保存的 Key: %+v", hits[0])
 	}
 }
+
+// 新建渠道（POST）只创建、不覆盖：ID 已被占用时返回 409，
+// 已有渠道的名称、接口地址、密钥和模型都必须保持原样。
+func TestCreateChannelRejectsDuplicateID(t *testing.T) {
+	s, st := newTestServer(t, "channel-create-dup")
+	create := func(payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/channels", strings.NewReader(payload))
+		rec := httptest.NewRecorder()
+		s.createChannel(rec, req)
+		return rec
+	}
+
+	first := create(`{"id":"c","name":"原有渠道","type":"openai","base_url":"https://old.example.com",
+		"key_rows":[{"key":"sk-old-key-123456"}],"models":["m1"]}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("首次创建失败 %d: %s", first.Code, first.Body.String())
+	}
+
+	dup := create(`{"id":"c","name":"覆盖渠道","type":"openai","base_url":"https://new.example.com",
+		"key_rows":[{"key":"sk-new-key-123456"}],"models":["m2"]}`)
+	if dup.Code != http.StatusConflict {
+		t.Fatalf("重复 ID 应返回 409，实际 %d: %s", dup.Code, dup.Body.String())
+	}
+	if !strings.Contains(dup.Body.String(), "已存在") {
+		t.Errorf("冲突提示应说明 ID 已存在: %s", dup.Body.String())
+	}
+
+	ch, err := st.GetChannel("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Name != "原有渠道" || ch.BaseURL != "https://old.example.com" {
+		t.Errorf("已有渠道的名称/地址被覆盖: %+v", ch)
+	}
+	if ch.APIKey != "sk-old-key-123456" {
+		t.Errorf("已有渠道的 Key 被覆盖: %q", ch.APIKey)
+	}
+	if len(ch.Models) != 1 || ch.Models[0] != "m1" {
+		t.Errorf("已有渠道的模型被覆盖: %v", ch.Models)
+	}
+
+	// 编辑同一个渠道仍然正常（PUT 走更新，不会因为「已存在」被拦）。
+	req := httptest.NewRequest(http.MethodPut, "/api/channels/c", strings.NewReader(`{"name":"改名后"}`))
+	req.SetPathValue("id", "c")
+	rec := httptest.NewRecorder()
+	s.saveChannel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("编辑已有渠道失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	if updated, err := st.GetChannel("c"); err != nil || updated.Name != "改名后" {
+		t.Errorf("编辑未生效: %+v %v", updated, err)
+	}
+}

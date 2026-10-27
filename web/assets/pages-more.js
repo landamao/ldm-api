@@ -3671,7 +3671,8 @@
   const logUnit = { on: true };
   try { logUnit.on = localStorage.getItem(LOG_UNIT_KEY) !== '0'; } catch (e) { /* 存储不可用时默认开启 */ }
 
-  // 时间筛选预设。默认「今日 00:00 → 现在」，和看板的自然日口径一致。
+  // 时间筛选预设。默认「今日 00:00 → 不限」，和看板的自然日口径一致；
+  // 结束时间一律留空，靠后端“不传 end = 不限”保证切回页面时总能看到最新日志。
   const LOG_RANGES = [
     { key: 'today', label: '今日' },
     { key: 'yesterday', label: '昨日' },
@@ -3692,20 +3693,23 @@
     const d = new Date(Number(ms));
     return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   };
-  // start / end 为 0 表示该端不限时间
+  // start / end 为 0 表示该端不限时间。
+  // 今日 / 近 7 天 / 近 30 天的 end 一律留空：若写死成点击那一刻的时间戳，
+  // 之后产生的日志就会被挡在区间外，切回页面时看不到最新记录。
   function rangeOfPreset(key) {
-    if (key === 'today') return { start: startOfToday(0), end: Date.now() };
+    if (key === 'today') return { start: startOfToday(0), end: 0 };
     if (key === 'yesterday') return { start: startOfToday(1), end: startOfToday(0) };
-    if (key === '7d') return { start: startOfToday(6), end: Date.now() };
-    if (key === '30d') return { start: startOfToday(29), end: Date.now() };
+    if (key === '7d') return { start: startOfToday(6), end: 0 };
+    if (key === '30d') return { start: startOfToday(29), end: 0 };
     if (key === 'all') return { start: 0, end: 0 };
     return null;
   }
 
   // 上一次「查询」真正生效的筛选条件；未点查询前下拉和时间的改动都只是草稿。
+  // end 默认 0（空），表示不限结束时间，永远包含最新日志。
   const logState = {
     limit: 30, offset: 0, status: '', model: '', channel: '', token: '',
-    start: startOfToday(0), end: Date.now(), preset: 'today',
+    start: startOfToday(0), end: 0, preset: 'today',
   };
 
   window.LDM.registerPage('logs', {
@@ -3765,6 +3769,7 @@
             <span class="log-range-end">
               <span class="muted fs-12">至</span>
               <input class="input log-time" id="f-end" type="datetime-local" aria-label="结束时间"
+                     title="留空表示不限结束时间，始终显示到最新一条"
                      value="${toLocalInput(logState.end)}" style="width:auto;min-width:168px">
             </span>
             <button class="btn btn--primary btn--sm" id="btn-query" title="按当前筛选条件查询">${icon('search', 13)}查询</button>
