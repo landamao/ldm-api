@@ -1109,6 +1109,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	}
 	// 非流式：timeout 是整次请求（含读完响应体）的截止时间。
 	// 流式：timeout 只限制到收到首块数据为止，首块到达后不再限时。
+	// 强制流式的非流式请求同样按首字计时——这正是它存在的意义。
 	// deadline 无法延长，所以用定时器 + cancel 实现，流式拿到首块后停表。
 	reqCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1119,6 +1120,13 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	})
 	defer timer.Stop()
 
+	// 强制流式：对话类端点开启后，即使调用方要非流式也按流式请求上游。
+	// 这样超时只约束首字，上游迟迟不吐字时能快速失败并切到下一条路由；
+	// 拿到内容后由网关自己收完，再按调用方要的形态返回。
+	forceStream := !req.Stream && resolved.Model.ForceStreamOn() &&
+		isChatPath(req.Path) && !prov.RawBody && req.JSON != nil
+	upstreamStream := req.Stream || forceStream
+
 	body := req.Body
 	sendContentType := ""
 	convertBody := !prov.RawBody && req.JSON != nil && isChatPath(req.Path)
@@ -1126,7 +1134,13 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	case convertBody:
 		// 能力参数已经在 Do 里统一校验/清理过，这里传空 Caps
 		// 让协议转换只做格式映射，避免重复裁剪。
-		converted := prov.BuildBody(req.JSON, route.Upstream, store.Caps{})
+		in := req.JSON
+		if forceStream {
+			// 复制一份再打开 stream，不能改调用方的原始请求体：
+			// 同一次请求可能在多条路由之间重试。
+			in = withStream(in)
+		}
+		converted := prov.BuildBody(in, route.Upstream, store.Caps{})
 		body = mustJSON(converted)
 		sendContentType = "application/json"
 	case req.JSON != nil:
@@ -1162,7 +1176,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	}
 	upPath := req.Path
 	if convertBody || isChatPath(req.Path) {
-		upPath = prov.UpstreamPath(req.Path, route.Upstream, req.Stream)
+		upPath = prov.UpstreamPath(req.Path, route.Upstream, upstreamStream)
 	}
 	target := upstream.JoinURL(base, upPath, route.Channel.ShouldAppendV1())
 
@@ -1274,6 +1288,19 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 			wrote: true, reasoning: reasoning}
 	}
 
+	var st upstream.Stream = prov.NewStream(modelOf(req))
+	// 思考覆写：包装流式翻译器，改写发给客户端的思考增量。
+	if override, ok := reasoningOverrideOf(resolved.Model); ok {
+		st = newReasoningOverrideStream(st, override.text)
+	}
+
+	// 调用方要的是非流式，上游却回了 SSE：可能是强制流式，也可能是上游
+	// 自己选择了流式。此时一个字节都还没写给客户端，由网关把整条流收完、
+	// 聚合成完整响应再返回；中途失败仍能像普通非流式请求一样换下一条路由。
+	if !req.Stream && isChatPath(req.Path) {
+		return collectStream(ctx, w, req, resp, st, timer, &timedOut, started)
+	}
+
 	// 流式：一旦开始写响应就不能再重试了
 	flusher, _ := w.(http.Flusher)
 	h := w.Header()
@@ -1286,11 +1313,6 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		flusher.Flush()
 	}
 
-	var st upstream.Stream = prov.NewStream(modelOf(req))
-	// 思考覆写：包装流式翻译器，改写发给客户端的思考增量。
-	if override, ok := reasoningOverrideOf(resolved.Model); ok {
-		st = newReasoningOverrideStream(st, override.text)
-	}
 	// 输出的实际时间窗口：速度按首块到末块的间隔算。上游把整段响应
 	// 一次性吐完（缓存命中、上游侧做了缓冲、假模型）时窗口接近 0，
 	// 不能拿它当分母，否则会算出几万 t/s 这种没有意义的速度。
@@ -1322,6 +1344,17 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	var pending []byte
 	reader := resp.Body
 	firstChunk := false
+	// 首字按「第一段真正的内容」计：上游可能先发响应头、只带 role 的空块
+	// 或心跳，这时调用方还没看到任何字。拿到内容块后再把首字改成真实值。
+	firstContent := false
+	translate := func(line []byte) []byte {
+		out := st.Translate(line)
+		if len(out) > 0 && !firstContent && upstream.HasVisibleDelta(out) {
+			firstContent = true
+			firstByte = time.Since(started).Milliseconds()
+		}
+		return out
+	}
 	for {
 		n, rerr := reader.Read(tmp)
 		if n > 0 {
@@ -1338,7 +1371,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				}
 				line := pending[:idx]
 				pending = pending[idx+1:]
-				if out := st.Translate(line); len(out) > 0 {
+				if out := translate(line); len(out) > 0 {
 					buf = append(buf, out...)
 					if len(buf) > 4096 {
 						writeOut(buf)
@@ -1387,7 +1420,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		}
 	}
 	if len(pending) > 0 {
-		if out := st.Translate(pending); len(out) > 0 {
+		if out := translate(pending); len(out) > 0 {
 			writeOut(out)
 		}
 	}

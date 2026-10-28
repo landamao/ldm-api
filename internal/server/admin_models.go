@@ -93,6 +93,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		contentEnabled := m.CustomContentEnabled()
 		thinkingOverrideOn := m.ThinkingOverrideEnabled()
 		systemPromptOn := m.SystemPromptEnabled()
+		forceStream := m.ForceStreamOn()
 		v.ErrorEnabled = &errorEnabled
 		v.ErrorAlways = &errorAlways
 		v.ErrorAsContent = &errorAsContent
@@ -100,6 +101,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		v.ContentEnabled = &contentEnabled
 		v.ThinkingOverrideOn = &thinkingOverrideOn
 		v.SystemPromptOn = &systemPromptOn
+		v.ForceStream = &forceStream
 		if p, ok := providerByID[m.ProviderID]; ok {
 			v.ProviderName = p.Name
 			v.ProviderIcon = p.Icon
@@ -251,6 +253,7 @@ type modelRequest struct {
 	SystemPromptOn       *bool          `json:"system_prompt_enabled"`
 	SystemPrompt         *string        `json:"system_prompt"`
 	Timeout              *int           `json:"timeout"`
+	ForceStream          *bool          `json:"force_stream"`
 }
 
 func (s *Server) clearModelCooldowns(w http.ResponseWriter, r *http.Request) {
@@ -596,6 +599,12 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 		if m.Timeout < 0 {
 			m.Timeout = 0
 		}
+	}
+	// 强制流式：开启后对话类请求都用流式请求上游，超时按首字计算。
+	// 关闭时保留配置语义，显式 false 也存下来，便于与旧数据（nil）区分。
+	if req.ForceStream != nil {
+		v := *req.ForceStream
+		m.ForceStream = &v
 	}
 	if req.DisplayName != nil {
 		m.DisplayName = strings.TrimSpace(*req.DisplayName)

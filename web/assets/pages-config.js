@@ -52,6 +52,13 @@
     <div style="margin-bottom:8px"><b>填写内容</b>：模型输出思考时，客户端只会看到这里填写的内容（例如「正在思考···」），上游真实的思考内容不会发给客户端。</div>
     <div style="margin-bottom:8px"><b>留空</b>：直接隐藏思考内容，响应里不再出现思考字段，客户端会一直等待到正文开始输出。</div>
     <div><b>优先级</b>：自定义内容返回优先级最高，开启后思考覆写不生效，关闭内容返回后自动恢复。配合能力参数里的「思考 → 不支持、关闭报错」时，请求里的思考参数和历史思考内容会先被移除，上下文里不会留下思考内容。</div>`;
+  const FORCE_STREAM_HELP_TEXT = '开启后对话类请求一律以流式请求上游：客户端要流式时正常透传，客户端要非流式时由网关流式收完再按非流式返回。这样超时时间按「首字超时」生效，上游迟迟不吐字就能快速失败并切到下一条路由。';
+  const FORCE_STREAM_HELP_HTML = `
+    <div style="margin-bottom:8px"><b>为什么需要它</b>：有些上游思考很久才吐字，非流式请求无法区分「在思考」和「卡住不动」，只能等整次超时；改成流式后，只要首字没到就可以判定这条路由不可用。</div>
+    <div style="margin-bottom:8px"><b>客户端要流式</b>：行为不变，按 SSE 逐块透传。</div>
+    <div style="margin-bottom:8px"><b>客户端要非流式</b>：网关仍然以 <code>stream: true</code> 请求上游，自己把整条流收完、聚合成完整响应（正文、思考内容、工具调用、用量都在），再按非流式返回给客户端。</div>
+    <div style="margin-bottom:8px"><b>超时怎么算</b>：开启后，非流式调用也按「首字超时」计算——首块数据到达后不再限时。超时时间内没有首字即判定这条路由失败，自动换下一条路由 / 下一个 Key。</div>
+    <div>只对对话类端点（对话、补全、Messages）生效；图片、语音、嵌入等端点保持原样。上游忽略 <code>stream</code> 直接返回完整 JSON 时，按普通非流式响应原样透传。</div>`;
 
   // 模型编辑弹窗里的字段说明同样收进问号，避免弹窗被大段文字占满。
   const CAPS_HELP_TEXT = '工具调用 / 思考 / 图片输入支持「不设置 / 支持 / 不支持」；选择不支持时可决定报错还是自动移除。';
@@ -2509,7 +2516,9 @@
       <td>${isCustom
         ? badge('自定义', 'pink')
         : badge('渠道', 'blue')}
-        ${isCustom && stratLabel ? `<div style="margin-top:4px">${badge(stratLabel + '路由', 'gray')}${m.affinity ? ' ' + badge('亲和', 'gray') : ''}</div>` : ''}
+        ${isCustom && stratLabel
+          ? `<div style="margin-top:4px">${badge(stratLabel + '路由', 'gray')}${m.affinity ? ' ' + badge('亲和', 'gray') : ''}${m.force_stream ? ' ' + badge('强制流式', 'gray') : ''}</div>`
+          : (m.force_stream ? `<div style="margin-top:4px">${badge('强制流式', 'gray')}</div>` : '')}
       </td>
       <td>${provider
         ? `<span class="provider-tag">${providerIcon(provider.icon, 15)}${esc(provider.name)}</span>`
@@ -3354,11 +3363,21 @@
       <div class="field">
         <label class="field__label">超时时间（秒）</label>
         <input class="input" id="m-timeout" type="number" min="1" value="${esc(m.timeout || 300)}">
-        <div class="field__hint">非流式限制整次请求；流式只限制首字，首字到达后不再限时。</div>
+        <div class="field__hint">非流式限制整次请求；流式只限制首字，首字到达后不再限时。开启「强制流式请求」后，非流式调用也按首字超时计算。</div>
       </div>
       <details class="mt-16 advanced-settings">
         <summary style="cursor:pointer;font-size:12.5px;font-weight:620;color:var(--text-2)">高级设置</summary>
         <div class="mt-12">
+          <div class="field">
+            <div class="field__head">
+              <label class="field__label">强制流式请求
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="m-forcestream-help" title="${esc(FORCE_STREAM_HELP_TEXT)}" aria-label="查看强制流式请求机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="m-forcestream" ${m.force_stream ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div class="field__hint">开启后对话请求都用流式请求上游：客户端要流式时正常透传，非流式时由网关收完再按非流式返回。超时时间因此按「首字超时」生效。</div>
+          </div>
           <div class="field">
             <div class="field__head">
               <label class="field__label">不可重试状态码
@@ -3564,6 +3583,9 @@
         mo.body.querySelector('#m-thinkoverride-help').onclick = () => {
           openHelpModal('思考覆写', THINKING_OVERRIDE_HELP_HTML);
         };
+        mo.body.querySelector('#m-forcestream-help').onclick = () => {
+          openHelpModal('强制流式请求', FORCE_STREAM_HELP_HTML);
+        };
         mo.body.querySelector('#m-no-retry-template').onclick = () => {
           const input = mo.body.querySelector('#m-no-retry');
           input.value = DEFAULT_NO_RETRY_STATUS;
@@ -3624,6 +3646,7 @@
               enabled: mo.body.querySelector('#m-enabled').checked,
               description: mo.body.querySelector('#m-desc').value.trim(),
               timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#m-timeout').value) || 300)),
+              force_stream: mo.body.querySelector('#m-forcestream').checked,
               no_retry_status: mo.body.querySelector('#m-no-retry').value.trim(),
               content_enabled: contentEnabled,
               content_text: contentText,
@@ -3919,6 +3942,7 @@
     const m = existing || {
       id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
       caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
+      force_stream: false,
       no_retry_status: '', content_enabled: false, content_text: '',
       thinking_override_enabled: false, thinking_override_text: '',
       error_enabled: false, error_always: false, error_as_content: false, error_status: 0, error_message: '',
@@ -3986,12 +4010,22 @@
       <div class="field">
         <label class="field__label">超时时间（秒）</label>
         <input class="input" id="cm-timeout" type="number" min="1" value="${esc(m.timeout || 300)}">
-        <div class="field__hint">非流式限制整次请求；流式只限制首字，首字到达后不再限时。</div>
+        <div class="field__hint">非流式限制整次请求；流式只限制首字，首字到达后不再限时。开启「强制流式请求」后，非流式调用也按首字超时计算。</div>
       </div>
 
       <details class="mt-16 advanced-settings">
         <summary style="cursor:pointer;font-size:12.5px;font-weight:620;color:var(--text-2)">高级设置</summary>
         <div class="mt-12">
+          <div class="field">
+            <div class="field__head">
+              <label class="field__label">强制流式请求
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="cm-forcestream-help" title="${esc(FORCE_STREAM_HELP_TEXT)}" aria-label="查看强制流式请求机制">?</button>
+              </label>
+              <label class="switch"><input type="checkbox" id="cm-forcestream" ${m.force_stream ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+            </div>
+            <div class="field__hint">开启后对话请求都用流式请求上游：客户端要流式时正常透传，非流式时由网关收完再按非流式返回。超时时间因此按「首字超时」生效，慢上游不吐字就快速切下一条路由。</div>
+          </div>
           <div class="field">
             <div class="field__head">
               <label class="field__label">不可重试状态码
@@ -4219,6 +4253,9 @@
         };
         mo.body.querySelector('#cm-thinkoverride-help').onclick = () => {
           openHelpModal('思考覆写', THINKING_OVERRIDE_HELP_HTML);
+        };
+        mo.body.querySelector('#cm-forcestream-help').onclick = () => {
+          openHelpModal('强制流式请求', FORCE_STREAM_HELP_HTML);
         };
         mo.body.querySelector('#cm-no-retry-template').onclick = () => {
           const input = mo.body.querySelector('#cm-no-retry');
@@ -5085,6 +5122,7 @@
             system_prompt_enabled: systemPromptOn,
             system_prompt: systemPrompt,
             timeout: Math.max(1, Math.round(Number(mo.body.querySelector('#cm-timeout').value) || 300)),
+            force_stream: mo.body.querySelector('#cm-forcestream').checked,
             caps,
             enabled: mo.body.querySelector('#cm-enabled').checked,
             description: mo.body.querySelector('#cm-desc').value.trim(),

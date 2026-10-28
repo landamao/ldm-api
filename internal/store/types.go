@@ -245,7 +245,15 @@ type Model struct {
 
 	// Timeout 是模型级超时（秒），0 表示默认 300。
 	// 非流式为整次请求超时，流式为首字超时（首块数据到达后不再限时）。
+	// 开启 ForceStream 后，非流式调用也按首字超时计算。
 	Timeout int `json:"timeout,omitempty"`
+
+	// ForceStream 开启后，对话类请求一律以流式请求上游：
+	// 客户端要流式时正常透传，客户端要非流式时由网关流式读完、聚合成
+	// 完整响应再按非流式返回。某些上游思考很久才吐字，非流式无法区分
+	// 「在思考」和「卡住不动」，改成流式后超时只需约束首字，
+	// 迟迟不吐字就能快速失败并切换到下一条路由。
+	ForceStream *bool `json:"force_stream,omitempty"`
 
 	// NoRetryStatus 是不可重试的上游状态码规则，支持单个状态码和区间，
 	// 例如 "400-430,500"。命中后直接返回上游错误，不再尝试其它路由，
@@ -360,6 +368,11 @@ func (m Model) ThinkingOverrideEnabled() bool {
 // SystemPromptEnabled 返回系统提示词注入总开关。
 func (m Model) SystemPromptEnabled() bool {
 	return m.SystemPromptOn != nil && *m.SystemPromptOn
+}
+
+// ForceStreamOn 返回是否强制以流式请求上游。
+func (m Model) ForceStreamOn() bool {
+	return m.ForceStream != nil && *m.ForceStream
 }
 
 // Token 调用方使用的 API Key。

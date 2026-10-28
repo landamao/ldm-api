@@ -21,6 +21,8 @@ import (
 
 func intp(v int) *int { return &v }
 
+func boolp(v bool) *bool { return &v }
+
 func TestPasswordHashAndVerify(t *testing.T) {
 	salt := randomHex(16)
 	h1 := hashPassword("hunter2", salt)
@@ -1638,6 +1640,7 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 		DisplayName: "路由模型", Description: "自定义描述", Tags: []string{"tag-b"},
 		Caps:     store.Caps{MaxOutput: &ctx},
 		Affinity: true, CooldownSec: intp(120), CooldownReset: true, Timeout: 60,
+		ForceStream: boolp(true),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1697,11 +1700,15 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	if m.Timeout != 60 {
 		t.Errorf("自定义模型的超时时间被清空: %+v", m)
 	}
+	if !m.ForceStreamOn() {
+		t.Errorf("自定义模型的强制流式开关被清空: %+v", m)
+	}
 
 	// 显式提交空值仍然可以清空，保证编辑表单能正常保存。
 	put("router", map[string]any{
 		"description": "", "tags": []string{}, "caps": map[string]any{}, "routes": []map[string]any{},
 		"affinity": false, "cooldown_sec": 0, "cooldown_reset": false, "timeout": 0,
+		"force_stream": false,
 	})
 	m, err = st.GetModel("router")
 	if err != nil {
@@ -1718,6 +1725,9 @@ func TestModelPartialUpdateKeepsConfig(t *testing.T) {
 	}
 	if m.Timeout != 0 {
 		t.Errorf("显式 timeout=0 应恢复默认: %+v", m)
+	}
+	if m.ForceStream == nil || *m.ForceStream {
+		t.Errorf("显式 force_stream=false 应关闭开关: %+v", m)
 	}
 }
 
