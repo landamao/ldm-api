@@ -807,9 +807,15 @@
   // ---------- 渠道测试弹窗 ----------
   // 顶部测「获取模型列表」接口，下面逐个测渠道配置的模型；
   // 多 Key 渠道可以选择本次测试用哪个 Key（或全部逐个尝试）。
-  function openChannelTestDialog(ch) {
+  // 每行还有「移除」按钮：测出失败或延迟高的模型可以当场从渠道里删掉，
+  // 只提交 models 字段，其余配置由后端保持不变。
+  function openChannelTestDialog(ch, opts = {}) {
     const keyRows = ch.key_rows || [];
     const models = ch.models || [];
+    let removedAny = false;
+    // 当前这轮「测试选中」的取消句柄：停止按钮和关闭弹窗都直接 abort，
+    // 不用等正在进行的那几个请求自己超时返回。
+    let batchAbort = null;
     const truncate = (s, n) => (s && s.length > n ? s.slice(0, n) + '…' : s || '');
 
     const PENDING = '<span class="muted fs-12">未测试</span>';
@@ -827,6 +833,7 @@
         <span class="code ct-row__name" title="${esc(m)}">${esc(m)}</span>
         <span class="ct-row__res" data-res>${PENDING}</span>
         <button class="btn btn--sm" data-tbtn title="测试该模型" aria-label="测试 ${esc(m)}">${icon('zap', 12)}测试</button>
+        <button class="btn btn--sm btn--icon ct-row__del" data-dbtn title="从渠道移除该模型" aria-label="从渠道移除 ${esc(m)}">${icon('trash', 13)}</button>
       </div>`;
 
     openModal({
@@ -875,6 +882,17 @@
             : '<div class="muted fs-13 ct-empty">该渠道还没有配置模型。</div>'}
         </div>`,
       footer: '<div class="spacer"></div><button class="btn" data-close>关闭</button>',
+      onClose() {
+        // 关窗时把还在跑的批量测试一并中断，不让连接白白挂着
+        if (batchAbort) {
+          batchAbort.abort();
+          batchAbort = null;
+        }
+        if (!removedAny) return;
+        // 渠道模型已经被改过：关掉弹窗后刷新列表，避免还显示旧的模型和数量。
+        State.invalidate('all');
+        window.LDM.navigate();
+      },
       onMount(mo) {
         const keySel = mo.body.querySelector('#ct-key');
         // 多 Key 模式开启时默认全部尝试；关闭时默认第一个，与实际调度一致
@@ -898,18 +916,26 @@
           return `<span class="badge badge--red"><span class="dot"></span>失败</span>`
             + `<span class="ct-err" title="${esc(res.message || '未知错误')}">${esc(truncate(res.message || '未知错误', 90))}</span>`;
         };
-        const callTest = async (payload) => {
+        // signal 用于「停止测试」：中断后 fetch 立刻抛 AbortError，
+        // 用 aborted 标记区分「真的失败」和「用户主动停掉」，避免误报失败结果。
+        const callTest = async (payload, signal) => {
           try {
-            const res = await API.post(`/api/channels/${encodeURIComponent(ch.id)}/test`, payload);
+            const res = await API.post(`/api/channels/${encodeURIComponent(ch.id)}/test`, payload, signal);
             return {
               ok: !!(res && res.ok),
               message: (res && res.message) || '',
               latency: (res && res.latency_ms) || 0,
               models: (res && res.models) || [],
               content: (res && res.content) || '',
+              aborted: false,
             };
           } catch (e) {
-            return { ok: false, message: e.message || '测试失败', latency: 0, models: [], content: '' };
+            const aborted = e && (e.name === 'AbortError' || e.code === 20);
+            return {
+              ok: false,
+              message: aborted ? '已停止' : (e.message || '测试失败'),
+              latency: 0, models: [], content: '', aborted,
+            };
           }
         };
 
@@ -969,7 +995,7 @@
         });
 
         // 渠道模型逐个测试
-        const rows = [];
+        let rows = [];
         mo.body.querySelectorAll('[data-mrow]').forEach((row) => {
           rows.push({
             name: row.dataset.mrow,
@@ -977,18 +1003,87 @@
             btn: row.querySelector('[data-tbtn]'),
             res: row.querySelector('[data-res]'),
             sel: row.querySelector('[data-msel]'),
+            del: row.querySelector('[data-dbtn]'),
+            removed: false,
           });
         });
-        const testOne = async (row) => {
-          if (row.btn.disabled) return;
+        const testOne = async (row, signal) => {
+          if (row.removed || row.btn.disabled) return;
           row.btn.disabled = true;
           row.res.innerHTML = RUNNING;
-          const r = await callTest(payloadFor({ model: row.name }));
+          const r = await callTest(payloadFor({ model: row.name }), signal);
           if (!alive()) return;
           row.btn.disabled = false;
-          row.res.innerHTML = resultHtml(r);
+          if (row.removed) return;
+          // 被「停止」中断的行不写失败结果，标成已停止，重新测试即可覆盖
+          row.res.innerHTML = r.aborted
+            ? '<span class="muted fs-12">已停止</span>'
+            : resultHtml(r);
         };
         rows.forEach((row) => { row.btn.onclick = () => testOne(row); });
+
+        // 从渠道里移除模型：只提交 models 字段，其余配置由后端原样保留。
+        // 模型管理里如果还有引用，保存接口会把引用带回来，再让用户决定是否一起清理。
+        const countEl = mo.body.querySelector('.ct-count');
+        const rowsEl = mo.body.querySelector('#ct-model-rows');
+        const setToolbarVisible = (on) => {
+          ['.ct-search', '.ct-switch', '#ct-sel-btn', '#ct-checkall'].forEach((sel) => {
+            const el = mo.body.querySelector(sel);
+            if (el) el.style.display = on ? '' : 'none';
+          });
+        };
+        let removing = false;
+        const removeModel = async (row) => {
+          if (removing || row.removed) return;
+          removing = true;
+          const delBtn = row.del;
+          delBtn.disabled = true;
+          delBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px"></span>';
+          let res;
+          try {
+            const next = models.filter((m) => m !== row.name);
+            res = await API.put(`/api/channels/${encodeURIComponent(ch.id)}`, { models: next });
+          } catch (e) {
+            removing = false;
+            delBtn.disabled = false;
+            delBtn.innerHTML = icon('trash', 13);
+            Toast.error(e.message, '移除失败');
+            return;
+          }
+          removing = false;
+          // 本地同步一份，连续移除多个模型时不会用旧列表把刚删掉的又写回去
+          const idx = models.indexOf(row.name);
+          if (idx >= 0) models.splice(idx, 1);
+          ch.models = models;
+          removedAny = true;
+          row.removed = true;
+          row.el.remove();
+          rows = rows.filter((r) => r !== row);
+          if (opts.onModelRemoved) opts.onModelRemoved(row.name);
+          if (!alive()) {
+            // 请求返回前用户已经关掉弹窗：onClose 来不及刷新，至少把缓存标记为失效
+            State.invalidate('all');
+            return;
+          }
+          if (countEl) countEl.textContent = String(models.length);
+          if (!rows.length) {
+            if (rowsEl) rowsEl.innerHTML = '<div class="muted fs-13 ct-empty">该渠道还没有配置模型。</div>';
+            setToolbarVisible(false);
+          }
+          syncState();
+          syncCheckall();
+          const refs = (res && res.refs) || [];
+          if (refs.length) {
+            const action = await confirmRemovedChannelRefs(ch.id, refs);
+            if (!alive()) return;
+            Toast.success(action === 'prune'
+              ? `已从渠道移除「${row.name}」，并清理了模型管理里的引用`
+              : `已从渠道移除「${row.name}」，模型管理里的引用保持不变`);
+          } else {
+            Toast.success(`已从渠道移除「${row.name}」${models.length ? `，还剩 ${models.length} 个模型` : ''}`);
+          }
+        };
+        rows.forEach((row) => { if (row.del) row.del.onclick = () => removeModel(row); });
 
         // 全选 / 搜索过滤 / 点行切换勾选。
         // 全选只作用于搜索后仍然可见的行，隐藏行的勾选状态不被打扰。
@@ -1022,8 +1117,8 @@
         });
 
         // 测试选中：默认串行逐个跑；「并发」开关打开时用 5 路池并行。
-        // 跑的过程中按钮变成「停止」样式（文字仍是测试中），点一下停掉剩下的模型；
-        // 弹窗关掉也会停。
+        // 跑的过程中按钮变成「停止」样式（文字仍是测试中），点一下立即中断正在跑的请求，
+        // 不再等单个模型 30 秒超时；弹窗关掉也会中断。
         const RUNNING_HTML = '<span class="ct-stop" aria-hidden="true"></span>测试中';
         const STOPPING_HTML = '<span class="spinner" style="width:11px;height:11px"></span>停止中';
         const selBtn = mo.body.querySelector('#ct-sel-btn');
@@ -1043,6 +1138,9 @@
             if (running) {
               if (stopRequested) return;
               stopRequested = true;
+              // 关键：立即 abort，正在进行的那几个请求马上抛出 AbortError，
+              // 串行循环 / 并发 worker 随即退出，按钮立刻恢复。
+              if (batchAbort) batchAbort.abort();
               selBtn.classList.add('is-stopping');
               selBtn.removeAttribute('title');
               selBtn.innerHTML = STOPPING_HTML;
@@ -1053,12 +1151,15 @@
             running = true;
             stopRequested = false;
             const idleHTML = selBtn.innerHTML;
+            const ctrl = new AbortController();
+            batchAbort = ctrl;
             selBtn.classList.add('is-running');
             selBtn.title = '点击停止测试';
             selBtn.innerHTML = RUNNING_HTML;
             const finish = () => {
               running = false;
               stopRequested = false;
+              if (batchAbort === ctrl) batchAbort = null;
               if (!alive()) return;
               selBtn.classList.remove('is-running', 'is-stopping');
               selBtn.removeAttribute('title');
@@ -1069,7 +1170,7 @@
             if (!concSwitch.checked) {
               for (const row of picked) {
                 if (stopped()) break;
-                await testOne(row);
+                await testOne(row, ctrl.signal);
               }
             } else {
               let next = 0;
@@ -1077,7 +1178,7 @@
                 while (!stopped()) {
                   const idx = next++;
                   if (idx >= picked.length) return;
-                  await testOne(picked[idx]);
+                  await testOne(picked[idx], ctrl.signal);
                 }
               };
               await Promise.all(Array.from({ length: Math.min(5, picked.length) }, worker));
@@ -1695,7 +1796,13 @@
               Toast.warn('请先保存渠道，再测试');
               return;
             }
-            openChannelTestDialog(data);
+            // 测试弹窗里移除的模型要同步回编辑表单，否则保存时又会被加回去。
+            openChannelTestDialog(data, {
+              onModelRemoved(name) {
+                modelsEl.value = parseModels(modelsEl.value).filter((m) => m !== name).join('\n');
+                renderPreview();
+              },
+            });
           }
         });
 

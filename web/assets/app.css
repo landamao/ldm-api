@@ -1039,6 +1039,10 @@ html[data-theme="dark"] .ldm-select[aria-expanded="true"] { background-color: rg
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12.5px;
 }
+/* 每行的移除按钮：平时低调，悬停变红；测出失败或延迟高的模型可以直接删掉 */
+.ct-row__del { flex-shrink: 0; color: var(--text-2); }
+.ct-row__del:hover { color: var(--red-500); border-color: var(--red-200); background: var(--red-50); }
+.ct-row__del:disabled { opacity: .55; cursor: default; }
 .ct-row__res {
   flex: 1; min-width: 0; min-height: 20px;
   display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;

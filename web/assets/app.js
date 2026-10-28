@@ -293,13 +293,16 @@
 
   // ---------- API ----------
   const API = {
-    async request(method, path, body) {
+    // signal 可选：调用方传入 AbortController.signal 就能中途取消请求
+    // （渠道测试弹窗的「停止」用它立即中断还在跑的探测）。
+    async request(method, path, body, signal) {
       const opts = {
         method,
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
       };
       if (body !== undefined) opts.body = JSON.stringify(body);
+      if (signal) opts.signal = signal;
       const res = await fetch(path, opts);
       let data = null;
       const text = await res.text();
@@ -316,9 +319,9 @@
       return data;
     },
     get(p) { return this.request('GET', p); },
-    post(p, b) { return this.request('POST', p, b); },
-    put(p, b) { return this.request('PUT', p, b); },
-    del(p, b) { return this.request('DELETE', p, b); },
+    post(p, b, signal) { return this.request('POST', p, b, signal); },
+    put(p, b, signal) { return this.request('PUT', p, b, signal); },
+    del(p, b, signal) { return this.request('DELETE', p, b, signal); },
   };
 
   // ---------- 下拉框 ----------
