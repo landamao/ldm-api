@@ -2408,8 +2408,85 @@ func TestStatsSeriesRangeBuckets(t *testing.T) {
 	}
 }
 
-// ---------- 静态资源缓存 ----------
+// 看板「全部」区间从最早一条统计记录开始累计，且没有上一周期可对比。
+func TestStatsRangeAllStartsFromEarliestRecord(t *testing.T) {
+	s, _ := newTestServer(t, "stats-range-all")
+	now := time.Now().In(dashboardLocation)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	oldDay := todayStart.AddDate(0, 0, -40)
+	_ = s.store.RecordStat(store.Log{Time: oldDay.Add(3 * time.Hour).UnixMilli(), StatusCode: 200, TotalTokens: 10})
+	_ = s.store.RecordStat(store.Log{Time: now.UnixMilli(), StatusCode: 200, TotalTokens: 5})
 
+	rec := httptest.NewRecorder()
+	s.statsOverview(rec, httptest.NewRequest(http.MethodGet, "/api/stats/overview?range=all", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Range    string         `json:"range"`
+		Start    int64          `json:"start"`
+		Current  map[string]any `json:"current"`
+		Previous map[string]any `json:"previous"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Range != "all" {
+		t.Errorf("区间应为 all，得到 %s", out.Range)
+	}
+	if out.Start != oldDay.UnixMilli() {
+		t.Errorf("累计起点应为最早记录所在自然日，得到 %d", out.Start)
+	}
+	if got := out.Current["requests"].(float64); got != 2 {
+		t.Errorf("累计应有 2 次请求，得到 %v", got)
+	}
+	if got := out.Previous["requests"].(float64); got != 0 {
+		t.Errorf("全部区间不应有上一周期，得到 %v 次", got)
+	}
+
+	// 跨度超过一天按自然日聚合，首尾分别落在最早一天和今天。
+	rec = httptest.NewRecorder()
+	s.statsSeries(rec, httptest.NewRequest(http.MethodGet, "/api/stats/series?range=all", nil))
+	var series struct {
+		StepMs int64 `json:"step_ms"`
+		Points []struct {
+			Time     int64 `json:"time"`
+			Requests int64 `json:"requests"`
+		} `json:"points"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &series); err != nil {
+		t.Fatal(err)
+	}
+	if series.StepMs != 86400000 {
+		t.Errorf("全部区间跨天时应按天聚合，得到 step_ms=%d", series.StepMs)
+	}
+	if len(series.Points) != 41 {
+		t.Fatalf("应有 41 个天点，得到 %d", len(series.Points))
+	}
+	if series.Points[0].Time != oldDay.UnixMilli() || series.Points[0].Requests != 1 {
+		t.Errorf("首个天点应为最早记录所在日且含 1 次请求，得到 %+v", series.Points[0])
+	}
+	if last := series.Points[len(series.Points)-1]; last.Time != todayStart.UnixMilli() || last.Requests != 1 {
+		t.Errorf("最后一个天点应为今天且含 1 次请求，得到 %+v", last)
+	}
+}
+
+// 没有历史数据时，「全部」退化为今天，不会因为取不到起点而报错。
+func TestStatsRangeAllWithoutData(t *testing.T) {
+	s, _ := newTestServer(t, "stats-range-all-empty")
+	now := time.Now().In(dashboardLocation)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+	rng := s.statRangeFor("all", now)
+	if rng.Start.UnixMilli() != todayStart.UnixMilli() {
+		t.Errorf("没有数据时应从今天开始，得到 %s", rng.Start)
+	}
+	if rng.Step != time.Hour {
+		t.Errorf("一天以内应按小时聚合，得到 %s", rng.Step)
+	}
+}
+
+// ---------- 静态资源缓存 ----------
 func TestContentHashStableAndDistinct(t *testing.T) {
 	a := []byte("console.log('a')")
 	b := []byte("console.log('b')")

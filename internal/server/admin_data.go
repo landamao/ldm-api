@@ -238,6 +238,27 @@ func parseStatRange(key string, now time.Time) statRange {
 	}
 }
 
+// statRangeFor 解析看板区间。除今日 / 本周 / 本月外还支持 all：
+// 从最早一条统计记录所在自然日开始累计，没有上一周期可对比。
+func (s *Server) statRangeFor(key string, now time.Time) statRange {
+	if !strings.EqualFold(strings.TrimSpace(key), "all") {
+		return parseStatRange(key, now)
+	}
+	now = now.In(dashboardLocation)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	if ms, ok, err := s.store.EarliestStat(); err == nil && ok {
+		if t := time.UnixMilli(ms).In(now.Location()); t.Before(start) {
+			start = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+		}
+	}
+	// 一天以内按小时看曲线更细；再长就按自然日聚合，时间刻度也不会跨天混淆。
+	step := 24 * time.Hour
+	if now.Sub(start) <= 24*time.Hour {
+		step = time.Hour
+	}
+	return statRange{Key: "all", Start: start, PrevStart: start, PrevEnd: start, Step: step}
+}
+
 // startOfWeek 返回本周一 0 点。
 func startOfWeek(t time.Time) time.Time {
 	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
@@ -256,7 +277,7 @@ func localDayStart(ms int64, loc *time.Location) int64 {
 
 func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(dashboardLocation)
-	rng := parseStatRange(r.URL.Query().Get("range"), now)
+	rng := s.statRangeFor(r.URL.Query().Get("range"), now)
 	current, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
 	previous, _ := s.store.RangeStats(rng.PrevStart.UnixMilli(), rng.PrevEnd.UnixMilli()-1)
 
@@ -278,6 +299,7 @@ func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
 
 	writeOK(w, map[string]any{
 		"range":       rng.Key,
+		"start":       rng.Start.UnixMilli(),
 		"current":     sumBuckets(current),
 		"previous":    sumBuckets(previous),
 		"channels":    map[string]int{"total": len(chans), "enabled": enabledChans},
@@ -333,10 +355,11 @@ func sumBuckets(bs []store.Bucket) bucketSummary {
 	return out
 }
 
-// statsSeries 返回按小时（今天）或按自然日（本周 / 本月）聚合的时间序列。
+// statsSeries 返回按小时（今天、跨度不足一天的全部）或按自然日（本周 / 本月 / 全部）
+// 聚合的时间序列。
 func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(dashboardLocation)
-	rng := parseStatRange(r.URL.Query().Get("range"), now)
+	rng := s.statRangeFor(r.URL.Query().Get("range"), now)
 	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
 
 	byKey := map[int64]store.Bucket{}
@@ -390,7 +413,7 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 // statsBreakdown 返回按模型 / 渠道 / 令牌的调用分布。
 func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(dashboardLocation)
-	rng := parseStatRange(r.URL.Query().Get("range"), now)
+	rng := s.statRangeFor(r.URL.Query().Get("range"), now)
 	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
 
 	models := map[string]int64{}

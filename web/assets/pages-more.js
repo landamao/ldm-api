@@ -93,6 +93,8 @@
     today: { label: '今日', compare: '较昨日同期' },
     week: { label: '本周', compare: '较上周同期' },
     month: { label: '本月', compare: '较上月同期' },
+    // 全部区间从最早一条统计记录开始累计，没有可对比的上一周期
+    all: { label: '累计', compare: '' },
   };
   const dashRange = { key: 'today' };
   const dashRangeInfo = () => DASH_RANGES[dashRange.key] || DASH_RANGES.today;
@@ -130,6 +132,13 @@
     return n.toLocaleString('zh-CN');
   }
 
+  // 统计区间按北京时间划自然日，累计起点也按北京时间取日期，跨时区查看时不会差一天
+  function dashDay(ms) {
+    const d = new Date(ms + 8 * 3600 * 1000);
+    const p = (x) => String(x).padStart(2, '0');
+    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
+  }
+
   window.LDM.registerPage('dashboard', {
     title: '数据看板',
     desc: '网关调用量、Token 消耗与渠道健康度',
@@ -139,6 +148,7 @@
           <button data-r="today" class="${dashRange.key === 'today' ? 'is-on' : ''}">今日</button>
           <button data-r="week" class="${dashRange.key === 'week' ? 'is-on' : ''}">本周</button>
           <button data-r="month" class="${dashRange.key === 'month' ? 'is-on' : ''}">本月</button>
+          <button data-r="all" class="${dashRange.key === 'all' ? 'is-on' : ''}">全部</button>
         </div>
         <select class="select" id="dash-unit" aria-label="数字单位" style="width:auto;min-width:128px">
           <option value="en"${dashUnit.mode === 'en' ? ' selected' : ''}>英文单位 K/M</option>
@@ -192,12 +202,18 @@
         const { overview, series, breakdown, logs } = dashData;
         const t = overview.current;
         const y = overview.previous;
+        const info = dashRangeInfo();
         const delta = (cur, prev) => {
+          // 全部区间没有上一周期可比，脚注改成累计起点，避免出现「新增」这种误导
+          if (!info.compare) {
+            const from = overview.start ? dashDay(overview.start) : '';
+            return `<span class="muted">${from ? from + ' 起' : '全部记录'}</span>`;
+          }
           if (!prev) return cur > 0 ? '<span class="stat__delta up">新增</span>' : '<span class="muted">—</span>';
           const d = ((cur - prev) / prev) * 100;
           const cls = d >= 0 ? 'up' : 'down';
           const arrow = d >= 0 ? '↑' : '↓';
-          return `<span class="stat__delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)}%</span> ${dashRangeInfo().compare}`;
+          return `<span class="stat__delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)}%</span> ${info.compare}`;
         };
 
         const points = series.points || [];

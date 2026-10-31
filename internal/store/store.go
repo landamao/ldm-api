@@ -663,6 +663,21 @@ func (s *Store) RangeStats(from, to int64) ([]Bucket, error) {
 	return out, err
 }
 
+// EarliestStat 返回最早一个统计桶的时间（毫秒），没有数据时 ok 为 false。
+// 看板的「全部」区间需要从这里起算。
+func (s *Store) EarliestStat() (ms int64, ok bool, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		k, _ := tx.Bucket(bStats).Cursor().First()
+		if len(k) != 8 {
+			return nil
+		}
+		ms = int64(binary.BigEndian.Uint64(k))
+		ok = true
+		return nil
+	})
+	return ms, ok, err
+}
+
 // RecentModelStats 返回指定模型最近 limit 次调用的请求数与失败数。
 // 日志按时间倒序存储，从最新一条往前扫；某个模型凑够 limit 条后就不再计入，
 // 所有模型都凑齐时提前结束。maxScan 限制最多扫描的日志条数，避免模型很多
