@@ -30,7 +30,9 @@
   // 黄色标识：客户端取消与错误覆写「覆写为正文」都是 200 但需要提示的记录。
   const logSoft = (l) => l.canceled || l.as_content;
 
-  // 模型亲和标记：橙色四角星叠在模型徽章右上角，样式对齐 NewAPI 的渠道亲和标。
+  // 模型亲和标记：橙色四角星叠在渠道模型徽章右上角（模型列里 → 后面那一枚），
+  // 样式对齐 NewAPI 的渠道亲和标。亲和记的是「上次成功的那条路由」，所以标记
+  // 要跟着渠道模型走，而不是请求模型。
   const AFFINITY_STAR = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M10.9 2.4l1.9 5.3a2.6 2.6 0 001.5 1.5l5.3 1.9-5.3 1.9a2.6 2.6 0 00-1.5 1.5l-1.9 5.3-1.9-5.3a2.6 2.6 0 00-1.5-1.5L2.2 11.1l5.3-1.9a2.6 2.6 0 001.5-1.5z"/><path d="M19 2l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z"/></svg>`;
   const affinityTitle = (l) => l.retries
     ? '模型亲和命中：优先尝试上次成功的路由，失败后已切换'
@@ -361,7 +363,7 @@
                   <th class="right">Token</th><th>状态</th>
                 </tr></thead>
                 <tbody>${items.map((l, idx) => `<tr>
-                  <td class="nowrap muted fs-12">${esc(fmtTime(l.time))}</td>
+                  <td class="nowrap fs-12">${esc(fmtTime(l.time))}</td>
                   <td>${colorBadge(l.model_id)}</td>
                   <td>${l.channel_id ? `<span class="code">${esc(l.channel_id)}</span>` : '<span class="muted">—</span>'}</td>
                   <td class="right num">${esc(fmtDuration(l.latency_ms))}</td>
@@ -4048,9 +4050,10 @@
       const tok = (n) => (logUnit.on
         ? `<span title="${fmtInt(n)}">${fmtUnit(n)}</span>`
         : fmtInt(n));
-      // 上游没有上报用量时网关会估算，标一下避免把估算值当成真实用量。
+      // 上游没有上报用量时网关会估算，标一次即可（输入 / 输出 / 总计是同一份用量），
+      // 放在「输入」上不额外占宽：那一格本来就有一行缓存明细。
       const estMark = (l) => (l.usage_estimate
-        ? ' <span class="muted fs-12">(估算)</span>'
+        ? ' <span class="muted fs-12" title="上游未上报用量，Token 数为网关估算">(估算)</span>'
         : '');
 
       function renderTable() {
@@ -4069,51 +4072,63 @@
           return;
         }
         host.innerHTML = `<div class="table-wrap table-scroll" style="border:none;border-radius:0">
-          <table class="tbl">
+          <table class="tbl tbl--logs">
             <thead><tr>
-              <th>时间</th><th style="min-width:190px">模型</th><th style="min-width:140px">渠道</th><th>密钥</th>
-              <th class="right" style="min-width:96px">输入</th>
-              <th class="right" style="min-width:130px">输出</th>
-              <th class="right" style="min-width:106px">耗时</th>
-              <th>状态</th><th>来源 IP</th>
+              <th>时间</th><th>请求模型</th><th>渠道</th><th>上游模型</th><th>密钥</th>
+              <th>输入</th>
+              <th>输出</th>
+              <th>速度</th>
+              <th>总计</th>
+              <th>耗时</th>
+              <th>来源 IP</th><th>状态</th>
             </tr></thead>
-            <tbody>${items.map((l, idx) => `<tr>
-              <td class="nowrap muted fs-12">${esc(fmtTime(l.time))}</td>
+            <tbody>${items.map((l, idx) => {
+              // 亲和星标在「上游模型」上：它代表本次实际走的那条路由
+              // （渠道 + 上游模型），直接调用渠道模型时也一样。
+              const modelStar = l.affinity
+                ? `<span class="affinity-star" title="${affinityTitle(l)}">${AFFINITY_STAR}</span>`
+                : '';
+              // 次要指标（缓存读 / 思考 / 首字）在数值下面另起一行，小一号灰字。
+              // 表格整体不换行，窗口放不下时由卡片左右滚动；只有这几个数值格是两行。
+              const sub = (html) => `<div class="log-sub">${html}</div>`;
+              const reasoning = l.reasoning_tokens
+                ? `思考 ${tok(l.reasoning_tokens)}`
+                : (l.reasoning_chars ? `思考 ${tok(l.reasoning_chars)} 字` : '');
+              return `<tr>
+              <td class="nowrap fs-12">${esc(fmtTime(l.time))}</td>
               <td>
-                <div class="flex-center gap-6" style="flex-wrap:wrap">
-                  <span style="position:relative;display:inline-block">
-                    ${colorBadge(l.model_id)}
-                    ${l.affinity ? `<span class="affinity-star" title="${affinityTitle(l)}">${AFFINITY_STAR}</span>` : ''}
-                  </span>
-                  ${l.stream ? '<span class="badge badge--gray">流式</span>' : ''}
+                <div class="flex-center gap-6">
+                  ${colorBadge(l.model_id)}
+                  ${l.stream ? '<span class="badge badge--blue">流式</span>' : ''}
                   ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看渠道重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
                 </div>
               </td>
               <td class="fs-12">
                 ${l.channel_id
-                  ? `${colorBadge(channelLabel(l.channel_id))}
-                     ${l.upstream_model ? `<div class="muted fs-12 mono" style="margin-top:2px">${esc(l.upstream_model)}</div>` : ''}
-                     ${l.key_masked ? `<div style="margin-top:2px"><span style="position:relative;display:inline-block">${colorBadge(keyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span></div>` : ''}`
-                  : '<span class="muted">未命中渠道</span>'}
+                  ? `<div class="flex-center gap-6">${colorBadge(channelLabel(l.channel_id))}${l.key_masked
+                    ? `<span class="log-star-wrap">${colorBadge(keyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
+                    : ''}</div>`
+                  : '<span>未命中渠道</span>'}
               </td>
+              <td class="fs-12">${l.upstream_model
+                ? `<span class="log-star-wrap">${colorBadge(l.upstream_model)}${modelStar}</span>`
+                : '<span class="muted">—</span>'}</td>
               <td class="fs-12">${colorBadge(l.token_name)}</td>
-              <td class="right num">${tok(l.prompt_tokens)}${estMark(l)}
-                ${l.cached_tokens ? `<div class="muted fs-12">缓存读 ${tok(l.cached_tokens)}</div>` : ''}</td>
-              <td class="right num">${tok(l.completion_tokens)}${estMark(l)}
-                ${l.reasoning_tokens
-                  ? `<div class="muted fs-12">思考 ${tok(l.reasoning_tokens)}</div>`
-                  : (l.reasoning_chars ? `<div class="muted fs-12">思考 ${tok(l.reasoning_chars)} 字</div>` : '')}
-                ${l.tokens_per_sec ? `<div class="muted fs-12">${l.tokens_per_sec.toFixed(1)} t/s</div>` : ''}</td>
-              <td class="right num">${esc(fmtDuration(l.latency_ms))}
-                ${l.first_byte_ms ? `<div class="muted fs-12">首字 ${esc(fmtDuration(l.first_byte_ms))}</div>` : ''}
-                <div class="muted fs-12">总token ${tok(l.total_tokens)}</div></td>
+              <td class="num">${tok(l.prompt_tokens)}${estMark(l)}${l.cached_tokens ? sub(`缓存读 ${tok(l.cached_tokens)}`) : ''}</td>
+              <td class="num">${tok(l.completion_tokens)}${reasoning ? sub(reasoning) : ''}</td>
+              <td class="num">${l.tokens_per_sec
+                ? `<span title="输出 tokens / 生成耗时，流式从首字开始计算">${l.tokens_per_sec.toFixed(1)} t/s</span>`
+                : '<span class="muted">—</span>'}</td>
+              <td class="num">${tok(l.total_tokens)}</td>
+              <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
+              <td class="text-strong fs-12 mono">${esc(l.ip || '—')}</td>
               <td>${logSoft(l)
                 ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
                 : (logOK(l)
                   ? '<span class="badge badge--green">成功</span>'
                   : `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || '失败')}</button>`)}</td>
-              <td class="text-strong fs-12 mono">${esc(l.ip || '—')}</td>
-            </tr>`).join('')}</tbody>
+            </tr>`;
+            }).join('')}</tbody>
           </table>
         </div>`;
         host.querySelectorAll('[data-attempts]').forEach((btn) => {

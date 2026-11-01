@@ -555,6 +555,37 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
   box-shadow: inset 0 -1px 0 var(--border-line);
 }
 
+/* 调用日志：一行一条记录，列宽按内容撑开，窗口放不下时整表左右滚动 */
+table.tbl--logs { width: max-content; min-width: 100%; }
+.tbl--logs tbody td { white-space: nowrap; }
+/* 日志表比配置表更密：左右内边距收窄一点，桌面宽度下尽量整表放下 */
+table.tbl--logs th,
+table.tbl--logs td { padding-left: 8px; padding-right: 8px; }
+/* 表头：用正文色，不再是灰色小字；对齐跟单元格一致，全部左对齐 */
+table.tbl--logs thead th { color: var(--text); }
+/* 徽章右上角橙色亲和星需要这层相对定位包装 */
+.log-star-wrap { position: relative; display: inline-block; }
+/* 数值格里的次要指标：另起一行，不占横向宽度 */
+.log-sub { margin-top: 2px; font-size: 11px; line-height: 1.25; color: var(--text-3); }
+/* 状态列固定在右侧（压在滚动内容上层），横向滚动时成败始终可见。
+   分隔只要一条实心灰线，不用阴影，免得出现一灰一白的渐变带。 */
+.tbl--logs th:last-child,
+.tbl--logs td:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background-color: var(--surface);
+  border-left: 1px solid rgba(0, 0, 0, .12);
+}
+html[data-theme="dark"] .tbl--logs th:last-child,
+html[data-theme="dark"] .tbl--logs td:last-child { border-left-color: rgba(255, 255, 255, .14); }
+.tbl--logs thead th:last-child { z-index: 5; background-color: var(--surface-solid); }
+.tbl--logs tbody tr:nth-child(even) td:last-child { background-color: var(--surface-2); }
+.tbl--logs tbody tr:hover td:last-child {
+  background-color: var(--surface);
+  background-image: linear-gradient(var(--primary-soft), var(--primary-soft));
+}
+
 /* 模型管理：卡片撑满内容区，筛选栏和表头固定，只滚动表格 */
 .models-card {
   height: 100%;
