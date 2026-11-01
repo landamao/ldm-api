@@ -2515,7 +2515,7 @@
         </div>
       </td>
       <td>${isCustom
-        ? badge('自定义', 'pink')
+        ? badge('自定义', 'wood')
         : badge('渠道', 'blue')}
         ${isCustom && stratLabel
           ? `<div style="margin-top:4px">${badge(stratLabel + '路由', 'gray')}${m.affinity ? ' ' + badge('亲和', 'gray') : ''}${m.force_stream ? ' ' + badge('强制流式', 'gray') : ''}</div>`
@@ -2770,7 +2770,7 @@
         <span class="pick-item__meta">
           ${!it.channel_ready ? badge(isModels ? '不可用' : '渠道已禁用', 'red') : ''}
           ${isModels
-            ? (it.model_type === 'custom' ? badge('自定义', 'pink') : badge('渠道', 'blue'))
+            ? (it.model_type === 'custom' ? badge('自定义', 'wood') : badge('渠道', 'blue'))
             : isAdd
               ? (it.added ? badge('已添加', 'green') : '')
               : (checked ? badge('已添加', 'green') : '')}

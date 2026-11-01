@@ -324,12 +324,12 @@
         const drawTrend = (metric) => {
           const s = metric === 'tokens'
             ? [
-                { name: '输入 Token', color: '#88c0d0', values: points.map((p) => p.prompt_tokens) },
-                { name: '输出 Token', color: '#f33b7c', values: points.map((p) => p.completion_tokens) },
+                { name: '输入 Token', color: '#3f8fbf', values: points.map((p) => p.prompt_tokens) },
+                { name: '输出 Token', color: '#4d9e2f', values: points.map((p) => p.completion_tokens) },
               ]
             : [
-                { name: '请求数', color: '#f33b7c', values: points.map((p) => p.requests) },
-                { name: '失败数', color: '#f59e0b', values: points.map((p) => p.errors) },
+                { name: '请求数', color: '#4d9e2f', values: points.map((p) => p.requests) },
+                { name: '失败数', color: '#c9483a', values: points.map((p) => p.errors) },
               ];
           areaChart(trendHost, {
             labels, times, series: s, height: 216, spanMs: series.step_ms,
@@ -688,7 +688,7 @@
           <div style="min-width:0">
             <div class="model-card__title-row">
               <span style="font-size:17px;font-weight:700;font-family:var(--mono);word-break:break-all">${esc(m.id)}</span>
-              ${badge(isCustom ? '自定义' : '渠道', isCustom ? 'pink' : 'blue')}
+              ${badge(isCustom ? '自定义' : '渠道', isCustom ? 'wood' : 'blue')}
             </div>
           </div>
           <button class="drawer__close" data-close aria-label="关闭">${icon('x', 17)}</button>
@@ -992,7 +992,7 @@
                       <option value="${TEST_MODEL_ID}"${initial === TEST_MODEL_ID ? ' selected' : ''}>临时测试（直连上游）</option>
                     </select>
                     <div class="chat-model-meta" id="chat-model-meta">
-                      <span class="badge badge--pink" id="chat-kind"></span>
+                      <span class="badge badge--wood" id="chat-kind"></span>
                       <span class="chat-route-row">
                         <span class="muted fs-12 chat-route-text" id="chat-route"></span>
                         <button class="btn btn--ghost btn--icon btn--sm chat-route-toggle" id="chat-route-toggle" title="展开" aria-label="展开" aria-expanded="false" hidden>${icon('chevron', 12)}</button>
@@ -3473,7 +3473,7 @@
               <td>${t.expired ? badge('已过期', 'red') : (t.enabled ? statusBadge(true, '启用') : statusBadge(false, '', '禁用'))}</td>
               <td>
                 <div class="num fs-12">${fmtNum(t.used_quota)}${t.quota_limit ? ` / ${fmtNum(t.quota_limit)}` : ' <span class="muted">/ 无限制</span>'}</div>
-                ${t.quota_limit ? `<div class="rank-item__bar mt-8" style="height:4px"><div class="rank-item__fill" style="width:${pct}%;${pct > 90 ? 'background:var(--red-500)' : ''}"></div></div>` : ''}
+                ${t.quota_limit ? `<div class="rank-item__bar mt-8" style="height:6px"><div class="rank-item__fill" style="width:${pct}%;${pct > 90 ? 'background:var(--red-500)' : ''}"></div></div>` : ''}
               </td>
               <td>${!t.allowed_models || !t.allowed_models.length
                 ? '<span class="muted fs-12">全部模型</span>'
@@ -4236,7 +4236,7 @@
                   <div class="tristate__opt ${Theme.get() === 'light' ? 'is-on' : ''}" data-value="light">浅色</div>
                   <div class="tristate__opt ${Theme.get() === 'dark' ? 'is-on' : ''}" data-value="dark">深色</div>
                 </div>
-                <div class="field__hint">默认浅色主题（粉色）。此处的选择会立即生效并记住。</div>
+                <div class="field__hint">默认浅色主题（林间木色）。此处的选择会立即生效并记住。</div>
               </div>
               <div class="field">
                 <label class="field__label">日志保留天数</label>

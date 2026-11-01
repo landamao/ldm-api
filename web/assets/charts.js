@@ -6,7 +6,7 @@
 
   const { esc, fmtInt, fmtNum } = window.LDM;
 
-  const PALETTE = ['#f33b7c', '#ff7fac', '#88c0d0', '#8b5cf6', '#f59e0b', '#10b981', '#f43f5e', '#5e9fbf'];
+  const PALETTE = ['#4d9e2f', '#e9a316', '#3f8fbf', '#8a5ac2', '#d9557f', '#7cc243', '#c9483a', '#5f9e8b'];
 
   function niceMax(v) {
     if (v <= 0) return 4;
@@ -194,7 +194,7 @@
    * opts: { labels, values, color, height, valueFmt }
    */
   function barChart(container, opts) {
-    const { labels = [], values = [], height = 210, color = '#f33b7c' } = opts;
+    const { labels = [], values = [], height = 210, color = '#4d9e2f' } = opts;
     const valueFmt = opts.valueFmt || ((v) => fmtInt(v));
     const axisFmt = opts.axisFmt || fmtAxis;
 
