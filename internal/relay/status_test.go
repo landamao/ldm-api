@@ -196,6 +196,111 @@ func TestKeyCooldownStatusCoolsMatchingKey(t *testing.T) {
 	}
 }
 
+// 传输层失败（连接失败、超时、断流、空响应）不记到 Key 头上：
+// 换 Key 重试照旧，但两个 Key 都不应因为网络问题进入冷却。
+func TestTransportFailureDoesNotCoolKey(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	// 先起一个服务再关掉，拿到一个必定连接失败的地址。
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
+	st := newTestStore(t)
+	ch := statusTestChannel(t, st, "net", deadURL, []string{"key-n-000001", "key-n-000002"}, []string{"a"})
+	ch.KeyCooldownStatus = strp("401,403,408,429,500-599")
+	if err := st.SaveChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "net/a", Type: store.ModelTypeChannel, ChannelID: "net", Upstream: "a",
+		NoRetryStatus: strp(""),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("net/a"))
+
+	if !strings.Contains(res.Err, "上游请求失败") {
+		t.Fatalf("应记为上游请求失败，得到 %q（状态 %d）", res.Err, res.StatusCode)
+	}
+	// 两个 Key 仍然都会被尝试：换 Key 由 retryable 决定，与冷却无关。
+	if len(res.Attempts) != 2 {
+		t.Errorf("连接失败后应继续试第二个 Key，应记录 2 次尝试，得到 %d", len(res.Attempts))
+	}
+	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 2 {
+		t.Errorf("网络失败不应冷却 Key，得到 %v（%s）", candidateIndexes(keys), reason)
+	}
+}
+
+// 单 Key 渠道即使命中冷却状态码也不记 Key 冷却：冷却是为了在多 Key 之间绕开坏 Key，
+// 单 Key 冷却只会把自己锁死，失败由路由冷却兜底。
+func TestSingleKeyChannelNeverCoolsKey(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"error":{"message":"rate limited"}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	ch := statusTestChannel(t, st, "sk", srv.URL, []string{"key-s-000001"}, []string{"a"})
+	ch.KeyCooldownStatus = strp("429")
+	if err := st.SaveChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "sk/a", Type: store.ModelTypeChannel, ChannelID: "sk", Upstream: "a",
+		NoRetryStatus: strp(""),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	New(st).Do(context.Background(), rec, statusTestRequest("sk/a"))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("应透传上游 429，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 1 {
+		t.Errorf("单 Key 渠道不应进入 Key 冷却，得到 %v（%s）", candidateIndexes(keys), reason)
+	}
+}
+
+// 模型页的「清除冷却」要把相关渠道的 Key 冷却一起清掉：
+// 只清路由冷却的话，多 Key 渠道仍会卡在「所有 Key 都在失败冷却中」。
+func TestClearCooldownsForModelClearsChannelKeys(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	ch := store.Channel{
+		ID: "cc", KeyMode: store.KeyModeSequential,
+		APIKeys: []store.ChannelKey{{Key: "key-cc-000001"}, {Key: "key-cc-000002"}},
+	}
+	MarkKeyFailure(ch.ID, "key-cc-000001")
+	MarkKeyFailure(ch.ID, "key-cc-000002")
+	MarkFailure(ch.ID, "a")
+
+	m := store.Model{
+		ID: "cc-model", Type: store.ModelTypeCustom,
+		Routes: []store.Route{{ChannelID: ch.ID, Upstream: "a"}},
+	}
+	if n := ClearCooldownsForModel(m); n != 3 {
+		t.Fatalf("应清掉 1 条路由冷却与 2 条 Key 冷却，实际 %d 条", n)
+	}
+	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 2 {
+		t.Errorf("清除冷却后两个 Key 都应恢复可用，得到 %v（%s）", candidateIndexes(keys), reason)
+	}
+}
+
 // 显式留空不可重试状态码：4xx 也会继续路由到下一个模型。
 func TestEmptyNoRetryStatusRetriesAll(t *testing.T) {
 	ClearAllCooldowns()

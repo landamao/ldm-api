@@ -97,17 +97,29 @@ func ClearAllCooldowns() int {
 // ClearCooldownsForModel 清掉该模型路由涉及的失败冷却，返回清除条数。
 // 冷却按「渠道ID/上游模型」全局共享，因此会同时解除其他引用同一条路由的模型的冷却。
 // 该模型的亲和记录也一并清掉：否则刚解除冷却的条目会因上次成功记录被优先命中。
+// 涉及的渠道 Key 冷却也一起清掉：Key 冷却按「渠道 + Key」记录、无法按模型精确拆分，
+// 只清路由冷却会让多 Key 渠道仍卡在「所有 Key 都在失败冷却中」，按钮等于没生效。
 func ClearCooldownsForModel(m store.Model) int {
 	var keys []string
+	channelIDs := make([]string, 0, len(m.Routes)+1)
+	seen := make(map[string]bool, len(m.Routes)+1)
+	addChannel := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			channelIDs = append(channelIDs, id)
+		}
+	}
 	if m.Type == store.ModelTypeChannel {
 		keys = []string{routeKey(m.ChannelID, m.Upstream)}
+		addChannel(m.ChannelID)
 	} else {
 		for _, rt := range m.Routes {
 			keys = append(keys, routeKey(rt.ChannelID, rt.Upstream))
+			addChannel(rt.ChannelID)
 		}
 	}
+
 	routeStates.Lock()
-	defer routeStates.Unlock()
 	n := 0
 	for _, k := range keys {
 		if _, ok := routeStates.failedAt[k]; ok {
@@ -116,6 +128,13 @@ func ClearCooldownsForModel(m store.Model) int {
 		}
 	}
 	delete(routeStates.lastRoute, m.ID)
+	routeStates.Unlock()
+
+	// Key 状态用另一把锁，必须在释放路由锁之后再清，避免锁顺序交叉。
+	// 只清冷却、保留 Key 亲和：模型要立刻恢复可用，而「上次成功的 Key」与冷却无关。
+	for _, id := range channelIDs {
+		n += clearKeyCooldownsOnly(id)
+	}
 	return n
 }
 

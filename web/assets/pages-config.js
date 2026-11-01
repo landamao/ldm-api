@@ -1449,8 +1449,8 @@
     const multiKeyInit = data.multi_key_enabled !== undefined
       ? data.multi_key_enabled === true
       : initialKeyRows.length > 1;
-    const keySchedHelpText = '顺序：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。随机：每次请求完整打乱可用 Key 后再依次尝试。Key 亲和：上次成功的 Key 优先：顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。失败冷却：Key 失败后在设定时间内跳过（0 = 不冷却）。全部冷却时重置：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。';
-    const keyCooldownStatusHelpText = `支持单个状态码或区间，逗号分隔，例如 400-430、401,403,429。命中后该 Key 进入失败冷却；未命中的错误不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。留空表示任何状态码都不冷却 Key；点击「填入模板」填入 ${DEFAULT_KEY_COOLDOWN_STATUS}。`;
+    const keySchedHelpText = '顺序：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。随机：每次请求完整打乱可用 Key 后再依次尝试。Key 亲和：上次成功的 Key 优先：顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。失败冷却：Key 返回的状态码命中下方规则后，在设定时间内跳过（0 = 不冷却）；超时、连接失败、断流不冷却 Key，单 Key 渠道也不参与 Key 冷却。全部冷却时重置：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。';
+    const keyCooldownStatusHelpText = `支持单个状态码或区间，逗号分隔，例如 400-430、401,403,429。命中后该 Key 进入失败冷却；未命中的状态码不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。超时、连接失败、断流、空响应不冷却 Key。留空表示任何状态码都不冷却 Key；点击「填入模板」填入 ${DEFAULT_KEY_COOLDOWN_STATUS}。`;
 
     const body = `
       <div class="form-row">
@@ -1612,14 +1612,15 @@
             <div style="margin-bottom:8px"><b>顺序</b>：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。</div>
             <div style="margin-bottom:8px"><b>随机</b>：每次请求完整打乱可用 Key 后再依次尝试。</div>
             <div style="margin-bottom:8px"><b>Key 亲和</b>：上次成功的 Key 优先。顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。</div>
-            <div style="margin-bottom:8px"><b>失败冷却</b>：Key 失败后在设定时间内跳过（0 = 不冷却）。</div>
+            <div style="margin-bottom:8px"><b>失败冷却</b>：Key 返回的状态码命中「触发 Key 冷却的状态码」后，在设定时间内跳过（0 = 不冷却）。超时、连接失败、断流、空响应不冷却 Key；单 Key 渠道也不参与 Key 冷却。</div>
             <div><b>全部冷却时重置</b>：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。</div>
           `);
         };
         $('#f-key-cooldown-status-help').onclick = () => {
           openHelpModal('Key 冷却状态码', `
             <div style="margin-bottom:8px">支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>401,403,429</code>。</div>
-            <div style="margin-bottom:8px">命中后该 Key 进入失败冷却；未命中的错误不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。</div>
+            <div style="margin-bottom:8px">命中后该 Key 进入失败冷却；未命中的状态码不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。</div>
+            <div style="margin-bottom:8px">超时、连接失败、断流、空响应属于传输层问题，和 Key 本身无关，只影响本次尝试（仍会换 Key / 换路由重试），不会把 Key 记成冷却。单 Key 渠道也不会进入 Key 冷却。</div>
             <div>留空表示任何状态码都不冷却 Key；点击「填入模板」填入 <code>${DEFAULT_KEY_COOLDOWN_STATUS}</code>。</div>
           `);
         };

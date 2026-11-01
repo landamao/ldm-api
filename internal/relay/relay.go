@@ -987,7 +987,10 @@ outer:
 			lastStatus = outcome.status
 			// 失败的 Key 进入冷却（按渠道 + Key 隔离）；路由本身要等这条路由的
 			// 所有 Key 都失败后才冷却，避免一个坏 Key 把整条渠道拖下水。
-			if outcome.keyFailed {
+			// 只有真的在多个 Key 之间调度时才记冷却：单 Key 渠道冷却同一个 Key
+			// 等于把自己锁死，而单 Key 失败时路由本来就会冷却（hasMoreKeys=false），
+			// Key 冷却在这里没有任何收益，只会制造「路由已恢复、Key 还在冷却」的 503。
+			if outcome.keyFailed && multiKey {
 				MarkKeyFailure(route.Channel.ID, kc.key)
 			}
 			if !hasMoreKeys && (!outcome.wrote || outcome.upstreamBroken) && !outcome.skipRouteCooldown {
@@ -1069,8 +1072,10 @@ type attemptOutcome struct {
 	genMs int64
 	// canceled 表示这次失败是客户端主动断开造成的，不是上游的问题。
 	canceled bool
-	// keyFailed 表示这次失败应该记到当前上游 Key 头上（认证、限流、超时、网络等），
-	// 请求本身有问题的 4xx 不会冷却 Key。
+	// keyFailed 表示这次失败应该记到当前上游 Key 头上。
+	// 只有上游 HTTP 状态码命中渠道的「触发 Key 冷却的状态码」时才置位：
+	// 超时、连接失败、断流、空响应这类传输层问题跟 Key 无关，不冷却 Key，
+	// 否则一次网络抖动就会让整个渠道（含其它上游模型）在整个冷却周期内不可用。
 	keyFailed bool
 	// upstreamRaw/upstreamHdr 是上游错误响应，在最后一次尝试或 4xx 直接透传时保留，
 	// 用于把上游原始错误原样返回给调用方，并记录调用方实际收到的内容。
@@ -1209,12 +1214,14 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		if ctx.Err() != nil {
 			return attemptOutcome{err: errors.New("客户端已断开连接"), canceled: true}
 		}
-		// 定时器到点由本端取消，不能按「客户端断开」处理
+		// 传输层失败（超时、连接失败）只影响本次尝试，可以换 Key / 换路由重试，
+		// 但不记到 Key 头上：超时、网络抖动和上游临时故障都跟 Key 本身无关，
+		// 记成 Key 冷却会让整个渠道（含其它模型）在一个冷却周期内不可用。
 		if timedOut.Load() {
-			return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway, keyFailed: true}
+			return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway}
 		}
 		msg := "上游请求失败: " + cleanNetErr(err)
-		return attemptOutcome{err: errors.New(msg), retryable: true, status: http.StatusBadGateway, keyFailed: true}
+		return attemptOutcome{err: errors.New(msg), retryable: true, status: http.StatusBadGateway}
 	}
 	defer resp.Body.Close()
 
@@ -1264,9 +1271,9 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				return attemptOutcome{err: errors.New("客户端已断开连接"), canceled: true, firstByte: firstByte}
 			}
 			if timedOut.Load() {
-				return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway, firstByte: firstByte, keyFailed: true}
+				return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway, firstByte: firstByte}
 			}
-			return attemptOutcome{err: fmt.Errorf("读取上游响应失败: %w", err), retryable: true, status: http.StatusBadGateway, firstByte: firstByte, keyFailed: true}
+			return attemptOutcome{err: fmt.Errorf("读取上游响应失败: %w", err), retryable: true, status: http.StatusBadGateway, firstByte: firstByte}
 		}
 		decoded, usage, derr := prov.Decode(raw, modelOf(req))
 		if derr != nil && decoded == nil {
@@ -1408,12 +1415,12 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				if timedOut.Load() {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						err: errors.New("上游响应超时"), retryable: false, wrote: true, estimated: est,
-						reasoning: st.ReasoningChars(), upstreamBroken: true, keyFailed: true,
+						reasoning: st.ReasoningChars(), upstreamBroken: true,
 						streamed: true, genMs: genWindow()}
 				}
 				return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 					err: errors.New(cleanNetErr(rerr)), retryable: false, wrote: true, estimated: est,
-					reasoning: st.ReasoningChars(), upstreamBroken: true, keyFailed: true,
+					reasoning: st.ReasoningChars(), upstreamBroken: true,
 					streamed: true, genMs: genWindow()}
 			}
 			break

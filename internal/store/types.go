@@ -102,8 +102,9 @@ type Channel struct {
 	// KeyCooldownReset 控制全部 Key 都在冷却中时是否自动清空冷却再调度一遍。
 	KeyCooldownReset bool `json:"key_cooldown_reset,omitempty"`
 	// KeyCooldownStatus 是触发 Key 冷却的上游状态码规则，支持单个状态码和区间，
-	// 例如 "401,403,429,500-599"。nil 表示旧数据未设置，按默认规则；
-	// 显式空字符串表示任何状态码都不冷却 Key（状态码仍会参与路由重试）。
+	// 例如 "401,403,429,500-599"。nil（旧数据）与显式空字符串都表示任何状态码
+	// 都不冷却 Key，状态码仍会参与路由重试。
+	// 超时、连接失败、断流、空响应这类传输层失败不参与 Key 冷却，详见 relay 包。
 	KeyCooldownStatus *string `json:"key_cooldown_status,omitempty"`
 	// AppendV1 控制是否在接口地址后补全 /v1。nil 表示旧数据，按默认开启处理。
 	// 关闭后按 BaseURL 原样拼接，适合火山方舟（/api/v3）这类非 v1 前缀的服务。
