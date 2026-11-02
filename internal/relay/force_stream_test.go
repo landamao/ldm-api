@@ -269,6 +269,85 @@ func TestForceStreamFirstByteTimeoutSwitchesRoute(t *testing.T) {
 	}
 }
 
+// 强制流式 + 上游吐了一口就装死：先给一小段正文，之后只发心跳，
+// 同样要在超时时间内判停滞并切到下一条路由，不能被心跳一直吊着。
+func TestForceStreamStallSwitchesRoute(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// 先给一段真实内容，之后只发心跳
+		io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		for {
+			select {
+			case <-time.After(200 * time.Millisecond):
+				io.WriteString(w, ": ping\n\n")
+				w.(http.Flusher).Flush()
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}))
+	defer silent.Close()
+
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer fast.Close()
+
+	for _, c := range []struct{ id, url string }{{"silent", silent.URL}, {"fast", fast.URL}} {
+		if err := st.SaveChannel(store.Channel{
+			ID: c.id, Name: c.id, Type: store.ChannelOpenAI, BaseURL: c.url,
+			Models: []string{"m"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "m", Type: store.ModelTypeCustom, Timeout: 1, ForceStream: boolp(true),
+		Routes: []store.Route{
+			{ChannelID: "silent", Upstream: "m"},
+			{ChannelID: "fast", Upstream: "m"},
+		},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ClearCooldownsForModel(store.Model{ID: "m"}) })
+
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: []byte(`{"model":"m","messages":[]}`),
+		JSON: map[string]any{"model": "m"},
+	}
+	rec := httptest.NewRecorder()
+	started := time.Now()
+	res := New(st).Do(context.Background(), rec, req)
+
+	if res.Err != "" {
+		t.Fatalf("第二条路由应成功: %+v", res)
+	}
+	if res.ChannelID != "fast" {
+		t.Fatalf("应落到 fast 渠道，实际 %q", res.ChannelID)
+	}
+	if spent := time.Since(started); spent > 3*time.Second {
+		t.Fatalf("停滞判定不及时，耗时 %s", spent)
+	}
+	if len(res.Attempts) != 2 {
+		t.Fatalf("应记录两次尝试: %+v", res.Attempts)
+	}
+	if !strings.Contains(res.Attempts[0].Error, "停滞") {
+		t.Fatalf("首次尝试应记为上游响应停滞: %+v", res.Attempts[0])
+	}
+}
+
 // 上游忽略 stream、直接回完整 JSON 时按普通非流式透传，不做聚合。
 func TestForceStreamFallsBackToJSONUpstream(t *testing.T) {
 	st := newTestStore(t)

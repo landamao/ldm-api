@@ -5,9 +5,19 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"ldmapi/internal/upstream"
 )
+
+// elapsedMs 返回从 start 到现在的毫秒数，亚毫秒按 1 记。
+// 0 在日志里表示「没有首字」，本地极快返回的上游不能被记成没出字。
+func elapsedMs(start time.Time) int64 {
+	if ms := time.Since(start).Milliseconds(); ms > 0 {
+		return ms
+	}
+	return 1
+}
 
 func mustJSON(v any) []byte {
 	b, err := json.Marshal(v)

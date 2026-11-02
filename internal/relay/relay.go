@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"ldmapi/internal/store"
@@ -1113,21 +1112,18 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		timeout = 300
 	}
 	// 非流式：timeout 是整次请求（含读完响应体）的截止时间。
-	// 流式：timeout 只限制到收到首块数据为止，首块到达后不再限时。
-	// 强制流式的非流式请求同样按首字计时——这正是它存在的意义。
-	// deadline 无法延长，所以用定时器 + cancel 实现，流式拿到首块后停表。
+	// 流式 / 强制流式：timeout 是「两段真实输出之间的最大空档」——
+	// 首字到达后每收到一段正文、思考或工具参数就重新计时；心跳、只带 role
+	// 的空块、纯 usage 块不续命，上游拿心跳吊着连接却不出字同样立刻失败。
+	// deadline 无法延长，所以用可重置的定时器 + cancel 实现。
 	reqCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var timedOut atomic.Bool
-	timer := time.AfterFunc(time.Duration(timeout)*time.Second, func() {
-		timedOut.Store(true)
-		cancel()
-	})
-	defer timer.Stop()
+	clock := newAttemptClock(cancel, time.Duration(timeout)*time.Second)
+	defer clock.stop()
 
 	// 强制流式：对话类端点开启后，即使调用方要非流式也按流式请求上游。
-	// 这样超时只约束首字，上游迟迟不吐字时能快速失败并切到下一条路由；
-	// 拿到内容后由网关自己收完，再按调用方要的形态返回。
+	// 这样超时按「两段输出之间的空档」计算，上游迟迟不吐字或吐一半停住，
+	// 都能快速失败并切到下一条路由；拿到内容后由网关自己收完，再按调用方要的形态返回。
 	forceStream := !req.Stream && resolved.Model.ForceStreamOn() &&
 		isChatPath(req.Path) && !prov.RawBody && req.JSON != nil
 	upstreamStream := req.Stream || forceStream
@@ -1217,8 +1213,8 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		// 传输层失败（超时、连接失败）只影响本次尝试，可以换 Key / 换路由重试，
 		// 但不记到 Key 头上：超时、网络抖动和上游临时故障都跟 Key 本身无关，
 		// 记成 Key 冷却会让整个渠道（含其它模型）在一个冷却周期内不可用。
-		if timedOut.Load() {
-			return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway}
+		if reason := clock.reason(); reason != "" {
+			return attemptOutcome{err: errors.New(reason), retryable: true, status: http.StatusBadGateway}
 		}
 		msg := "上游请求失败: " + cleanNetErr(err)
 		return attemptOutcome{err: errors.New(msg), retryable: true, status: http.StatusBadGateway}
@@ -1262,7 +1258,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		return out
 	}
 
-	firstByte := time.Since(started).Milliseconds()
+	firstByte := elapsedMs(started)
 	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	if !isStream {
 		raw, err := io.ReadAll(resp.Body)
@@ -1270,8 +1266,8 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 			if ctx.Err() != nil {
 				return attemptOutcome{err: errors.New("客户端已断开连接"), canceled: true, firstByte: firstByte}
 			}
-			if timedOut.Load() {
-				return attemptOutcome{err: errors.New("上游响应超时"), retryable: true, status: http.StatusBadGateway, firstByte: firstByte}
+			if reason := clock.reason(); reason != "" {
+				return attemptOutcome{err: errors.New(reason), retryable: true, status: http.StatusBadGateway, firstByte: firstByte}
 			}
 			return attemptOutcome{err: fmt.Errorf("读取上游响应失败: %w", err), retryable: true, status: http.StatusBadGateway, firstByte: firstByte}
 		}
@@ -1305,7 +1301,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	// 自己选择了流式。此时一个字节都还没写给客户端，由网关把整条流收完、
 	// 聚合成完整响应再返回；中途失败仍能像普通非流式请求一样换下一条路由。
 	if !req.Stream && isChatPath(req.Path) {
-		return collectStream(ctx, w, req, resp, st, timer, &timedOut, started)
+		return collectStream(ctx, w, req, resp, st, clock, started)
 	}
 
 	// 流式：一旦开始写响应就不能再重试了
@@ -1350,26 +1346,26 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	tmp := make([]byte, 32*1024)
 	var pending []byte
 	reader := resp.Body
-	firstChunk := false
 	// 首字按「第一段真正的内容」计：上游可能先发响应头、只带 role 的空块
 	// 或心跳，这时调用方还没看到任何字。拿到内容块后再把首字改成真实值。
 	firstContent := false
 	translate := func(line []byte) []byte {
 		out := st.Translate(line)
-		if len(out) > 0 && !firstContent && upstream.HasVisibleDelta(out) {
-			firstContent = true
-			firstByte = time.Since(started).Milliseconds()
+		if len(out) == 0 || !upstream.HasVisibleDelta(out) {
+			return out
 		}
+		if !firstContent {
+			firstContent = true
+			firstByte = elapsedMs(started)
+		}
+		// 每段真实输出都把计时器推后：只要模型还在吐字，总时长可以超过超时时间；
+		// 只有心跳和空块时不会走到这里，停顿超过超时时间就判停滞。
+		clock.progress()
 		return out
 	}
 	for {
 		n, rerr := reader.Read(tmp)
 		if n > 0 {
-			// 首块数据已到达，流式超时只约束到首字，之后不再限时。
-			if !firstChunk {
-				firstChunk = true
-				timer.Stop()
-			}
 			pending = append(pending, tmp[:n]...)
 			for {
 				idx := indexByte(pending, '\n')
@@ -1412,9 +1408,9 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 						err: errors.New("客户端已断开连接"), canceled: true, wrote: true, estimated: est,
 						reasoning: st.ReasoningChars(), streamed: true, genMs: genWindow()}
 				}
-				if timedOut.Load() {
+				if reason := clock.reason(); reason != "" {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
-						err: errors.New("上游响应超时"), retryable: false, wrote: true, estimated: est,
+						err: errors.New(reason), retryable: false, wrote: true, estimated: est,
 						reasoning: st.ReasoningChars(), upstreamBroken: true,
 						streamed: true, genMs: genWindow()}
 				}

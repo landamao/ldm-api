@@ -2041,27 +2041,30 @@ func seedSingleRoute(t *testing.T, st *store.Store, channelID, baseURL string, t
 	}
 }
 
-// 流式只约束首字：首块数据到达后，总时长可以超过超时时间。
-func TestStreamTimeoutStopsAfterFirstChunk(t *testing.T) {
+// 流式超时按「两段输出之间的空档」算：每块都在超时时间内到达时，
+// 总时长可以超过超时时间，不会被中途掐断。
+func TestStreamTimeoutResetsOnEachChunk(t *testing.T) {
 	st := newTestStore(t)
 
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, `data: {"choices":[{"delta":{"content":"a"}}]}`+"\n\n")
-		w.(http.Flusher).Flush()
-		select {
-		case <-time.After(1500 * time.Millisecond):
-		case <-r.Context().Done():
-			return
+		// 每 400ms 一块，总共 1.2 秒，已经超过 1 秒的超时时间。
+		for _, part := range []string{"a", "b", "c"} {
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n", part)
+			w.(http.Flusher).Flush()
+			select {
+			case <-time.After(400 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
 		}
-		io.WriteString(w, `data: {"choices":[{"delta":{"content":"b"},"finish_reason":"stop"}]}`+"\n\n")
 		io.WriteString(w, "data: [DONE]\n\n")
 		w.(http.Flusher).Flush()
 	}))
 	defer up.Close()
 
-	seedSingleRoute(t, st, "stream-slow", up.URL, 1)
+	seedSingleRoute(t, st, "stream-paced", up.URL, 1)
 
 	req := &Request{
 		Path: "/v1/chat/completions", Method: http.MethodPost,
@@ -2070,7 +2073,49 @@ func TestStreamTimeoutStopsAfterFirstChunk(t *testing.T) {
 	}
 	res := New(st).Do(context.Background(), httptest.NewRecorder(), req)
 	if res.Err != "" {
-		t.Fatalf("首字到达后不应再受超时限制: %+v", res)
+		t.Fatalf("块间隔小于超时时间时不应失败: %+v", res)
+	}
+	if res.Canceled {
+		t.Fatalf("不应记为客户端断开: %+v", res)
+	}
+}
+
+// 首块之后只发心跳、迟迟不出新内容时按停滞判定，不能无限期等下去。
+func TestStreamStallsAfterContentWhenUpstreamGoesSilent(t *testing.T) {
+	st := newTestStore(t)
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"a"}}]}`+"\n\n")
+		w.(http.Flusher).Flush()
+		// 之后只发心跳，不再有任何真实内容：心跳不能让请求一直挂着。
+		for {
+			select {
+			case <-time.After(200 * time.Millisecond):
+				io.WriteString(w, ": ping\n\n")
+				w.(http.Flusher).Flush()
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}))
+	defer up.Close()
+
+	seedSingleRoute(t, st, "stream-heartbeat", up.URL, 1)
+
+	req := &Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost,
+		Header: http.Header{}, Body: []byte(`{"model":"m","stream":true,"messages":[]}`), Stream: true,
+		JSON: map[string]any{"model": "m", "stream": true},
+	}
+	started := time.Now()
+	res := New(st).Do(context.Background(), httptest.NewRecorder(), req)
+	if !strings.Contains(res.Err, "停滞") {
+		t.Fatalf("只有心跳时应判为上游响应停滞: %+v", res)
+	}
+	if spent := time.Since(started); spent > 3*time.Second {
+		t.Fatalf("停滞判定不及时，耗时 %s", spent)
 	}
 	if res.Canceled {
 		t.Fatalf("不应记为客户端断开: %+v", res)

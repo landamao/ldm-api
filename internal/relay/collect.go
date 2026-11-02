@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"ldmapi/internal/upstream"
@@ -32,13 +31,12 @@ func withStream(in map[string]any) map[string]any {
 // 返回的 outcome 在失败时 wrote 为 false——这时还没有任何一个字节写给调用方，
 // 因此可以像普通非流式请求一样继续尝试后面的路由。
 func collectStream(ctx context.Context, w http.ResponseWriter, req *Request, resp *http.Response,
-	st upstream.Stream, timer *time.Timer, timedOut *atomic.Bool, started time.Time) attemptOutcome {
+	st upstream.Stream, clock *attemptClock, started time.Time) attemptOutcome {
 
 	col := upstream.NewCollector()
 	// 兜底值先用响应头到达的时间：上游一直没吐内容（例如中途断开）时，
 	// 至少还能看出等响应头花了多久。拿到第一段真正的内容后会覆盖成更准的值。
-	firstByte := time.Since(started).Milliseconds()
-	gotFirst := false
+	firstByte := elapsedMs(started)
 	gotContent := false
 	reader := resp.Body
 	tmp := make([]byte, 32*1024)
@@ -50,21 +48,20 @@ func collectStream(ctx context.Context, w http.ResponseWriter, req *Request, res
 			return
 		}
 		col.Feed(out)
-		if !gotContent && col.HasContent() {
-			gotContent = true
-			firstByte = time.Since(started).Milliseconds()
+		if !upstream.HasVisibleDelta(out) {
+			return
 		}
+		if !gotContent {
+			gotContent = true
+			firstByte = elapsedMs(started)
+		}
+		// 只有真实输出才续命：心跳、只带 role 的空块、纯 usage 块都不算。
+		// 上游靠心跳吊着连接却一直不出字时，停顿超过超时时间就判停滞换路由。
+		clock.progress()
 	}
 	for {
 		n, rerr := reader.Read(tmp)
 		if n > 0 {
-			// 首块数据到达：超时只约束到首字，之后不再限时。
-			// 定时器按「首块数据」停，与流式路径保持一致：心跳也算上游活着，
-			// 只是不计入下面展示的首字耗时。
-			if !gotFirst {
-				gotFirst = true
-				timer.Stop()
-			}
 			pending = append(pending, tmp[:n]...)
 			for {
 				idx := indexByte(pending, '\n')
@@ -87,8 +84,8 @@ func collectStream(ctx context.Context, w http.ResponseWriter, req *Request, res
 			return attemptOutcome{err: errors.New("客户端已断开连接"), canceled: true, firstByte: firstByte}
 		}
 		// 传输层失败只影响本次尝试，不记到 Key 头上（超时、断流跟 Key 本身无关）。
-		if timedOut.Load() {
-			return attemptOutcome{err: errors.New("上游响应超时"), retryable: true,
+		if reason := clock.reason(); reason != "" {
+			return attemptOutcome{err: errors.New(reason), retryable: true,
 				status: http.StatusBadGateway, firstByte: firstByte}
 		}
 		return attemptOutcome{err: fmt.Errorf("读取上游响应失败: %w", rerr), retryable: true,
