@@ -126,6 +126,15 @@
     });
     return map;
   }
+  // 图例、环形图、趋势曲线共用的模型清单：
+  // 请求数口径用「调用次数前 12」，Token 口径用后端另给的「按 Token 消耗前 12」，
+  // 三处显示同一批模型、同一套颜色，切口径时不会各说各话。
+  function dashModelList(breakdown, isTok) {
+    const rows = breakdown.models || [];
+    if (!isTok) return rows;
+    const byTok = breakdown.models_by_tokens || [];
+    return byTok.length ? byTok : rows;
+  }
   const DASH_UNIT_KEY = 'ldmapi.dashboard.unit';
   const dashUnit = { mode: 'cn' };
   try {
@@ -355,11 +364,7 @@
           recent: body.querySelector('#recent-logs'),
         };
         body.querySelectorAll('#metric-toggle button').forEach((b) => {
-          b.onclick = () => {
-            dashMetric.m = b.dataset.m;
-            body.querySelectorAll('#metric-toggle button').forEach((x) => x.classList.toggle('is-on', x === b));
-            paintTrend();
-          };
+          b.onclick = () => setTrendMetric(b.dataset.m);
         });
         // 环形图的口径开关：切请求数 / Token，只重画环形图，不动别的卡片。
         body.querySelectorAll('#donut-metric-toggle button').forEach((b) => {
@@ -370,6 +375,16 @@
           };
         });
         body.querySelector('#go-logs').onclick = () => { location.hash = '#/logs'; };
+      }
+
+      // 切换调用趋势的口径（请求数 / Token）。
+      // 曲线和图例必须一起重画：图例里的模型数字、模型清单都跟着这个口径走，
+      // 只重画曲线的话，下面的图例会停在旧口径上，两处对不上。
+      function setTrendMetric(m) {
+        dashMetric.m = m;
+        body.querySelectorAll('#metric-toggle button').forEach((x) => x.classList.toggle('is-on', x.dataset.m === m));
+        paintTrend();
+        paintLegend();
       }
 
       // 选中的模型没有 Token / 速度记录时（老数据只记了请求数和失败数），
@@ -440,7 +455,11 @@
         const labels = points.map((p) => timeLabel(p.time, series.step_ms * points.length));
         const times = points.map((p) => p.time);
         const kind = dashSel.kind;
-        const modelRows = breakdown.models || [];
+        const isTok = dashMetric.m === 'tokens';
+        // 模型清单跟着上面的维度走：Token 口径用「按 Token 消耗排」的列表，
+        // 和图例、环形图是同一批模型、同一套颜色。
+        const modelRows = dashModelList(breakdown, isTok);
+        const colors = dashModelColors(breakdown);
         const ms = series.model_series || {};
         // 汇总曲线：请求数 / 成功数 / 失败数
         const summary = (pts) => ([
@@ -464,12 +483,12 @@
             // 没有 Token 数据的模型照画（值是 0），在图下注明有几个模型缺数据，
             // 免得贴底的 0 线被当成「这段时间没调用」。
             s = [];
-            modelRows.forEach((m, i) => {
+            modelRows.forEach((m) => {
               const one = ms[m.name];
               if (!one) return;
               s.push({
                 name: m.name,
-                color: DASH_MODEL_COLORS[i % DASH_MODEL_COLORS.length],
+                color: colors.get(m.name) || DASH_MODEL_COLORS[0],
                 values: one.total_tokens,
               });
             });
@@ -502,12 +521,12 @@
         } else {
           // 各模型：每个模型一条总请求数曲线，另加一条总失败数。
           s = [];
-          modelRows.forEach((m, i) => {
+          modelRows.forEach((m) => {
             const one = ms[m.name];
             if (!one) return;
             s.push({
               name: m.name,
-              color: DASH_MODEL_COLORS[i % DASH_MODEL_COLORS.length],
+              color: colors.get(m.name) || DASH_MODEL_COLORS[0],
               values: one.requests,
             });
           });
@@ -555,15 +574,18 @@
       function paintLegend() {
         const { breakdown, series } = dashData;
         const kind = dashSel.kind;
-        const modelRows = breakdown.models || [];
+        // 图例数字跟着上面的维度走：请求数维度显示调用次数，Token 维度显示 Token 消耗，
+        // 这样图例数字和图上的曲线是同一个口径，不会对不上。
+        const isTok = dashMetric.m === 'tokens';
+        // 模型清单也跟着口径走：Token 口径用「按 Token 消耗排」的列表，
+        // 和环形图、趋势曲线是同一批模型、同一套颜色。
+        const modelRows = dashModelList(breakdown, isTok);
+        const colors = dashModelColors(breakdown);
         const ms = series.model_series || {};
         const totalReq = breakdown.total || 0;
         const totalErr = breakdown.errors || 0;
         const totalTok = breakdown.tokens_used || 0;
         const failTag = (n) => (n ? `<span class="chart-legend__fail">${fmtDash(n)} 失败</span>` : '');
-        // 图例数字跟着上面的维度走：请求数维度显示调用次数，Token 维度显示 Token 消耗，
-        // 这样图例数字和图上的曲线是同一个口径，不会对不上。
-        const isTok = dashMetric.m === 'tokens';
         const totalVal = isTok ? totalTok : totalReq;
         const items = [
           `<button type="button" class="chart-legend__item chart-legend__btn${kind === 'all' ? ' is-on' : ''}" data-sel="all" title="每个模型一条曲线">
@@ -578,8 +600,8 @@
             ${failTag(totalErr)}
           </button>`,
         ];
-        modelRows.forEach((m, i) => {
-          const color = DASH_MODEL_COLORS[i % DASH_MODEL_COLORS.length];
+        modelRows.forEach((m) => {
+          const color = colors.get(m.name) || DASH_MODEL_COLORS[0];
           const hasLine = !!ms[m.name];
           const on = kind === 'model' && dashSel.id === m.name;
           const val = isTok ? (m.tokens || 0) : m.value;
@@ -615,12 +637,11 @@
       function paintDonut() {
         const { breakdown } = dashData;
         const scoped = dashSel.kind === 'model';
-        const modelRows = breakdown.models || [];
         // 请求数口径看调用次数，Token 口径看 Token 消耗。
         const isTok = dashDonutMetric.m === 'tokens';
         // Token 口径用后端另给的一份「按 Token 排」的模型列表，
         // 免得调用不多但特别耗 Token 的模型排在「调用次数前 12」之外被漏掉。
-        const src = isTok ? (breakdown.models_by_tokens || modelRows) : modelRows;
+        const src = dashModelList(breakdown, isTok);
         const colors = dashModelColors(breakdown);
         const items = src
           // Token 口径下没有 Token 记录的模型不进环，免得显示成 0 的空档。
@@ -642,7 +663,7 @@
         // 副标题写清当前口径，别让人对着百分比猜这个环是按什么分的。
         let sub = dashRangeInfo().label + (isTok ? ' · 按 Token 消耗' : ' · 按调用次数');
         const total = items.reduce((a, b) => a + b.value, 0);
-        if (isTok && total === 0 && modelRows.some((x) => x.value > 0)) {
+        if (isTok && total === 0 && (breakdown.models || []).some((x) => x.value > 0)) {
           sub += '（历史数据未按模型记录 Token）';
         }
         dom.donutSub.textContent = sub;

@@ -496,9 +496,29 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 			totals[name] = total
 		}
 	}
-	series := map[string]modelSeries{}
+	// 分模型序列同时带上「按 Token 消耗排」的模型：调用不多但特别耗 Token 的模型
+	// 在调用量前 dashModelSeriesLimit 个里排不进来，前端切到 Token 口径时
+	// 得能画它的曲线，不然图例里有这个模型、图上却没有线。
+	tokenTotals := map[string]int64{}
+	for name, mm := range byModel {
+		var total int64
+		for _, mp := range mm {
+			total += mp.TotalTokens
+		}
+		if total > 0 {
+			tokenTotals[name] = total
+		}
+	}
+	picked := map[string]bool{}
 	for _, kv := range topN(totals, dashModelSeriesLimit) {
-		mm := byModel[kv.Name]
+		picked[kv.Name] = true
+	}
+	for _, kv := range topN(tokenTotals, dashModelSeriesLimit) {
+		picked[kv.Name] = true
+	}
+	series := map[string]modelSeries{}
+	for name := range picked {
+		mm := byModel[name]
 		ms := modelSeries{
 			Requests:         make([]int64, 0, len(keys)),
 			Errors:           make([]int64, 0, len(keys)),
@@ -514,7 +534,7 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 			ms.CompletionTokens = append(ms.CompletionTokens, mp.CompletionTokens)
 			ms.TotalTokens = append(ms.TotalTokens, mp.TotalTokens)
 		}
-		series[kv.Name] = ms
+		series[name] = ms
 	}
 	out["model_series"] = series
 	writeOK(w, out)

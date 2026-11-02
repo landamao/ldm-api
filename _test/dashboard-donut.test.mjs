@@ -27,6 +27,7 @@ function extractFn(name) {
 
 const PAINT_DONUT = extractFn('paintDonut');
 const MODEL_COLORS_FN = extractFn('dashModelColors');
+const MODEL_LIST_FN = extractFn('dashModelList');
 const FMT_DASH = extractFn('fmtDash');
 const COLORS = SRC.match(/const DASH_MODEL_COLORS = \[[\s\S]*?\];/)[0];
 
@@ -67,7 +68,7 @@ function run(metric, opts = {}) {
     dashRangeInfo: () => ({ label: '今日' }),
   };
   vm.createContext(ctx);
-  vm.runInContext(`${COLORS}\n${FMT_DASH}\n${MODEL_COLORS_FN}\n${PAINT_DONUT}`, ctx);
+  vm.runInContext(`${COLORS}\n${FMT_DASH}\n${MODEL_LIST_FN}\n${MODEL_COLORS_FN}\n${PAINT_DONUT}`, ctx);
   ctx.paintDonut();
   // vm 里造出来的对象原型和主 realm 不同，摊平成主 realm 的普通对象再比较。
   const items = Array.from(captured.items, (i) => ({ name: i.name, value: i.value, color: i.color }));

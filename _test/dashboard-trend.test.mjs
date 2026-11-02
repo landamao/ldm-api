@@ -28,6 +28,9 @@ function extractFn(name) {
 const PAINT_TREND = extractFn('paintTrend');
 const KNOWN_FLAGS = extractFn('knownFlags');
 const FMT_DASH = extractFn('fmtDash');
+const MODEL_LIST_FN = extractFn('dashModelList');
+const MODEL_COLORS_FN = extractFn('dashModelColors');
+const SET_METRIC = extractFn('setTrendMetric');
 const COLORS = SRC.match(/const DASH_MODEL_COLORS = \[[\s\S]*?\];/)[0];
 
 // 一个模型的 token 序列：有数据的 A / B，和完全没有 token 数据的 C。
@@ -92,7 +95,7 @@ function run(metric, kind, id, data = makeData()) {
     areaChart: (_el, opts) => { captured = opts; },
   };
   vm.createContext(ctx);
-  vm.runInContext(`${COLORS}\n${FMT_DASH}\n${KNOWN_FLAGS}\n${PAINT_TREND}`, ctx);
+  vm.runInContext(`${COLORS}\n${FMT_DASH}\n${KNOWN_FLAGS}\n${MODEL_LIST_FN}\n${MODEL_COLORS_FN}\n${PAINT_TREND}`, ctx);
   ctx.paintTrend();
   return { opts: captured, sub: dom.trendSub.textContent, note: dom.note.textContent };
 }
@@ -158,7 +161,7 @@ test('Token 维度 · 单个模型没有 Token 记录时给出说明', () => {
 
 const PAINT_LEGEND = extractFn('paintLegend');
 
-function legend(metric) {
+function legend(metric, breakdown) {
   const data = makeData();
   data.breakdown.models = [
     { name: '模型A', value: 18, errors: 1, tokens: 2700 },
@@ -166,6 +169,7 @@ function legend(metric) {
     { name: '模型C', value: 0, errors: 0, tokens: 0 },
   ];
   data.breakdown.tokens_used = 4500;
+  if (breakdown) Object.assign(data.breakdown, breakdown);
   const dom = { legend: { innerHTML: '', querySelectorAll: () => [] } };
   const ctx = {
     console,
@@ -179,7 +183,7 @@ function legend(metric) {
     fmtDash: undefined,
   };
   vm.createContext(ctx);
-  vm.runInContext(`${COLORS}\n${FMT_DASH}\n${PAINT_LEGEND}`, ctx);
+  vm.runInContext(`${COLORS}\n${FMT_DASH}\n${MODEL_LIST_FN}\n${MODEL_COLORS_FN}\n${PAINT_LEGEND}`, ctx);
   ctx.paintLegend();
   return dom.legend.innerHTML;
 }
@@ -199,4 +203,49 @@ test('图例 · Token 维度：模型后面是 Token 消耗', () => {
 test('图例 · 总计项的数字跟着维度走', () => {
   assert.match(legend('requests'), /总计[\s\S]*?<b>30<\/b>/);
   assert.match(legend('tokens'), /总计[\s\S]*?<b>4,?500<\/b>/);
+});
+
+// ---------------------------------------------------------------------------
+// 切口径时图例必须跟着重画
+// ---------------------------------------------------------------------------
+
+test('切口径时曲线和图例一起重画', () => {
+  const calls = [];
+  const buttons = [{ dataset: { m: 'requests' }, classList: { toggle: () => {} } },
+    { dataset: { m: 'tokens' }, classList: { toggle: () => {} } }];
+  const ctx = {
+    dashMetric: { m: 'requests' },
+    body: { querySelectorAll: () => buttons },
+    paintTrend: () => calls.push('trend'),
+    paintLegend: () => calls.push('legend'),
+  };
+  vm.createContext(ctx);
+  vm.runInContext(SET_METRIC, ctx);
+  ctx.setTrendMetric('tokens');
+  assert.equal(ctx.dashMetric.m, 'tokens', '口径要切过去');
+  assert.deepEqual(calls, ['trend', 'legend'], '图例必须一起重画，否则停在旧口径上');
+});
+
+test('图例 · Token 维度用「按 Token 排」的模型清单，和环形图一致', () => {
+  // 模型D 调用次数只有 3 次排不进「调用次数前 12」，但 Token 消耗最高，
+  // 和环形图一样，Token 口径下要出现在图例里。
+  const html = legend('tokens', {
+    models_by_tokens: [
+      { name: '模型D', value: 3, errors: 0, tokens: 9900 },
+      { name: '模型A', value: 18, errors: 1, tokens: 2700 },
+    ],
+  });
+  assert.match(html, /模型D/, 'Token 口径下图例要列出按 Token 排的模型');
+  assert.doesNotMatch(html, /模型C/, '不在 Token 清单里的模型不显示');
+  assert.match(html, /模型D[\s\S]*?<b>9,?900<\/b>/);
+});
+
+test('图例 · 请求数维度仍用「按调用次数排」的模型清单', () => {
+  const html = legend('requests', {
+    models_by_tokens: [
+      { name: '模型D', value: 3, errors: 0, tokens: 9900 },
+    ],
+  });
+  assert.doesNotMatch(html, /模型D/, '请求数口径不按 Token 清单显示');
+  assert.match(html, /模型A/);
 });

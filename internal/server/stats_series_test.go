@@ -291,3 +291,62 @@ func TestStatsBreakdownOrdersModelsByTokens(t *testing.T) {
 		t.Errorf("models 应按调用次数排，model-a 在前，实际 %+v", out.Models)
 	}
 }
+
+// 分模型序列要同时带上「按 Token 消耗排」的模型：
+// 调用次数不多、单次却特别长的模型在调用量前 12 里排不进来，
+// 前端切到 Token 口径时得能画它的曲线，不然图例里有这个模型、图上却没有线。
+func TestStatsSeriesIncludesTokenHeavyModels(t *testing.T) {
+	s, st := newTestServer(t, "stats-series-token-heavy")
+
+	now := time.Now()
+	for _, m := range []struct {
+		id     string
+		calls  int
+		tokens int
+	}{
+		{"model-a", 10, 100},
+		{"model-b", 1, 9000},
+	} {
+		for i := 0; i < m.calls; i++ {
+			err := st.RecordStat(store.Log{
+				Time:             now.UnixMilli(),
+				ModelID:          m.id,
+				ChannelID:        "ch-1",
+				PromptTokens:     m.tokens * 4 / 5,
+				CompletionTokens: m.tokens / 5,
+				TotalTokens:      m.tokens,
+				StatusCode:       200,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats/series?range=all", nil)
+	rec := httptest.NewRecorder()
+	s.statsSeries(rec, req)
+
+	var out struct {
+		ModelSeries map[string]struct {
+			Requests    []int64 `json:"requests"`
+			TotalTokens []int64 `json:"total_tokens"`
+		} `json:"model_series"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	// model-b 只调了 1 次，调用量排不进前 12，但 Token 消耗最高，得有它的序列。
+	one, ok := out.ModelSeries["model-b"]
+	if !ok {
+		t.Fatalf("model_series 缺少 model-b（Token 消耗最高），实际 %v", out.ModelSeries)
+	}
+	var tokSum int64
+	for _, v := range one.TotalTokens {
+		tokSum += v
+	}
+	if tokSum != 9000 {
+		t.Errorf("model-b 的总 Token = %d，期望 9000", tokSum)
+	}
+}
