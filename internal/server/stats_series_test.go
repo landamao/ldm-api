@@ -216,3 +216,78 @@ func TestStatsBreakdownCarriesPerModelTokens(t *testing.T) {
 		t.Errorf("tokens_used = %d，期望 420", out.TokensUsed)
 	}
 }
+
+// 看板环形图切到 Token 口径时，要能按 Token 消耗排模型：
+// 调用次数不多、单次却特别长的模型在「调用次数前 12」里排不进来，
+// 所以 breakdown 还得给一份按 Token 消耗排的模型列表。
+func TestStatsBreakdownOrdersModelsByTokens(t *testing.T) {
+	s, st := newTestServer(t, "stats-breakdown-tokens")
+
+	now := time.Now()
+	// model-a 调用次数多但每次很省 Token，model-b 调用只有一次但吃掉的 Token 最多。
+	for _, m := range []struct {
+		id    string
+		calls int
+		tokens int
+	}{
+		{"model-a", 10, 100},
+		{"model-b", 1, 9000},
+	} {
+		for i := 0; i < m.calls; i++ {
+			err := st.RecordStat(store.Log{
+				Time:             now.UnixMilli(),
+				ModelID:          m.id,
+				ChannelID:        "ch-1",
+				PromptTokens:     m.tokens * 4 / 5,
+				CompletionTokens: m.tokens / 5,
+				TotalTokens:      m.tokens,
+				StatusCode:       200,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats/breakdown?range=all", nil)
+	rec := httptest.NewRecorder()
+	s.statsBreakdown(rec, req)
+
+	var out struct {
+		Models []struct {
+			Name   string `json:"name"`
+			Value  int64  `json:"value"`
+			Tokens int64  `json:"tokens"`
+		} `json:"models"`
+		ModelsByTokens []struct {
+			Name   string `json:"name"`
+			Value  int64  `json:"value"`
+			Tokens int64  `json:"tokens"`
+		} `json:"models_by_tokens"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(out.ModelsByTokens) != 2 {
+		t.Fatalf("models_by_tokens 应有 2 项，实际 %d 项", len(out.ModelsByTokens))
+	}
+	// 按 Token 消耗排：model-b（9000）在前，model-a（1000）在后。
+	if out.ModelsByTokens[0].Name != "model-b" {
+		t.Errorf("models_by_tokens 第一项应是 model-b，实际 %s", out.ModelsByTokens[0].Name)
+	}
+	if out.ModelsByTokens[0].Tokens != 9000 {
+		t.Errorf("model-b 的 tokens = %d，期望 9000", out.ModelsByTokens[0].Tokens)
+	}
+	// 两份列表都带上另一个口径的数字，前端切口径时不用再发一次请求。
+	for _, m := range out.ModelsByTokens {
+		wantCalls := map[string]int64{"model-a": 10, "model-b": 1}[m.Name]
+		if m.Value != wantCalls {
+			t.Errorf("%s 的调用次数 = %d，期望 %d", m.Name, m.Value, wantCalls)
+		}
+	}
+	// 调用次数维度仍然按调用次数排：model-a 调用多，在前。
+	if len(out.Models) != 2 || out.Models[0].Name != "model-a" {
+		t.Errorf("models 应按调用次数排，model-a 在前，实际 %+v", out.Models)
+	}
+}

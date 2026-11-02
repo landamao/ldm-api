@@ -582,14 +582,26 @@ func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 			Tokens: modelToks[kv.Name],
 		})
 	}
+	// 另给一份按 Token 消耗排的模型列表：调用次数不多、单次却特别长的模型
+	// 在「调用次数前 12」里排不进来，看板环形图切到 Token 口径时得能看见它们。
+	tokenList := []modelBreakdown{}
+	for _, kv := range topN(modelToks, 12) {
+		tokenList = append(tokenList, modelBreakdown{
+			Name:   kv.Name,
+			Value:  models[kv.Name],
+			Errors: modelErrs[kv.Name],
+			Tokens: kv.Value,
+		})
+	}
 
 	writeOK(w, map[string]any{
-		"models":      modelList,
-		"channels":    topN(channels, 12),
-		"tokens":      topN(tokenUsage, 12),
-		"total":       totalReq,
-		"errors":      totalErr,
-		"tokens_used": totalTok,
+		"models":           modelList,
+		"models_by_tokens": tokenList,
+		"channels":         topN(channels, 12),
+		"tokens":           topN(tokenUsage, 12),
+		"total":            totalReq,
+		"errors":           totalErr,
+		"tokens_used":      totalTok,
 	})
 }
 

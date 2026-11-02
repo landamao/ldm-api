@@ -359,13 +359,15 @@
 
   /**
    * 环形图
-   * opts: { items:[{name,value,color}], size, thickness }
+   * opts: { items:[{name,value,color}], size, thickness, valueFmt, centerLabel }
    */
   function donutChart(container, opts) {
     const { items = [], size = 168, thickness = 20 } = opts;
     const valueFmt = opts.valueFmt || null;
     const totalFmt = valueFmt || fmtNum;
     const itemFmt = valueFmt || fmtInt;
+    // 中心那个小字说明总数是什么口径：调用次数是「总调用」，Token 消耗是「总 Token」。
+    const centerLabel = opts.centerLabel || '总调用';
     const total = items.reduce((a, b) => a + b.value, 0);
     const r = (size - thickness) / 2;
     const cx = size / 2, cy = size / 2;
@@ -390,15 +392,15 @@
       <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="flex-shrink:0">
         ${arcs.join('')}
         <text x="${cx}" y="${cy - 4}" text-anchor="middle" style="font-size:20px;font-weight:700;fill:var(--text);font-family:var(--font)">${esc(totalFmt(total))}</text>
-        <text x="${cx}" y="${cy + 15}" text-anchor="middle" style="font-size:10.5px;fill:var(--text-3);font-family:var(--font)">总调用</text>
+        <text x="${cx}" y="${cy + 15}" text-anchor="middle" style="font-size:10.5px;fill:var(--text-3);font-family:var(--font)">${esc(centerLabel)}</text>
       </svg>
       <div style="flex:1;min-width:150px;display:flex;flex-direction:column;gap:8px">
         ${items.length === 0 ? '<div class="muted fs-12">暂无数据</div>' : items.map((it, i) => `
           <div style="display:flex;align-items:center;gap:8px;font-size:12.5px">
             <span style="width:8px;height:8px;border-radius:3px;background:${it.color || PALETTE[i % PALETTE.length]};flex-shrink:0"></span>
             <span class="truncate" style="max-width:140px;font-family:var(--mono);font-size:11.5px">${esc(it.name)}</span>
-            <span style="margin-left:auto;color:var(--text-2);font-variant-numeric:tabular-nums">${esc(itemFmt(it.value))}</span>
-            <span class="muted" style="width:42px;text-align:right;font-size:11px">${total ? ((it.value / total) * 100).toFixed(1) + '%' : '0%'}</span>
+            <span style="margin-left:auto;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap;flex-shrink:0">${esc(itemFmt(it.value))}</span>
+            <span class="muted" style="width:42px;text-align:right;font-size:11px;flex-shrink:0">${total ? ((it.value / total) * 100).toFixed(1) + '%' : '0%'}</span>
           </div>`).join('')}
       </div>
     </div>`;
