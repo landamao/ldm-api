@@ -440,6 +440,21 @@
     observers.set(container, ro);
   }
 
+  /**
+   * 清空图表并停掉尺寸观察器。
+   * 看板切区间时会把图表换回占位骨架，观察器留着的话窗口一改大小，
+   * 旧区间的曲线会被重新画到占位上。
+   */
+  function clearChart(container) {
+    if (!container) return;
+    const ro = observers.get(container);
+    if (ro) {
+      ro.disconnect();
+      observers.delete(container);
+    }
+    container.innerHTML = '';
+  }
+
   function debounce(fn, wait) {
     let t;
     return function () {
@@ -448,5 +463,5 @@
     };
   }
 
-  window.Charts = { areaChart, barChart, donutChart, rankList, PALETTE, timeLabel, hideTip, animateLines, niceScale };
+  window.Charts = { areaChart, barChart, donutChart, rankList, PALETTE, timeLabel, hideTip, animateLines, niceScale, clearChart };
 })();

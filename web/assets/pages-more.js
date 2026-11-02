@@ -11,7 +11,7 @@
     REPO_URL,
   } = window.LDM;
 
-  const { areaChart, barChart, donutChart, rankList, timeLabel, hideTip } = window.Charts;
+  const { areaChart, barChart, donutChart, rankList, timeLabel, hideTip, clearChart } = window.Charts;
 
   // 密钥默认只露头尾，点眼睛才展开——列表一屏能显示很多条，明文摆着太容易泄露
   const maskKey = (k) => {
@@ -193,6 +193,38 @@
     return n.toLocaleString('zh-CN');
   }
 
+  // 统计还没算完时的占位：值位先留一条浅色骨架，数据回来原地替换，
+  // 卡片高度不会跟着跳一下。图表和排行也用同一套，页面先出来再慢慢填。
+  const dashPh = (w, extra) => `<span class="dash-ph${extra ? ' ' + extra : ''}" style="width:${w}px"></span>`;
+  const dashChartPh = (height) => `<div class="dash-ph-chart" style="height:${height}px">
+    <span class="dash-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>统计中…</span>
+  </div>`;
+  const dashRankPh = () => `<div class="rank-list">${[0, 1, 2, 3, 4].map((i) => `
+    <div class="rank-item">
+      <div class="rank-item__top">
+        ${dashPh(116 - i * 9)}
+        <span class="dash-ph" style="width:40px;margin-left:auto"></span>
+      </div>
+      <div class="rank-item__bar"></div>
+    </div>`).join('')}</div>`;
+  // 最近调用：表头先出来，行内容用占位条顶着，日志回来再替换
+  const dashLogsPh = () => `<div class="table-wrap" style="border:none;border-radius:0">
+    <table class="tbl tbl--flat">
+      <thead><tr>
+        <th>时间</th><th>模型</th><th>渠道</th><th class="right">耗时</th>
+        <th class="right">Token</th><th>状态</th>
+      </tr></thead>
+      <tbody>${[0, 1, 2, 3, 4, 5, 6, 7].map(() => `<tr>
+        <td>${dashPh(112)}</td>
+        <td>${dashPh(74)}</td>
+        <td>${dashPh(46)}</td>
+        <td class="right">${dashPh(36)}</td>
+        <td class="right">${dashPh(42)}</td>
+        <td>${dashPh(46)}</td>
+      </tr>`).join('')}</tbody>
+    </table>
+  </div>`;
+
   // 统计区间按北京时间划自然日，累计起点也按北京时间取日期，跨时区查看时不会差一天
   function dashDay(ms) {
     const d = new Date(ms + 8 * 3600 * 1000);
@@ -222,11 +254,11 @@
         </select>
         <button class="btn" id="btn-refresh">${icon('refresh', 14)}刷新</button>`;
 
-      actions.querySelector('#btn-refresh').onclick = () => window.LDM.navigate();
+      actions.querySelector('#btn-refresh').onclick = () => loadAll();
       actions.querySelector('#dash-unit').onchange = (e) => {
         dashUnit.mode = e.target.value;
         try { localStorage.setItem(DASH_UNIT_KEY, dashUnit.mode); } catch (err) { /* 忽略配额错误 */ }
-        if (dashData) paintAll();
+        paintData();
       };
 
       // 时间区间：预设下拉和起止输入框是同一份状态，改哪个都能生效。
@@ -283,36 +315,69 @@
         el.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); apply(); } };
       });
 
-      root.innerHTML = `<div id="dash-body">${loadingBlock()}</div>`;
+      // 页面骨架和取数分开：先把所有卡片、图表占位铺出来，再去拉数据。
+      // 以前是等四个接口全回来才建 DOM，统计慢一点整页就停在加载圈上。
+      root.innerHTML = `<div id="dash-body"></div>`;
       const body = root.querySelector('#dash-body');
 
-      let dashData = null;
+      // 各区块的数据分开存：谁先回来谁先填，不用等最慢的那个接口。
+      // 初始为 null，paint* 遇到没数据的区块直接跳过，骨架继续留在页面上。
+      const dashData = { overview: null, series: null, breakdown: null, logs: null };
       let dom = null;
       let loadSeq = 0;
+
+      buildSkeleton();
+      loadAll();
 
       // 拉全量数据：首次进入、切区间、刷新
       async function loadAll() {
         const seq = ++loadSeq;
-        try {
-          // 选中某个模型时，统计和序列都按该模型取；「各模型」「总计」都是全局视图。
-          const scope = dashSel.kind === 'model' ? '&model=' + encodeURIComponent(dashSel.id) : '';
-          // 区间查询串只算一次，三个接口用的是同一段起止时间
-          const rangeQS = dashRangeQuery().toString();
-          const [overview, series, breakdown, logs] = await Promise.all([
-            API.get('/api/stats/overview?' + rangeQS + scope),
+        const stale = () => seq !== loadSeq;
+        // 区间变了，旧数字先清掉回到骨架，避免把上一段的统计当成这一段的
+        resetComputed();
+        clearLoadError();
+        // 选中某个模型时，统计和序列都按该模型取；「各模型」「总计」都是全局视图。
+        const scope = dashSel.kind === 'model' ? '&model=' + encodeURIComponent(dashSel.id) : '';
+        // 区间查询串只算一次，几个接口用的是同一段起止时间
+        const rangeQS = dashRangeQuery().toString();
+
+        // 三组请求并行：统计卡 / 图表（曲线 + 分布）/ 最近调用。
+        // 每组回来就填自己那块，统计卡不用等曲线数据一起到才显示数字。
+        const results = await Promise.allSettled([
+          API.get('/api/stats/overview?' + rangeQS + scope).then((overview) => {
+            if (stale()) return;
+            dashData.overview = overview;
+            paintStats();
+          }),
+          Promise.all([
             API.get('/api/stats/series?' + rangeQS + scope),
             API.get('/api/stats/breakdown?' + rangeQS),
-            API.get('/api/logs?limit=8'),
-          ]);
-          if (seq !== loadSeq) return;
-          dashData = { overview, series, breakdown, logs };
-        } catch (e) {
-          if (seq !== loadSeq) return;
-          body.innerHTML = `<div class="card card--pad"><div class="alert alert--warn">${icon('alert', 16)}<div>${esc(e.message)}</div></div></div>`;
-          return;
+          ]).then(([series, breakdown]) => {
+            if (stale()) return;
+            dashData.series = series;
+            dashData.breakdown = breakdown;
+            paintTrend();
+            paintLegend();
+            paintDonut();
+            paintRanks();
+          }),
+          API.get('/api/logs?limit=8').then((logs) => {
+            if (stale()) return;
+            dashData.logs = logs;
+            paintLogs();
+          }).catch((e) => {
+            if (stale()) return;
+            paintLogsError(e);
+          }),
+        ]);
+        if (stale()) return;
+        body.removeAttribute('aria-busy');
+        // 最近调用失败已经写在卡片里，这里只提示统计和图表两组
+        const failed = ['统计卡', '图表'].filter((_, i) => results[i].status === 'rejected');
+        if (failed.length) {
+          const reason = results.find((r) => r.status === 'rejected').reason;
+          showLoadError(failed.join('、') + '加载失败：' + ((reason && reason.message) || reason || '未知错误'));
         }
-        if (!dom) buildSkeleton();
-        paintAll();
       }
 
       // 换视图：只重新拉统计和曲线，分布与日志不变。
@@ -339,6 +404,83 @@
         paintTrend();
         paintLegend();
         paintDonut();
+      }
+
+      // 切区间 / 刷新时先回到骨架：旧区间的数字不能留在新区间上，
+      // 顺手把数据也清空，单位切换之类的重画不会拿旧值来填新骨架。
+      function resetComputed() {
+        dashData.overview = null;
+        dashData.series = null;
+        dashData.breakdown = null;
+        paintPlaceholders();
+      }
+
+      // 骨架值：统计卡只留标签，数值和脚注先空着；图表、图例、排行给同尺寸占位，
+      // 数据回来原地替换，卡片高度不会跳一下。最近调用不随区间变化，保持原样。
+      function paintPlaceholders() {
+        hideTip();
+        body.setAttribute('aria-busy', 'true');
+        const label = dashRangeInfo().label;
+        dom.req.innerHTML = `
+          <div class="stat__label">${icon('zap', 13)}${label}请求</div>
+          <div class="stat__value">${dashPh(104, 'dash-ph--value')}</div>
+          <div class="stat__foot">${dashPh(84, 'dash-ph--foot')}</div>`;
+        dom.token.innerHTML = `
+          <div class="stat__label">${icon('bolt', 13)}${label} Token</div>
+          <div class="stat__value">${dashPh(112, 'dash-ph--value')}</div>
+          <div class="stat__foot">${dashPh(72, 'dash-ph--foot')}</div>`;
+        dom.rate.innerHTML = `
+          <div class="stat__label">${icon('check', 13)}成功率</div>
+          <div class="stat__value">${dashPh(88, 'dash-ph--value')}</div>
+          <div class="stat__foot">${dashPh(64, 'dash-ph--foot')}</div>`;
+        dom.speed.innerHTML = `
+          <div class="stat__label">${icon('clock', 13)}平均速度</div>
+          <div class="stat__value">${dashPh(96, 'dash-ph--value')}</div>
+          <div class="stat__foot">${dashPh(150, 'dash-ph--foot')}</div>`;
+        dom.chan.innerHTML = `
+          <div class="stat__label">${icon('channels', 13)}渠道</div>
+          <div class="stat__value">${dashPh(92, 'dash-ph--value')}</div>
+          <div class="stat__foot">${dashPh(76, 'dash-ph--foot')}</div>`;
+        dom.model.innerHTML = `
+          <div class="stat__label">${icon('models', 13)}模型</div>
+          <div class="stat__value">${dashPh(92, 'dash-ph--value')}</div>
+          <div class="stat__foot">${dashPh(76, 'dash-ph--foot')}</div>`;
+
+        dom.trendSub.textContent = '';
+        // 先把旧的曲线和尺寸观察器一起清掉，窗口缩放时旧数据不会画回占位上
+        clearChart(dom.trend);
+        dom.trend.innerHTML = dashChartPh(216);
+        dom.legend.innerHTML = [96, 82, 90, 76]
+          .map((w) => `<span class="dash-ph dash-ph--pill" style="width:${w}px"></span>`).join('');
+        dom.note.textContent = '';
+        dom.donutSub.textContent = '';
+        clearChart(dom.donut);
+        dom.donut.innerHTML = dashChartPh(168);
+        dom.channelRank.innerHTML = dashRankPh();
+        dom.tokenRank.innerHTML = dashRankPh();
+      }
+
+      function clearLoadError() {
+        const el = body.querySelector('#dash-load-error');
+        if (el) el.remove();
+      }
+
+      // 某一组统计失败：顶部给一条可重试的提示，已经填好的区块不受影响。
+      function showLoadError(text) {
+        clearLoadError();
+        const el = document.createElement('div');
+        el.id = 'dash-load-error';
+        el.className = 'alert alert--warn dash-load-error';
+        el.innerHTML = `${icon('alert', 16)}<div><div class="strong">数据加载失败</div><div>${esc(text)}</div></div>
+          <button class="btn btn--sm" id="dash-retry">重试</button>`;
+        body.insertBefore(el, body.firstChild);
+        el.querySelector('#dash-retry').onclick = () => loadAll();
+      }
+
+      function paintLogsError(e) {
+        dom.recent.innerHTML = `<div style="padding:10px 0">
+          <div class="alert alert--warn">${icon('alert', 16)}<div>最近调用加载失败：${esc((e && e.message) || e || '未知错误')}</div></div>
+        </div>`;
       }
 
       // 骨架只建一次，之后所有操作都只重画局部
@@ -422,7 +564,7 @@
                 <button class="btn btn--sm" id="go-logs">查看全部${icon('logs', 13)}</button>
               </div>
             </div>
-            <div id="recent-logs"></div>
+            <div id="recent-logs">${dashLogsPh()}</div>
           </div>`;
 
         dom = {
@@ -478,6 +620,7 @@
       }
 
       function paintStats() {
+        if (!dashData.overview) return;
         const { overview } = dashData;
         const t = overview.current;
         const y = overview.previous;
@@ -528,6 +671,7 @@
       }
 
       function paintTrend() {
+        if (!dashData.series || !dashData.breakdown) return;
         hideTip();
         const { series, breakdown } = dashData;
         const points = series.points || [];
@@ -651,6 +795,7 @@
 
       // 图例既是曲线说明也是视图开关：「各模型」「总计」和各个模型都能点。
       function paintLegend() {
+        if (!dashData.breakdown || !dashData.series) return;
         const { breakdown, series } = dashData;
         const kind = dashSel.kind;
         // 图例数字跟着上面的维度走：请求数维度显示调用次数，Token 维度显示 Token 消耗，
@@ -714,6 +859,7 @@
       }
 
       function paintDonut() {
+        if (!dashData.breakdown) return;
         const { breakdown } = dashData;
         const scoped = dashSel.kind === 'model';
         // 请求数口径看调用次数，Token 口径看 Token 消耗。
@@ -749,12 +895,14 @@
       }
 
       function paintRanks() {
+        if (!dashData.breakdown) return;
         const { breakdown } = dashData;
         rankList(dom.channelRank, breakdown.channels || [], { nameWidth: 200, fmt: fmtDash });
         rankList(dom.tokenRank, breakdown.tokens || [], { nameWidth: 200, fmt: fmtDash });
       }
 
       function paintLogs() {
+        if (!dashData.logs) return;
         const items = (dashData.logs && dashData.logs.items) || [];
         dom.recent.innerHTML = items.length
           ? `<div class="table-wrap" style="border:none;border-radius:0">
@@ -783,16 +931,15 @@
         });
       }
 
-      function paintAll() {
+      // 单位切换只影响数字格式，重画看板上的所有数值区域即可；
+      // light 数据还没回来时各 paint 会自动跳过，不会把骨架冲掉。
+      function paintData() {
         paintStats();
         paintTrend();
         paintLegend();
         paintDonut();
         paintRanks();
-        paintLogs();
       }
-
-      await loadAll();
     },
   });
 

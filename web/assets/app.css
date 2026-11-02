@@ -832,6 +832,75 @@ html[data-theme="dark"] .card__head {
 html[data-theme="dark"] .stat__delta.up { color: var(--leaf-300); }
 html[data-theme="dark"] .stat__delta.down { color: #ff9d8c; }
 
+/* ---------- 看板占位：先出骨架，数据回来再填 ---------- */
+/* 统计接口要聚合日志桶，慢的时候值位先留空，别让整页停在加载圈上。 */
+.dash-ph {
+  position: relative;
+  display: inline-block;
+  height: 12px;
+  vertical-align: middle;
+  border-radius: 6px;
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1.5px var(--border-line);
+  overflow: hidden;
+}
+.dash-ph::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .7), transparent);
+  animation: dashPhSweep 1.4s ease-in-out infinite;
+}
+html[data-theme="dark"] .dash-ph {
+  background: rgba(246, 232, 203, .13);
+  box-shadow: inset 0 0 0 1.5px rgba(246, 232, 203, .07);
+}
+html[data-theme="dark"] .dash-ph::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .08), transparent);
+}
+@keyframes dashPhSweep { to { transform: translateX(100%); } }
+
+/* 数值位比普通骨架高一档，和 23px 的数字占同样的行高，填上以后卡片不跳 */
+.dash-ph--value { height: 24px; border-radius: 8px; }
+.dash-ph--foot { height: 10px; }
+.dash-ph--pill { height: 25px; border-radius: 99px; }
+
+/* 图表占位：固定高度撑住版面，数据回来时曲线直接替换，下面的卡片不会被推走 */
+.dash-ph-chart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 2px dashed var(--border-line);
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--surface-2), transparent 90%);
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+/* 「统计中」前面的三个实心点：不用转圈，安静地闪一下就行 */
+.dash-dots { display: inline-flex; align-items: center; gap: 5px; }
+.dash-dots i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--leaf-500);
+  animation: blink 1.25s infinite both;
+}
+.dash-dots i:nth-child(2) { animation-delay: .18s; }
+.dash-dots i:nth-child(3) { animation-delay: .36s; }
+html[data-theme="dark"] .dash-dots i { background: var(--leaf-300); }
+
+.dash-load-error { margin-bottom: 14px; align-items: center; }
+.dash-load-error .btn { margin-left: auto; flex-shrink: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-ph::after { animation: none; }
+  .dash-dots i { animation: none; opacity: .75; }
+}
+
 /* ---------- 表格：一块原木桌面 ---------- */
 .table-wrap {
   overflow-x: auto;
