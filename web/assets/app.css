@@ -3013,6 +3013,14 @@ html[data-theme="dark"] .msg__answer--md a { color: var(--leaf-300); }
   border: 1.5px solid var(--border-line);
 }
 
+/* 公式：排版交给 KaTeX 自带的样式，这里只管在气泡里的间距和横向溢出 */
+.msg__answer--md .katex-display {
+  margin: 6px 0;
+  padding: 1px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 .msg__answer--md .md-table-wrap {
   margin: 0 0 9px;
   overflow-x: auto;

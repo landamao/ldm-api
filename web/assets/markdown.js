@@ -1,21 +1,24 @@
 /* ==========================================================================
    气泡里的 Markdown 渲染
-   —— 解析用 marked v12（MIT），消毒用 DOMPurify 3.2.6（Apache-2.0 / MPL-2.0）
-   两个库都放在 assets 目录里随二进制一起分发，不引 CDN，内网与离线环境照常可用。
-   这里只做三件事：套一份适合聊天的解析配置、给代码块加复制工具栏、喂给
-   DOMPurify 走一遍白名单（模型输出等同于不可信输入，不能直接塞 innerHTML）。
+   —— 解析用 marked v12（MIT），消毒用 DOMPurify 3.2.6（Apache-2.0 / MPL-2.0），
+      公式用 KaTeX 0.16（MIT）+ marked 官方的 marked-katex-extension（MIT）。
+   四个库都在 assets 目录里随二进制分发，不引 CDN，内网与离线环境照常可用。
+   这里只做配置：给代码块加复制工具栏、给表格加横向滚动容器、套一份适合聊天的
+   解析选项，最后过一遍 DOMPurify 白名单。语法解析和公式识别都由库负责。
    ========================================================================== */
 (function (root) {
   'use strict';
 
   const marked = root.marked;
   const DOMPurify = root.DOMPurify;
+  const katexExt = root.markedKatex;
   if (!marked) return;
 
   const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ESC_MAP[c]);
 
-  // 代码块自己加一条工具栏：左边语言、右边复制按钮（复制走页面上的事件代理）
+  // 两处排版钩子：代码块带语言标签和复制按钮，表格包一层可横向滚动的容器。
+  // 这只是改写 marked 的输出，不是自己解析 Markdown。
   const renderer = new marked.Renderer();
   renderer.code = (code, infostring) => {
     const lang = String(infostring || '').trim().split(/\s+/)[0];
@@ -28,11 +31,23 @@
       + `<pre><code${cls}>${esc(code)}</code></pre>`
       + '</div>';
   };
-
-  // 表格包一层可横向滚动的容器，列多的表不会把气泡撑破
   renderer.table = (header, body) => '<div class="md-table-wrap"><table>'
     + `<thead>${header}</thead><tbody>${body}</tbody>`
     + '</table></div>';
+
+  // 公式：$...$ 行内、$$...$$ 独立成块，由 marked-katex-extension 识别并交给 KaTeX。
+  // nonStandard 让 $ 紧贴中文也能认出来（模型输出普遍不带空格）。
+  // trust 关掉，\href 这类命令不会被放行。KaTeX 没加载就不挂这个扩展，公式原样显示。
+  if (katexExt && root.katex) {
+    marked.use(katexExt({
+      throwOnError: false,
+      strict: 'ignore',
+      trust: false,
+      output: 'htmlAndMathml',
+      nonStandard: true,
+    }));
+  }
+  marked.use({ renderer });
 
   const OPTIONS = {
     gfm: true,
@@ -53,20 +68,13 @@
     });
   }
 
-  // 白名单只放行 Markdown 会产出的标签；样式统一写在 app.css 里，不接收 style
+  // 用 DOMPurify 自带的 HTML + MathML + SVG 三套白名单：KaTeX 的上下标、间距靠
+  // 行内 style 定位，大根号则是一段内联 SVG，少了哪样公式都会散架或缺笔画；
+  // 原文里的 HTML 在 marked 那一步已经被转义（html 选项默认关闭），这里再挡掉能执行脚本的标签。
   const PURIFY = {
-    ALLOWED_TAGS: [
-      'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-      'strong', 'em', 'del', 'code', 'pre', 'blockquote',
-      'ul', 'ol', 'li', 'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
-      'span', 'div', 'button', 'input', 'sup', 'sub', 'kbd', 'details', 'summary',
-    ],
-    ALLOWED_ATTR: [
-      'href', 'title', 'src', 'alt', 'class', 'start', 'type', 'value',
-      'colspan', 'rowspan', 'align', 'reversed', 'checked', 'disabled',
-      'loading', 'target', 'rel', 'data-md-copy',
-    ],
-    ALLOW_DATA_ATTR: true,
+    USE_PROFILES: { html: true, mathMl: true, svg: true },
+    ADD_ATTR: ['target', 'rel', 'data-md-copy', 'loading'],
+    FORBID_TAGS: ['style', 'form', 'iframe', 'object', 'embed'],
   };
 
   // 解析失败时退化成纯文本，不能让气泡整个空掉
@@ -77,7 +85,7 @@
     if (!src.trim()) return '';
     let html;
     try {
-      html = marked.parse(src, { ...OPTIONS, renderer });
+      html = marked.parse(src, { ...OPTIONS });
     } catch (e) {
       return fallback(src);
     }

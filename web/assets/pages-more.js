@@ -1581,10 +1581,6 @@
                       ${switchEl(true, '', 'id="chat-stream" title="关闭后等完整回复再一次性显示"')}
                     </div>
                     <div class="chat-switch-row">
-                      <span class="chat-switch-row__label">Markdown 渲染</span>
-                      ${switchEl(true, '', 'id="chat-md" title="把气泡里的 Markdown 渲染出来，关掉后显示原文"')}
-                    </div>
-                    <div class="chat-switch-row">
                       <span class="chat-switch-row__label">工具调用</span>
                       ${switchEl(false, '', 'id="chat-tools" title="开启后向模型提供获取当前时间的工具，用于测试工具调用"')}
                     </div>
@@ -1748,23 +1744,16 @@
       };
 
       // ---------- 气泡里的 Markdown ----------
-      // 解析交给 assets/markdown.js（marked + DOMPurify，随二进制分发），
+      // 解析交给 assets/markdown.js（marked + DOMPurify + KaTeX，随二进制分发），
       // 这里只管「渲染 / 原文」的状态与节流重绘。
-      const MD_KEY = 'ldmapi.chat.md';
-      let mdOn = true;
-      try { mdOn = localStorage.getItem(MD_KEY) !== '0'; } catch (e) { /* 存储不可用 */ }
-      const mdSwitch = root.querySelector('#chat-md');
-      const mdInput = mdSwitch.querySelector('input');
       const mdReady = !!(window.LDMMD && typeof window.LDMMD.render === 'function');
-      // 库没加载出来（极端情况）就别留一个点了没反应的开关
-      if (!mdReady) mdSwitch.closest('.chat-switch-row').hidden = true;
 
-      // 正文段统一从这里出：md 模式下转成 HTML，否则保持原文。
+      // 正文段统一从这里出：默认渲染 Markdown，el._md 为 false 时显示原文。
       // 流式输出会反复重画同一段，按 80ms 节流，避免每个 token 都重排一次版。
       const paintText = (el, value, force) => {
         if (!el) return;
         el._raw = value == null ? '' : String(value);
-        if (el._md == null) el._md = mdOn;
+        if (el._md == null) el._md = true;
         if (!el._md || !mdReady) {
           el.classList.remove('msg__answer--md');
           el.textContent = el._raw;
@@ -1804,7 +1793,6 @@
         btn.title = title;
         btn.setAttribute('aria-label', title);
       };
-      const syncMdButtons = () => log.querySelectorAll('.msg__body').forEach(syncMdBtn);
 
       // 单个气泡切换：渲染后的显示 ↔ Markdown 原文
       const setBubbleMd = (body, on) => {
@@ -1818,28 +1806,6 @@
           paintText(el, el._raw || '', true);
         });
         syncMdBtn(body);
-      };
-
-      // 全局开关：立即作用到已有气泡，新消息也按它来
-      const setMd = (on, applyAll) => {
-        mdOn = on;
-        mdInput.checked = on;
-        try { localStorage.setItem(MD_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
-        if (applyAll === false) return;
-        log.querySelectorAll('.msg__answer').forEach((el) => {
-          el._md = on;
-          if (el._mdTimer) {
-            clearTimeout(el._mdTimer);
-            el._mdTimer = null;
-          }
-          paintText(el, el._raw || '', true);
-        });
-        syncMdButtons();
-      };
-      setMd(mdOn, false);
-      mdInput.onchange = () => {
-        setMd(mdInput.checked);
-        focusText();
       };
 
       // 渲染后的代码块带「复制」按钮，事件代理挂在对话列表上
@@ -3181,7 +3147,7 @@
           if (run.answerEl && b.contains(run.answerEl)) return run.answerEl;
           run.answerEl = document.createElement('div');
           run.answerEl.className = 'msg__answer';
-          run.answerEl._md = mdOn;
+          run.answerEl._md = true;
           b.appendChild(run.answerEl);
           return run.answerEl;
         };
@@ -3244,7 +3210,7 @@
             } else if (part.type === 'text') {
               const el = document.createElement('div');
               el.className = 'msg__answer';
-              el._md = mdOn;
+              el._md = true;
               b.appendChild(el);
               paintText(el, part.text, true);
               run.answerEl = el;

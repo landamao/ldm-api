@@ -38,6 +38,20 @@ type Server struct {
 	DevDir string
 }
 
+// 字体文件在不少系统上没有内置 MIME 映射（Windows 上 mime.TypeByExtension 返回空），
+// 会退化成 application/octet-stream 被浏览器拒收，这里显式注册一遍。
+func init() {
+	for ext, typ := range map[string]string{
+		".woff2": "font/woff2",
+		".woff":  "font/woff",
+		".ttf":   "font/ttf",
+	} {
+		if err := mime.AddExtensionType(ext, typ); err != nil {
+			log.Printf("注册 MIME 类型 %s 失败: %v", ext, err)
+		}
+	}
+}
+
 func New(st *store.Store) *Server {
 	s := &Server{
 		store:        st,
