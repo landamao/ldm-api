@@ -4433,7 +4433,7 @@
               </td>
               <td class="fs-12">
                 ${l.channel_id
-                  ? `<div class="flex-center gap-6">${colorBadge(channelLabel(l.channel_id))}${l.key_masked
+                  ? `<div class="log-route">${colorBadge(channelLabel(l.channel_id))}${l.key_masked
                     ? `<span class="log-star-wrap">${colorBadge(keyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
                     : ''}</div>`
                   : '<span>未命中渠道</span>'}

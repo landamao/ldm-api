@@ -906,6 +906,9 @@ table.tbl--logs td { padding-left: 8px; padding-right: 8px; }
 table.tbl--logs thead th { color: var(--text); }
 /* 徽章右上角橙色亲和星需要这层相对定位包装 */
 .log-star-wrap { position: relative; display: inline-block; }
+/* 渠道格：渠道名在上、密钥（#N 备注）在下，竖排而不是并排——
+   并排时两者一长就把这一格撑得很宽，整表要多滚一段。 */
+.log-route { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
 /* 数值格里的次要指标：另起一行，不占横向宽度 */
 .log-sub { margin-top: 2px; font-size: 11px; line-height: 1.25; color: var(--text-3); }
 /* 状态列固定在右侧（压在滚动内容上层），横向滚动时成败始终可见。 */
