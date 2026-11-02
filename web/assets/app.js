@@ -619,9 +619,18 @@
 
     function position() {
       if (!openState) return;
-      const { trigger, pop } = openState;
+      const { trigger, pop, native } = openState;
       if (!trigger.isConnected) { close(); return; }
-      const r = trigger.getBoundingClientRect();
+      // data-anchor 可以指定弹层对齐到别的元素（例如「输入框 + 右侧箭头按钮」里
+      // 希望列表贴在输入框下面而不是箭头下面），默认对齐触发器自己
+      let anchor = trigger;
+      if (native && native.dataset.anchor) {
+        try {
+          const el = document.querySelector(native.dataset.anchor);
+          if (el) anchor = el;
+        } catch (e) { /* 选择器写错就按默认的触发器对齐 */ }
+      }
+      const r = anchor.getBoundingClientRect();
       if (!r.width && !r.height) { close(); return; }
       const vw = document.documentElement.clientWidth;
       const vh = document.documentElement.clientHeight;

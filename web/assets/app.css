@@ -2638,6 +2638,8 @@ html[data-theme="dark"] .chat-log { background-image: radial-gradient(rgba(255, 
   border: 2px dashed var(--border-strong);
   border-radius: 99px;
 }
+/* 模型已经选好（可以直接发请求）时，提示改成让用户发第一条消息 */
+.chat-log.is-ready:empty::after { content: "发条消息，就可以开始聊天啦"; }
 .msg { display: flex; gap: 10px; max-width: 88%; animation: riseIn .25s cubic-bezier(.2, .9, .3, 1); }
 .msg--user { margin-left: auto; flex-direction: row-reverse; }
 .msg__avatar {
@@ -2708,6 +2710,9 @@ html[data-theme="dark"] .msg__bubble { background-color: #26331f; border-color: 
 }
 .msg--error .msg__bubble { background: var(--red-50); border-color: var(--red-200); color: #a93a2d; }
 .msg--error .msg__bubble::before { background: var(--red-50); border-color: var(--red-200); }
+/* 空回复 / 还没输出就被停下：用琥珀色气泡和正常回复区分开 */
+.msg--notice .msg__bubble { background: var(--amber-50); border-color: var(--amber-200); color: #8a5a06; }
+.msg--notice .msg__bubble::before { background: var(--amber-50); border-color: var(--amber-200); }
 .msg__error-text {
   color: #a93a2d;
   font-size: 12.5px;
@@ -2716,6 +2721,7 @@ html[data-theme="dark"] .msg__bubble { background-color: #26331f; border-color: 
   word-break: break-word;
 }
 html[data-theme="dark"] .msg--error .msg__bubble { color: #ff9d8c; }
+html[data-theme="dark"] .msg--notice .msg__bubble { color: #f2c56a; }
 html[data-theme="dark"] .msg__error-text { color: #ff9d8c; }
 .msg__bubble > .msg__error-text:not(:first-child) { margin-top: 8px; }
 .msg__body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -3259,7 +3265,25 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
 .chat-test__key .btn { flex: 0 0 auto; }
 .chat-test__model { display: flex; align-items: center; gap: 6px; }
 .chat-test__model .input { flex: 1; min-width: 0; }
-.chat-test__model .btn { flex: 0 0 auto; }
+.chat-test__model [hidden] { display: none; }
+/* 下拉按钮：30×30 的方按钮，只留箭头，和左边的输入框同高 */
+.chat-test__model .ldm-select {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+}
+.chat-test__model .ldm-select__value { display: none; }
+/* 绝对定位的 right 是从内边距算的，按钮有 2px 边框，直接写 right 会偏 2px；
+   用 50% + translate 让它精确落在按钮正中 */
+.chat-test__model .ldm-select__chev { right: 50%; transform: translate(50%, -50%); }
+.chat-test__model .ldm-select[aria-expanded="true"] .ldm-select__chev {
+  transform: translate(50%, -50%) rotate(180deg);
+}
+/* select 被自定义下拉框接管后，原生节点上的 hidden 要带着触发器一起显隐 */
+.chat-test__model select[hidden] + .ldm-select { display: none; }
 .chat-test__row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .chat-test__row .btn { flex: 0 0 auto; }
 .chat-test__status { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

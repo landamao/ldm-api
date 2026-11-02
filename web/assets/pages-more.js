@@ -1418,9 +1418,20 @@
     if (!run || run.discarded || run.unloadSaved || (!run.answer && !run.think && !run.toolLog.length)) return;
     run.unloadSaved = true;
     const entry = { role: 'assistant', content: run.answer, model: run.sentModel.id, stopped: true };
-    if (run.think) entry.think = run.think;
+    const hasParts = run.parts && run.parts.some((p) => p.type === 'tools');
+    if (run.think) {
+      entry.think = run.think;
+      // 没有分段信息时，思考耗时单独存一个数字，刷新后秒数才不会丢
+      if (!hasParts) {
+        const thinks = run.parts.filter((p) => p && p.type === 'think' && p.text);
+        if (thinks.length) {
+          entry.think_ms = thinks.reduce((sum, p) => sum + (p.ms != null ? p.ms
+            : (p.t0 ? Math.max(0, Date.now() - p.t0) : 0)), 0);
+        }
+      }
+    }
     if (run.toolLog.length) entry.tool_calls = run.toolLog;
-    if (run.parts && run.parts.some((p) => p.type === 'tools')) entry.parts = run.parts;
+    if (hasParts) entry.parts = run.parts;
     entry.meta = [[`模型 ${run.sentModel.id}`], ['页面关闭，已停止生成']];
     if (run.sentModel.provider_icon) entry.provider_icon = run.sentModel.provider_icon;
     chatStore.history.push(entry);
@@ -1556,7 +1567,7 @@
                   <div class="chat-field chat-test" id="chat-test-panel" hidden>
                     <div class="chat-field__head">
                       <div class="chat-field__label">临时测试</div>
-                      <span class="badge badge--pink">不记录日志</span>
+                      <span class="badge badge--green">不记录日志</span>
                     </div>
                     <input class="input input--sm" id="chat-test-url" value="${esc(testCfg.url)}" placeholder="API 地址，例如 https://api.openai.com/v1" autocomplete="off" spellcheck="false">
                     <div class="chat-test__key">
@@ -1567,11 +1578,10 @@
                       <button class="btn btn--sm" id="chat-test-fetch" type="button">${icon('refresh', 12)}获取模型</button>
                       <span class="muted fs-12 chat-test__status" id="chat-test-status"></span>
                     </div>
-                    <div class="chat-test__model">
-                      <input class="input input--sm" id="chat-test-model" list="chat-test-models" value="${esc(testCfg.model)}" placeholder="选择或手动填写模型 ID" autocomplete="off" spellcheck="false">
-                      <button class="btn btn--sm" id="chat-test-pick" type="button" hidden>选择</button>
+                    <div class="chat-test__model" id="chat-test-model-row">
+                      <input class="input input--sm" id="chat-test-model" value="${esc(testCfg.model)}" placeholder="模型 ID，可手动填写" autocomplete="off" spellcheck="false">
+                      <select class="select" id="chat-test-model-select" data-anchor="#chat-test-model-row" aria-label="从上游返回的模型里选一个" hidden></select>
                     </div>
-                    <datalist id="chat-test-models"></datalist>
                     <div class="muted fs-12" id="chat-test-hint">临时直连上游（OpenAI 兼容），不经过渠道和模型配置，也不写入调用日志。地址与模型保存在本机，Key 只在当前标签页有效。</div>
                   </div>
                   <div class="chat-field">
@@ -1650,8 +1660,7 @@
       const testUrlInput = root.querySelector('#chat-test-url');
       const testKeyInput = root.querySelector('#chat-test-key');
       const testModelInput = root.querySelector('#chat-test-model');
-      const testModelsList = root.querySelector('#chat-test-models');
-      const testPickBtn = root.querySelector('#chat-test-pick');
+      const testModelSelect = root.querySelector('#chat-test-model-select');
       const testFetchBtn = root.querySelector('#chat-test-fetch');
       const testStatus = root.querySelector('#chat-test-status');
       const testHint = root.querySelector('#chat-test-hint');
@@ -1933,7 +1942,17 @@
         requestAnimationFrame(syncRouteToggle);
       };
 
+      // 空对话区的提示语：模型已经可用就提示「发条消息开始」，
+      // 还得先选模型（临时测试没填地址 / 模型）时才提示「选好模型」
+      const syncEmptyHint = () => {
+        const ready = isTestMode()
+          ? !!(testUrlInput.value.trim() && testModelID())
+          : usable.some((m) => m.id === modelSel.value);
+        log.classList.toggle('is-ready', ready);
+      };
+
       const refreshMeta = () => {
+        syncEmptyHint();
         const test = isTestMode();
         testPanel.hidden = !test;
         modelMeta.hidden = test;
@@ -2516,7 +2535,8 @@
         // 新记录把思考也存进 parts；旧记录只有顶层 think 字段，没有分段信息
         const partsHaveThink = !!(parts && parts.some((p) => p && p.type === 'think'));
         if (m.role === 'assistant' && m.think && !partsHaveThink) {
-          bubble.appendChild(thinkBlockEl(m.think, false));
+          // 旧记录没存耗时（think_ms 是后加的），只有字数
+          bubble.appendChild(thinkBlockEl(m.think, false, m.think_ms));
         }
         const contentEl = document.createElement('div');
         contentEl.className = 'msg__content';
@@ -2553,7 +2573,8 @@
             .join('');
           el.querySelector('.msg__body').appendChild(metaEl);
         }
-        if (m.role === 'assistant') addMessageActions(el, m);
+        // 用户消息和 AI 回复都挂同一排操作按钮
+        if (m.role === 'user' || m.role === 'assistant') addMessageActions(el, m);
         log.appendChild(el);
       };
 
@@ -2635,7 +2656,9 @@
         customEditor.disabled = busy;
         pickImage.disabled = busy || customMode;
         pickFile.disabled = busy || customMode;
-        [testUrlInput, testKeyInput, testModelInput, testFetchBtn, testPickBtn].forEach((el) => { el.disabled = busy; });
+        [testUrlInput, testKeyInput, testModelInput, testModelSelect, testFetchBtn].forEach((el) => { el.disabled = busy; });
+        // 下拉触发器是全局组件生成的另一个按钮，禁用要单独同步
+        if (testModelSelect.__ldmTrigger) testModelSelect.__ldmTrigger.disabled = busy;
         log.querySelectorAll('[data-retry], [data-delete]').forEach((b) => { b.disabled = busy; });
       };
 
@@ -2647,10 +2670,90 @@
 
       const typingHtml = '<span class="typing"><span></span><span></span><span></span></span>';
 
-      // 在 AI 消息下面加操作按钮：重试 / 复制 / 删除（纯图标）
+      // 用户消息里的文字：display 才是界面上看到的样子，优先用它
+      const userCopyText = (entry) => {
+        const shown = flattenText(entry.display);
+        return shown || flattenText(entry.content);
+      };
+
+      // 自定义请求体模式下编辑器里的 JSON 才是唯一事实来源，
+      // 本地历史和它的 messages 按「第几条 user / assistant」一一对应。
+      // 这里换算出这条消息在 messages 里的下标，拿不到返回 -1。
+      const customMsgIdx = (entry) => {
+        const idx = history.indexOf(entry);
+        if (idx < 0) return -1;
+        let payload;
+        try { payload = JSON.parse(customEditor.value); } catch (e) { return -1; }
+        if (!payload || !Array.isArray(payload.messages)) return -1;
+        let nth = 0;
+        for (let i = 0; i < idx; i += 1) {
+          const m = history[i];
+          if (m && (m.role === 'user' || m.role === 'assistant')) nth += 1;
+        }
+        const slots = [];
+        payload.messages.forEach((m, i) => {
+          if (m && typeof m === 'object' && (m.role === 'user' || m.role === 'assistant')) slots.push(i);
+        });
+        return slots[nth] == null ? -1 : slots[nth];
+      };
+
+      // 就地改编辑器里的 messages：delete 只删这一条，truncate 只保留到这一条
+      const editCustomMessages = (entry, mode) => {
+        const pos = customMsgIdx(entry);
+        if (pos < 0) return false;
+        try {
+          const payload = JSON.parse(customEditor.value);
+          if (mode === 'delete') payload.messages.splice(pos, 1);
+          else payload.messages.splice(pos + 1);
+          customEditor.value = JSON.stringify(payload, null, 2);
+          updateCustomHint();
+          return true;
+        } catch (e) {
+          return false;
+        }
+      };
+
+      // 只删这一条消息，同一轮里的其它消息原样保留
+      const deleteOneMessage = (msgEl, entry) => {
+        const idx = history.indexOf(entry);
+        if (idx >= 0) {
+          // 自定义模式要先按当前历史算出位置，再动 history
+          if (customMode) editCustomMessages(entry, 'delete');
+          history.splice(idx, 1);
+          persistChatHistory();
+        }
+        msgEl.remove();
+        Toast.success('消息已删除');
+      };
+
+      // 重试用户消息：保留这条提问和它之前的历史，丢掉后面的回复再发一遍
+      const retryUser = async (entry, msgEl) => {
+        if (sending || chatStore.run) return;
+        if (!ensureTestReady()) return;
+        const idx = history.indexOf(entry);
+        if (idx < 0) return;
+        if (customMode) {
+          if (!editCustomMessages(entry, 'truncate')) {
+            Toast.info('自定义请求体模式下请先修正 JSON 再重试');
+            return;
+          }
+        } else if (!ensureTestModel()) {
+          return;
+        }
+        history.splice(idx + 1);
+        persistChatHistory();
+        const all = [...log.querySelectorAll('.msg')];
+        const pos = all.indexOf(msgEl);
+        if (pos >= 0) all.slice(pos + 1).forEach((el) => el.remove());
+        if (customMode) await doSendCustom(true);
+        else await startRun({ messages: chatContext(history), sentModel: currentModel() });
+      };
+
+      // 每条消息下面都挂同一排操作按钮：重试 / 复制 / Markdown / 删除（纯图标）
       const addMessageActions = (msgEl, entry) => {
         const body = msgEl && msgEl.querySelector('.msg__body');
         if (!body || body.querySelector('.msg__actions')) return;
+        const isUser = entry && entry.role === 'user';
         const row = document.createElement('div');
         row.className = 'msg__actions';
         const makeBtn = (act, iconName, title, onclick) => {
@@ -2664,14 +2767,21 @@
           row.appendChild(btn);
           return btn;
         };
-        makeBtn('retry', 'refresh', entry.error
-          ? '重新生成这条回复（会移除这条之后的消息）'
-          : '用当前选中的模型重新生成（会移除这条之后的消息）', () => retryAssistant(entry, msgEl));
-        const copySource = entry.error
-          ? ((entry.content ? entry.content + '\n\n' : '') + entry.error)
-          : (entry.content || '');
-        makeBtn('copy', 'copy', entry.error ? '复制错误信息' : '复制这条回复', () => copyText(copySource, entry.error ? '错误信息' : '回复内容'));
-        // 这条回复单独切换：渲染后的显示 ↔ Markdown 原文
+        if (isUser) {
+          makeBtn('retry', 'refresh', '重新发送这条消息（会移除它之后的回复）', () => retryUser(entry, msgEl));
+        } else {
+          makeBtn('retry', 'refresh', entry.error
+            ? '重新生成这条回复（会移除这条之后的消息）'
+            : '用当前选中的模型重新生成（会移除这条之后的消息）', () => retryAssistant(entry, msgEl));
+        }
+        const copySource = isUser
+          ? userCopyText(entry)
+          : (entry.error
+            ? ((entry.content ? entry.content + '\n\n' : '') + entry.error)
+            : (entry.content || ''));
+        makeBtn('copy', 'copy', isUser ? '复制这条消息' : (entry.error ? '复制错误信息' : '复制这条回复'),
+          () => copyText(copySource, isUser ? '消息内容' : (entry.error ? '错误信息' : '回复内容')));
+        // 这条消息单独切换：渲染后的显示 ↔ Markdown 原文
         if (body.querySelector('.msg__answer')) {
           const mdBtn = document.createElement('button');
           mdBtn.className = 'btn btn--ghost btn--sm btn--icon';
@@ -2682,28 +2792,7 @@
           };
           row.appendChild(mdBtn);
         }
-        makeBtn('delete', 'trash', '删除这一轮对话（含用户消息）', () => {
-          const aiIdx = history.indexOf(entry);
-          // 找到这条回复对应的用户消息，连同它一起删除
-          let userEntry = null;
-          if (aiIdx >= 0) {
-            for (let i = aiIdx - 1; i >= 0; i--) {
-              if (history[i].role === 'user') { userEntry = history[i]; break; }
-            }
-          }
-          if (aiIdx >= 0) history.splice(aiIdx, 1);
-          if (userEntry) {
-            const userIdx = history.indexOf(userEntry);
-            if (userIdx >= 0) history.splice(userIdx, 1);
-          }
-          persistChatHistory();
-          // DOM 里同样移除这条回复和它前面的用户消息
-          let prev = msgEl.previousElementSibling;
-          while (prev && !prev.classList.contains('msg--user')) prev = prev.previousElementSibling;
-          if (prev) prev.remove();
-          msgEl.remove();
-          Toast.success('这一轮对话已删除');
-        });
+        makeBtn('delete', 'trash', '删除这条消息', () => deleteOneMessage(msgEl, entry));
         body.appendChild(row);
         syncMdBtn(body);
       };
@@ -3450,6 +3539,15 @@
         clearPlaceholder();
         // 只有出现过工具调用时才额外保存分段顺序，普通回复继续用 content
         const entryParts = run.parts.some((p) => p.type === 'tools') ? run.parts : null;
+        // 没有工具调用时 parts 不落盘（正文已经在 content 里，再存一份太占空间），
+        // 但思考耗时只存在 parts 上，得单独存一个数字，否则刷新后秒数就没了
+        const thinkMsOf = () => {
+          if (entryParts) return null;
+          const thinks = run.parts.filter((p) => p && p.type === 'think' && p.text);
+          if (!thinks.length) return null;
+          return thinks.reduce((sum, p) => sum + (p.ms != null ? p.ms
+            : (p.t0 ? Math.max(0, Date.now() - p.t0) : 0)), 0);
+        };
 
         if (run.failed) {
           const errorText = '调用失败：' + (run.failed.message || run.failed);
@@ -3461,7 +3559,11 @@
             error: errorText,
             model: sentModel.id,
           };
-          if (run.think) entry.think = run.think;
+          if (run.think) {
+            entry.think = run.think;
+            const ms = thinkMsOf();
+            if (ms != null) entry.think_ms = ms;
+          }
           if (run.toolLog.length) entry.tool_calls = run.toolLog;
           if (entryParts) entry.parts = entryParts;
           if (customBody) entry.custom = true;
@@ -3482,6 +3584,9 @@
             run.bubble.appendChild(note);
           } else {
             run.bubble.textContent = run.stopped ? '（已停止生成）' : '（模型没有返回内容）';
+            // 空气泡不是正常回复，用琥珀色和真正的回答区分开
+            const msg = run.msgEl || run.bubble.closest('.msg');
+            if (msg) msg.classList.add('msg--notice');
           }
         }
 
@@ -3527,7 +3632,11 @@
         // 只把正文带回下一轮，思考内容、工具调用与统计信息单独存起来用于回看
         if (run.answer || run.think || run.toolLog.length) {
           const entry = { role: 'assistant', content: run.answer, model: sentModel.id };
-          if (run.think) entry.think = run.think;
+          if (run.think) {
+            entry.think = run.think;
+            const ms = thinkMsOf();
+            if (ms != null) entry.think_ms = ms;
+          }
           if (run.toolLog.length) entry.tool_calls = run.toolLog;
           if (entryParts) entry.parts = entryParts;
           if (metaGroups.length) entry.meta = metaGroups;
@@ -3651,9 +3760,11 @@
         const display = buildDisplay(v);
         text.value = '';
         text.style.height = 'auto';
-        addMsg('user', display);
-        history.push({ role: 'user', content, display });
+        const bubble = addMsg('user', display);
+        const entry = { role: 'user', content, display };
+        history.push(entry);
         persistChatHistory();
+        addMessageActions(bubble.closest('.msg'), entry);
         staged = [];
         renderStaged();
         await startRun({ messages: chatContext(history), sentModel });
@@ -3696,12 +3807,17 @@
         text.value = '';
         text.style.height = 'auto';
         // 重试时不重复插入用户气泡，除非用户又输入了新内容
-        if (!retry || typed) addMsg('user', shown);
+        const bubble = (!retry || typed) ? addMsg('user', shown) : null;
         // 让本地历史与请求体保持一致，切回普通模式后可以接着聊
         history.splice(0, history.length, ...payload.messages
           .filter((m) => m && typeof m === 'object' && (m.role === 'user' || m.role === 'assistant'))
           .map((m) => ({ role: m.role, content: m.content })));
         persistChatHistory();
+        if (bubble) {
+          // 刚插进去的气泡对应请求体里最后一条用户消息
+          const lastUser = [...history].reverse().find((m) => m && m.role === 'user');
+          if (lastUser) addMessageActions(bubble.closest('.msg'), lastUser);
+        }
         await startRun({
           messages: chatContext(history), sentModel, customBody: payload,
         });
@@ -3775,6 +3891,7 @@
       testUrlInput.addEventListener('input', () => {
         testCfg.url = testUrlInput.value.trim();
         persistTestCfg();
+        syncEmptyHint();
       });
       testKeyInput.addEventListener('input', () => {
         testCfg.key = testKeyInput.value;
@@ -3783,77 +3900,43 @@
       testModelInput.addEventListener('input', () => {
         testCfg.model = testModelInput.value.trim();
         persistTestCfg();
+        syncEmptyHint();
+        // 手改输入框时下拉里的勾选跟着走，列表里没有就取消勾选
+        const opts = Array.prototype.slice.call(testModelSelect.options);
+        testModelSelect.selectedIndex = opts.findIndex((o) => o.value === testCfg.model);
+      });
+
+      // 上游返回模型列表后，在输入框右边挂一个下拉按钮（原生 select 被全局的
+      // 自定义下拉接管了，触发器只留一个箭头）；输入框始终可以手动编辑。
+      const showModelList = (models) => {
+        const list = Array.from(new Set(models || []));
+        if (!list.length) {
+          testModelSelect.hidden = true;
+          return;
+        }
+        testModelSelect.innerHTML = list
+          .map((id) => `<option value="${esc(id)}">${esc(id)}</option>`)
+          .join('');
+        // 输入框里填的正好在列表里就选中它，否则不预选（避免下拉里打着一个对不上的勾）
+        const cur = testModelInput.value.trim();
+        testModelSelect.selectedIndex = cur && list.includes(cur) ? list.indexOf(cur) : -1;
+        testModelSelect.hidden = false;
+      };
+
+      testModelSelect.addEventListener('change', () => {
+        const picked = testModelSelect.value;
+        if (!picked) return;
+        // 选中即回填输入框，之后想改随时可以直接编辑
+        testModelInput.value = picked;
+        testCfg.model = picked;
+        persistTestCfg();
+        syncEmptyHint();
       });
       testEye.onclick = () => {
         // 和渠道的 Key 输入一致：用文本遮罩隐藏，不用 password 类型，
         // 避免浏览器把它当成登录密码并提示保存。
         const masked = testKeyInput.classList.toggle('key-masked');
         testEye.title = masked ? '显示 Key' : '隐藏 Key';
-      };
-
-      // 获取到模型后弹窗单选，确认后直接填入模型输入框。
-      let testModelChoices = [];
-      const openTestModelPicker = (models) => {
-        const list = Array.from(new Set(models || []));
-        if (!list.length) return;
-        const current = testModelInput.value.trim();
-        let selected = list.includes(current) ? current : list[0];
-        openModal({
-          title: '选择模型',
-          desc: `上游返回 ${list.length} 个模型，选择一个用于临时测试。`,
-          body: `
-            <div class="search mb-12">
-              <span class="search__icon">${icon('search', 15)}</span>
-              <input class="input" id="test-model-search" placeholder="搜索模型名…" autocomplete="off">
-            </div>
-            <div class="pick-list pick-list--flat" id="test-model-list">
-              ${list.map((m) => `<label class="pick-item" data-search="${esc(m.toLowerCase())}">
-                <input type="radio" name="test-model-choice" value="${esc(m)}"${m === selected ? ' checked' : ''}>
-                <span class="pick-item__name">${esc(m)}</span>
-              </label>`).join('')}
-            </div>
-            <div class="disc-empty" id="test-model-empty" style="display:none">没有匹配的模型</div>`,
-          size: 'lg',
-          footer: `<div class="spacer"></div>
-            <button class="btn" data-close>取消</button>
-            <button class="btn btn--primary" data-act="use">使用选中模型</button>`,
-          onMount(mo) {
-            const search = mo.body.querySelector('#test-model-search');
-            const empty = mo.body.querySelector('#test-model-empty');
-            const use = () => {
-              testModelInput.value = selected;
-              testCfg.model = selected;
-              persistTestCfg();
-              mo.close();
-              Toast.success('已选择模型 ' + selected);
-            };
-            mo.body.querySelectorAll('input[name="test-model-choice"]').forEach((input) => {
-              input.addEventListener('change', () => {
-                if (input.checked) selected = input.value;
-              });
-            });
-            // 双击模型名直接使用，少点一次确认
-            mo.body.querySelectorAll('.pick-item').forEach((item) => {
-              item.addEventListener('dblclick', () => {
-                const input = item.querySelector('input');
-                if (!input) return;
-                selected = input.value;
-                use();
-              });
-            });
-            search.addEventListener('input', () => {
-              const q = search.value.trim().toLowerCase();
-              let visible = 0;
-              mo.body.querySelectorAll('.pick-item').forEach((item) => {
-                const hit = !q || item.dataset.search.includes(q);
-                item.style.display = hit ? '' : 'none';
-                if (hit) visible += 1;
-              });
-              empty.style.display = visible ? 'none' : '';
-            });
-            mo.foot.querySelector('[data-act="use"]').onclick = use;
-          },
-        });
       };
 
       // 复用渠道的「探测」接口拉模型列表：同样不需要先保存渠道。
@@ -3879,15 +3962,15 @@
             append_v1: appendV1,
           });
           const models = (j && j.models) || [];
-          testModelChoices = models;
-          testPickBtn.hidden = !models.length;
-          testModelsList.innerHTML = models.map((id) => `<option value="${esc(id)}"></option>`).join('');
-          testStatus.textContent = models.length ? `上游返回 ${models.length} 个模型` : '上游没有返回模型，请手动填写';
           if (models.length) {
+            // 列表铺到右边的下拉按钮里，选中哪条就回填到左边的输入框
+            showModelList(models);
+            testStatus.textContent = `上游返回 ${models.length} 个模型`;
             Toast.success(`已获取 ${models.length} 个模型`);
-            // 拉取成功后直接弹窗选择，选中的模型写入输入框
-            openTestModelPicker(models);
           } else {
+            // 没有列表就把下拉按钮收起来，输入框照常手填
+            testModelSelect.hidden = true;
+            testStatus.textContent = '上游没有返回模型，请手动填写';
             Toast.info('上游没有返回模型，请手动填写模型 ID');
           }
         } catch (e) {
@@ -3898,10 +3981,6 @@
         }
       };
       testFetchBtn.onclick = fetchTestModels;
-      testPickBtn.onclick = () => {
-        if (testModelChoices.length) openTestModelPicker(testModelChoices);
-        else fetchTestModels();
-      };
 
       sendBtn.onclick = () => {
         if (sending) stopStream();

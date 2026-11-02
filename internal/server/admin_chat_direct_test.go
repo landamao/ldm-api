@@ -179,3 +179,41 @@ func TestChatDirectWithoutKey(t *testing.T) {
 		t.Error("没有填写 Key 时不应该发送 Authorization 头")
 	}
 }
+
+// 临时测试是直连上游的，流式请求要自己补上 include_usage：
+// 按规范实现的上游（llama.cpp 之类）只有显式要求时才在流末尾回 usage，
+// 不补的话在线聊天气泡下面就没有输入 / 输出 / 速度 / 总 token 这些统计。
+func TestChatDirectInjectsStreamUsage(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{"total_tokens":3}}`)
+	}))
+	defer srv.Close()
+
+	s, _ := newTestServer(t, "chat-direct-usage")
+	callDirectChat(t, s, map[string]any{
+		"base_url": srv.URL,
+		"model":    "m",
+		"stream":   true,
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	callDirectChat(t, s, map[string]any{
+		"base_url": srv.URL,
+		"model":    "m",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if len(bodies) != 2 {
+		t.Fatalf("上游收到 %d 次请求，期望 2 次", len(bodies))
+	}
+	so, _ := bodies[0]["stream_options"].(map[string]any)
+	if so == nil || so["include_usage"] != true {
+		t.Errorf("流式请求应注入 stream_options.include_usage，得到 %v", bodies[0]["stream_options"])
+	}
+	if _, ok := bodies[1]["stream_options"]; ok {
+		t.Errorf("非流式请求不应该带 stream_options，得到 %v", bodies[1]["stream_options"])
+	}
+}

@@ -275,6 +275,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		if len(req.Tools) > 0 && string(req.Tools) != "null" {
 			payload["tools"] = req.Tools
 		}
+		// 临时测试是直连上游的，不走 relay 里那套 include_usage 注入；
+		// 不补这一项时，按规范实现的上游（llama.cpp 之类）不会在流末尾回
+		// usage，气泡下面就只剩模型和耗时，看不到 token 与速度。
+		if req.Stream && strings.TrimSpace(req.BaseURL) != "" {
+			payload["stream_options"] = map[string]any{"include_usage": true}
+		}
 	}
 	body, _ := json.Marshal(payload)
 
