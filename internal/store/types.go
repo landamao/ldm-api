@@ -503,6 +503,24 @@ type ModelRecent struct {
 	Errors   int64 `json:"errors"`
 }
 
+// ModelStat 是单个模型在一段时间里的统计分项。
+// 看板的「调用趋势」要按模型拆开画曲线，所以每个模型除了请求数、失败数，
+// 还要记住自己的 Token、耗时和速度，口径和整体统计保持一致。
+type ModelStat struct {
+	Requests         int64 `json:"r"`
+	Errors           int64 `json:"e"`
+	PromptTokens     int64 `json:"p"`
+	CompletionTokens int64 `json:"c"`
+	TotalTokens      int64 `json:"t"`
+	LatencySum       int64 `json:"l"`
+	// 速度相关的四项只统计同时有首字耗时、总耗时和输出速度的记录，
+	// 与整体统计的算法保持一致。
+	SpeedCount        int64   `json:"sc"`
+	SpeedSum          float64 `json:"ss"`
+	SpeedLatencySum   int64   `json:"sl"`
+	SpeedFirstByteSum int64   `json:"sb"`
+}
+
 // Bucket 按小时聚合的统计。
 type Bucket struct {
 	Hour             int64 `json:"hour"`
@@ -514,14 +532,46 @@ type Bucket struct {
 	LatencySum       int64 `json:"latency_sum"`
 	// 以下字段只统计同时有首字耗时、总耗时和输出速度的记录（流式且有输出），
 	// 用于数据看板的「平均速度」指标。
-	SpeedCount        int64            `json:"speed_count"`
-	SpeedSum          float64          `json:"speed_sum"`
-	SpeedLatencySum   int64            `json:"speed_latency_sum"`
-	SpeedFirstByteSum int64            `json:"speed_first_byte_sum"`
-	ModelCounts       map[string]int64 `json:"model_counts"`
-	ModelErrors       map[string]int64 `json:"model_errors,omitempty"`
-	ChannelCounts     map[string]int64 `json:"channel_counts"`
-	TokenCounts       map[string]int64 `json:"token_counts"`
+	SpeedCount        int64                `json:"speed_count"`
+	SpeedSum          float64              `json:"speed_sum"`
+	SpeedLatencySum   int64                `json:"speed_latency_sum"`
+	SpeedFirstByteSum int64                `json:"speed_first_byte_sum"`
+	ModelStats        map[string]ModelStat `json:"model_stats,omitempty"`
+	// ModelCounts / ModelErrors 是早期版本按模型记请求数、失败数用的两个 map，
+	// 现在改由 ModelStats 统一记录。这两个字段只为兼容老数据保留，
+	// 读的时候会和 ModelStats 合并（见 ModelStatOf / ModelStatsMerged）。
+	ModelCounts   map[string]int64 `json:"model_counts,omitempty"`
+	ModelErrors   map[string]int64 `json:"model_errors,omitempty"`
+	ChannelCounts map[string]int64 `json:"channel_counts"`
+	TokenCounts   map[string]int64 `json:"token_counts"`
+}
+
+// ModelStatOf 返回某个模型在这个桶里的统计分项。
+// 新数据写在 ModelStats 里，早期版本只有 ModelCounts / ModelErrors，
+// 这里做一次合并，老数据也能按模型出数。
+func (b Bucket) ModelStatOf(model string) ModelStat {
+	ms := b.ModelStats[model]
+	ms.Requests += b.ModelCounts[model]
+	ms.Errors += b.ModelErrors[model]
+	return ms
+}
+
+// ModelStatsMerged 返回桶里所有模型的统计分项，同样合并了早期版本的两个 map。
+func (b Bucket) ModelStatsMerged() map[string]ModelStat {
+	if len(b.ModelStats) == 0 && len(b.ModelCounts) == 0 {
+		return nil
+	}
+	out := make(map[string]ModelStat, len(b.ModelStats)+len(b.ModelCounts))
+	for name, ms := range b.ModelStats {
+		out[name] = ms
+	}
+	for name, c := range b.ModelCounts {
+		ms := out[name]
+		ms.Requests += c
+		ms.Errors += b.ModelErrors[name]
+		out[name] = ms
+	}
+	return out
 }
 
 // Settings 系统设置。

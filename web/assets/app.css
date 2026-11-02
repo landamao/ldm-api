@@ -2379,6 +2379,33 @@ html[data-theme="dark"] .chart .hover-line { stroke: #6b8a58; }
 .chart-legend__item { display: inline-flex; align-items: center; gap: 6px; }
 .chart-legend__swatch { width: 10px; height: 10px; border-radius: 4px; border: 1px solid rgba(0, 0, 0, .12); }
 
+/* 看板调用趋势的图例：既是曲线说明，也是切换模型的开关。 */
+.chart-legend__btn {
+  border: 1.5px solid var(--border-line);
+  background: var(--surface-2);
+  border-radius: 99px;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  max-width: 260px;
+  transition: background .16s, color .16s, border-color .16s;
+}
+.chart-legend__btn:hover { color: var(--text); border-color: var(--leaf-500); }
+.chart-legend__btn.is-on {
+  background: #fffdf6;
+  color: var(--leaf-700);
+  border-color: var(--leaf-400);
+  font-weight: 700;
+  box-shadow: 0 1px 0 rgba(122, 83, 48, .22), inset 0 1px 0 #fff;
+}
+html[data-theme="dark"] .chart-legend__btn.is-on { background: #33422a; color: var(--leaf-300); }
+.chart-legend__btn b { font-weight: 700; color: inherit; }
+.chart-legend__name { max-width: 150px; }
+.chart-legend__fail { color: var(--red-500); font-size: 11px; }
+.chart-legend__btn--plain { opacity: .72; }
+
 .chart-tip {
   position: fixed;
   z-index: 300;

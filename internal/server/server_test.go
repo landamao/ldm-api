@@ -2087,26 +2087,29 @@ func TestChatRawBodyRequiresModel(t *testing.T) {
 
 func TestTokensPerSecond(t *testing.T) {
 	cases := []struct {
-		name  string
-		log   store.Log
-		genMs int64
-		want  float64
+		name     string
+		log      store.Log
+		genMs    int64
+		upstream bool
+		want     float64
 	}{
-		{"没有输出 token", store.Log{Stream: true, LatencyMs: 1000, FirstByteMs: 100}, 0, 0},
-		{"按生成耗时计算", store.Log{Stream: true, CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0, 25},
-		{"没有首字时间就用总耗时", store.Log{Stream: true, CompletionTokens: 100, LatencyMs: 4000}, 0, 25},
-		{"首字晚于总耗时则退回总耗时", store.Log{Stream: true, CompletionTokens: 50, LatencyMs: 1000, FirstByteMs: 2000}, 0, 50},
-		{"耗时为 0 不除零", store.Log{Stream: true, CompletionTokens: 10, LatencyMs: 0}, 0, 0},
-		// 非流式一次性返回，没有有意义的生成窗口，不展示速度
-		{"非流式不算速度", store.Log{Stream: false, CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0, 0},
+		{"没有输出 token", store.Log{CompletionTokens: 0, LatencyMs: 1000, FirstByteMs: 100}, 0, true, 0},
+		{"按生成耗时计算", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0, true, 25},
+		{"没有首字时间就用总耗时", store.Log{CompletionTokens: 100, LatencyMs: 4000}, 0, true, 25},
+		{"首字晚于总耗时则退回总耗时", store.Log{CompletionTokens: 50, LatencyMs: 1000, FirstByteMs: 2000}, 0, true, 50},
+		{"耗时为 0 不除零", store.Log{CompletionTokens: 10, LatencyMs: 0}, 0, true, 0},
+		// 没有按流式请求上游：上游一次性返回完整 JSON，没有生成窗口，不展示速度
+		{"非流式请求上游不算速度", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0, false, 0},
+		// 客户端要非流式、网关按流式收完再返回：上游确实是流式吐的，速度照样算
+		{"客户端非流式但流式请求了上游", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 2000, true, 50},
 		// 转发层量到的真实输出窗口优先于「总耗时 - 首字」
-		{"优先用真实输出窗口", store.Log{Stream: true, CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 2000, 50},
+		{"优先用真实输出窗口", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 2000, true, 50},
 		// 上游一次性吐完：首块到末块只差几毫秒，速度没有意义
-		{"一次性吐完不算速度", store.Log{Stream: true, CompletionTokens: 800, LatencyMs: 3, FirstByteMs: 3}, 1, 0},
-		{"输出窗口过短不算速度", store.Log{Stream: true, CompletionTokens: 800, LatencyMs: 4000, FirstByteMs: 1000}, 20, 0},
+		{"一次性吐完不算速度", store.Log{CompletionTokens: 800, LatencyMs: 3, FirstByteMs: 3}, 1, true, 0},
+		{"输出窗口过短不算速度", store.Log{CompletionTokens: 800, LatencyMs: 4000, FirstByteMs: 1000}, 20, true, 0},
 	}
 	for _, c := range cases {
-		got := tokensPerSecond(c.log, c.genMs)
+		got := tokensPerSecond(c.log, c.genMs, c.upstream)
 		if got != c.want {
 			t.Errorf("%s: tokensPerSecond = %v，期望 %v", c.name, got, c.want)
 		}
@@ -2121,10 +2124,14 @@ func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
 		`"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}` + "\n\n"
 
 	cases := []struct {
-		name     string
-		upstream http.HandlerFunc
-		wantSSE  bool
-		wantTps  bool
+		name string
+		// reqStream 是客户端请求体里的 stream；forceStream 是模型上的「强制流式请求」。
+		reqStream   bool
+		forceStream bool
+		upstream    http.HandlerFunc
+		// wantSSE 是日志里的「流式」徽章，只看客户端请求；wantTps 看上游是不是流式。
+		wantSSE bool
+		wantTps bool
 	}{
 		{
 			// 真正的流式：分块之间有间隔，速度有意义
@@ -2145,7 +2152,7 @@ func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
 				io.WriteString(w, sseUsage)
 				io.WriteString(w, "data: [DONE]\n\n")
 			},
-			wantSSE: true, wantTps: true,
+			reqStream: true, wantSSE: true, wantTps: true,
 		},
 		{
 			// 上游把整段 SSE 一次性吐完：首块到末块只差几毫秒，不给速度
@@ -2159,17 +2166,41 @@ func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
 				io.WriteString(w, sseUsage)
 				io.WriteString(w, "data: [DONE]\n\n")
 			},
-			wantSSE: true, wantTps: false,
+			reqStream: true, wantSSE: true, wantTps: false,
 		},
 		{
-			// 调用方要流式、上游回完整 JSON：输出不是流式，不能标流式也不能算速度
+			// 调用方要流式、上游回完整 JSON：徽章照旧标「流式」（客户端要的就是流式），
+			// 但上游没有按流式吐内容，没有生成窗口，不算速度
 			name: "json-for-stream-request",
 			upstream: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],`+
 					`"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`)
 			},
-			wantSSE: false, wantTps: false,
+			reqStream: true, wantSSE: true, wantTps: false,
+		},
+		{
+			// 客户端要非流式、模型开了强制流式：徽章不标「流式」，
+			// 但上游确实是流式吐的，速度照算
+			name:        "force-stream-nonstream-client",
+			forceStream: true,
+			upstream: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				if fl, ok := w.(http.Flusher); ok {
+					fl.Flush()
+				}
+				for i := 0; i < 10; i++ {
+					io.WriteString(w, sseChunk)
+					if fl, ok := w.(http.Flusher); ok {
+						fl.Flush()
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				io.WriteString(w, sseUsage)
+				io.WriteString(w, "data: [DONE]\n\n")
+			},
+			wantSSE: false, wantTps: true,
 		},
 	}
 
@@ -2187,6 +2218,7 @@ func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
 			}
 			if err := st.SaveModel(store.Model{
 				ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a", Enabled: true,
+				ForceStream: boolp(c.forceStream),
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -2197,7 +2229,10 @@ func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
 			gw := httptest.NewServer(s.Handler())
 			defer gw.Close()
 
-			body := `{"model":"A/a","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+			body := `{"model":"A/a","messages":[{"role":"user","content":"hi"}]}`
+			if c.reqStream {
+				body = `{"model":"A/a","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+			}
 			req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(body))
 			req.Header.Set("Authorization", "Bearer "+key)
 			req.Header.Set("Content-Type", "application/json")
@@ -2217,7 +2252,7 @@ func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
 			}
 			l := logs[0]
 			if l.Stream != c.wantSSE {
-				t.Errorf("流式标记应为 %v，得到 %v", c.wantSSE, l.Stream)
+				t.Errorf("「流式」徽章应为 %v，得到 %v", c.wantSSE, l.Stream)
 			}
 			if c.wantTps {
 				if l.TokensPerSec <= 0 || l.TokensPerSec > 2000 {
@@ -2260,17 +2295,23 @@ func TestStatsOverviewAverageSpeed(t *testing.T) {
 	s, _ := newTestServer(t, "stats-speed")
 	tok := store.Token{ID: "tk", Name: "测试"}
 
-	// 流式且有首字：计入平均速度
+	// 流式请求上游且有首字：计入平均速度（100 / (2000-500) ms）
 	s.record(tok, &relay.Request{Path: "/v1/chat/completions", Stream: true}, &relay.Result{
-		ModelID: "m", StatusCode: http.StatusOK, Stream: true,
+		ModelID: "m", StatusCode: http.StatusOK, Stream: true, StreamGen: true,
 		Usage:     upstream.Usage{CompletionTokens: 100, TotalTokens: 100},
 		LatencyMs: 2000, FirstByteMs: 500,
 	})
-	// 非流式没有输出速度：不计入
+	// 上游没按流式返回（一次性 JSON）：没有生成窗口，不计入
 	s.record(tok, &relay.Request{Path: "/v1/chat/completions"}, &relay.Result{
 		ModelID: "m", StatusCode: http.StatusOK,
 		Usage:     upstream.Usage{CompletionTokens: 100, TotalTokens: 100},
-		LatencyMs: 1000, FirstByteMs: 100,
+		LatencyMs: 1000,
+	})
+	// 客户端要非流式、网关按流式请求上游：生成过程有速度，同样计入（100 / 600 ms）
+	s.record(tok, &relay.Request{Path: "/v1/chat/completions"}, &relay.Result{
+		ModelID: "m", StatusCode: http.StatusOK, StreamGen: true, GenMs: 600,
+		Usage:     upstream.Usage{CompletionTokens: 100, TotalTokens: 100},
+		LatencyMs: 1500, FirstByteMs: 600,
 	})
 
 	rec := httptest.NewRecorder()
@@ -2286,17 +2327,18 @@ func TestStatsOverviewAverageSpeed(t *testing.T) {
 	if err := json.Unmarshal(out["current"], &current); err != nil {
 		t.Fatal(err)
 	}
-	if got := current["speed_samples"].(float64); got != 1 {
-		t.Errorf("速度样本数应为 1，得到 %v", got)
+	if got := current["speed_samples"].(float64); got != 2 {
+		t.Errorf("速度样本数应为 2，得到 %v", got)
 	}
-	if got := current["avg_speed"].(float64); math.Abs(got-1000.0/15) > 0.001 {
-		t.Errorf("平均速度应为 %.4f，得到 %v", 1000.0/15, got)
+	wantSpeed := (1000.0/15 + 1000.0/6) / 2
+	if got := current["avg_speed"].(float64); math.Abs(got-wantSpeed) > 0.001 {
+		t.Errorf("平均速度应为 %.4f，得到 %v", wantSpeed, got)
 	}
-	if got := current["avg_first_byte"].(float64); got != 500 {
-		t.Errorf("平均首字应为 500，得到 %v", got)
+	if got := current["avg_first_byte"].(float64); got != 550 {
+		t.Errorf("平均首字应为 550，得到 %v", got)
 	}
-	if got := current["avg_speed_latency"].(float64); got != 2000 {
-		t.Errorf("平均总耗时应为 2000，得到 %v", got)
+	if got := current["avg_speed_latency"].(float64); got != 1750 {
+		t.Errorf("平均总耗时应为 1750，得到 %v", got)
 	}
 }
 
@@ -3306,5 +3348,134 @@ func TestDevAssetRejectsTraversal(t *testing.T) {
 	s.serveStatic(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("带反斜杠的静态请求应返回 404，得到 %d", rec.Code)
+	}
+}
+
+// 看板按模型拆分：总览返回每个模型的序列，单模型视图只返回该模型的分项。
+func TestStatsModelScope(t *testing.T) {
+	s, _ := newTestServer(t, "stats-model-scope")
+	now := time.Now().In(dashboardLocation)
+	_ = s.store.RecordStat(store.Log{Time: now.UnixMilli(), ModelID: "a", StatusCode: 200, TotalTokens: 10, PromptTokens: 4, CompletionTokens: 6})
+	_ = s.store.RecordStat(store.Log{Time: now.UnixMilli(), ModelID: "a", StatusCode: 500, Error: "boom"})
+	_ = s.store.RecordStat(store.Log{Time: now.UnixMilli(), ModelID: "b", StatusCode: 200, TotalTokens: 3})
+
+	// 总览：两个模型各自的序列都要在
+	rec := httptest.NewRecorder()
+	s.statsSeries(rec, httptest.NewRequest(http.MethodGet, "/api/stats/series?range=today", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+	}
+	var all struct {
+		Points []struct {
+			Requests int64 `json:"requests"`
+			Errors   int64 `json:"errors"`
+		} `json:"points"`
+		ModelSeries map[string]struct {
+			Requests []int64 `json:"requests"`
+			Errors   []int64 `json:"errors"`
+		} `json:"model_series"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &all); err != nil {
+		t.Fatal(err)
+	}
+	if len(all.ModelSeries) != 2 {
+		t.Fatalf("应有 2 个模型的序列，得到 %d", len(all.ModelSeries))
+	}
+	if got := all.ModelSeries["a"].Requests[len(all.ModelSeries["a"].Requests)-1]; got != 2 {
+		t.Errorf("模型 a 应有 2 次请求，得到 %d", got)
+	}
+	if got := all.ModelSeries["a"].Errors[len(all.ModelSeries["a"].Errors)-1]; got != 1 {
+		t.Errorf("模型 a 应有 1 次失败，得到 %d", got)
+	}
+	last := all.Points[len(all.Points)-1]
+	if last.Requests != 3 || last.Errors != 1 {
+		t.Errorf("全部应有 3 次请求 1 次失败，得到 %d / %d", last.Requests, last.Errors)
+	}
+
+	// 单模型视图：只统计该模型
+	rec = httptest.NewRecorder()
+	s.statsSeries(rec, httptest.NewRequest(http.MethodGet, "/api/stats/series?range=today&model=a", nil))
+	var one struct {
+		Points []struct {
+			Requests     int64 `json:"requests"`
+			Errors       int64 `json:"errors"`
+			TotalTokens  int64 `json:"total_tokens"`
+			PromptTokens int64 `json:"prompt_tokens"`
+		} `json:"points"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &one); err != nil {
+		t.Fatal(err)
+	}
+	p := one.Points[len(one.Points)-1]
+	if p.Requests != 2 || p.Errors != 1 {
+		t.Errorf("模型 a 应有 2 次请求 1 次失败，得到 %d / %d", p.Requests, p.Errors)
+	}
+	if p.TotalTokens != 10 || p.PromptTokens != 4 {
+		t.Errorf("模型 a 应有 10 Token（输入 4），得到 %d / %d", p.TotalTokens, p.PromptTokens)
+	}
+
+	// 单模型总览：请求数、失败数、成功率都按该模型算
+	rec = httptest.NewRecorder()
+	s.statsOverview(rec, httptest.NewRequest(http.MethodGet, "/api/stats/overview?range=today&model=a", nil))
+	var ov struct {
+		Model   string         `json:"model"`
+		Current map[string]any `json:"current"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &ov); err != nil {
+		t.Fatal(err)
+	}
+	if ov.Model != "a" {
+		t.Errorf("应回显模型 a，得到 %s", ov.Model)
+	}
+	if got := ov.Current["requests"].(float64); got != 2 {
+		t.Errorf("模型 a 应有 2 次请求，得到 %v", got)
+	}
+	if got := ov.Current["errors"].(float64); got != 1 {
+		t.Errorf("模型 a 应有 1 次失败，得到 %v", got)
+	}
+	if got := ov.Current["success_rate"].(float64); got != 50 {
+		t.Errorf("模型 a 成功率应为 50，得到 %v", got)
+	}
+
+	// 分布接口里每个模型要带上失败数
+	rec = httptest.NewRecorder()
+	s.statsBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/stats/breakdown?range=today", nil))
+	var bd struct {
+		Models []struct {
+			Name   string `json:"name"`
+			Value  int64  `json:"value"`
+			Errors int64  `json:"errors"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &bd); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range bd.Models {
+		if m.Name == "a" {
+			found = true
+			if m.Value != 2 || m.Errors != 1 {
+				t.Errorf("模型 a 应为 2 次请求 1 次失败，得到 %d / %d", m.Value, m.Errors)
+			}
+		}
+	}
+	if !found {
+		t.Error("分布里应包含模型 a")
+	}
+}
+
+// 老版本只记了 ModelCounts / ModelErrors，升级后仍要能按模型出数。
+func TestStatsLegacyModelCountsMerged(t *testing.T) {
+	b := store.Bucket{
+		ModelCounts: map[string]int64{"a": 3},
+		ModelErrors: map[string]int64{"a": 1},
+	}
+	ms := b.ModelStatOf("a")
+	if ms.Requests != 3 || ms.Errors != 1 {
+		t.Errorf("老数据应合并出 3 次请求 1 次失败，得到 %d / %d", ms.Requests, ms.Errors)
+	}
+	merged := b.ModelStatsMerged()
+	if len(merged) != 1 || merged["a"].Requests != 3 {
+		t.Errorf("老数据应合并出模型 a 的统计，得到 %v", merged)
 	}
 }

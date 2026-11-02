@@ -218,12 +218,15 @@ type Result struct {
 	Err string
 	// ClientErr 是实际返回给调用方的错误文案。网关自身原因对外会收敛成笼统提示，
 	// 与 Err 不同；记录它才能在日志里还原调用方真正看到的内容。
-	ClientErr     string
-	// Stream 表示这次响应是不是真的按 SSE 流式写给客户端的。
-	// 注意与请求体里的 stream 区分：调用方要流式、但上游直接回了完整 JSON 时，
-	// 这里为 false——输出形态才是日志里「流式」标记该反映的东西。
+	ClientErr string
+	// Stream 表示调用方这次请求要的是不是流式（请求体里的 stream）。
+	// 日志里的「流式」徽章只看它：客户端要流式就标，不看上游最后回的是什么形态。
 	Stream bool
-	// GenMs 是流式响应从「首块内容写出」到「最后一块内容写出」的实际窗口，
+	// StreamGen 表示这次输出是一块块流式生成出来的：上游按流式请求了、也回了 SSE
+	// （含强制流式收流后按非流式返回），或者「自定义内容返回」按模拟速度分块写出。
+	// 输出速度看它而不是看 Stream：客户端要非流式时，上游的生成过程同样有速度。
+	StreamGen bool
+	// GenMs 是上游流式响应从「首块内容到达」到「末块内容到达」的实际窗口，
 	// 输出速度按它计算。上游把整段响应一次性吐完（或直接回 JSON）时为 0，
 	// 表示没有有意义的生成窗口，不统计速度。
 	GenMs         int64
@@ -744,9 +747,9 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	// 直接调用 Do 的测试与管理端逻辑也能拿到表单里的 model。
 	req.Prepare()
 	start := time.Now()
-	// Stream 记录的是「响应实际是不是流式」，由真正写出响应的分支设置，
-	// 不能直接用 req.Stream：调用方要流式而上游回了完整 JSON 时，输出不是流式。
-	res := &Result{ModelID: modelOf(req)}
+	// Stream 标记只反映调用方请求的形态（请求体里的 stream），
+	// 与上游最后回的是 SSE 还是完整 JSON 无关。
+	res := &Result{ModelID: modelOf(req), Stream: req.Stream}
 
 	// 防御性校验：即使调用方绕过 handleAPI，也不允许把非模型端点转发到上游。
 	if !IsAllowedEndpoint(req.Method, req.Path) {
@@ -812,6 +815,8 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 			firstByte, genMs, canceled := writeCustomContentStream(ctx, w, req, resolved.Model.ID, cc, usage, start)
 			res.StatusCode = http.StatusOK
 			res.Stream = true
+			// 模拟流式同样是分块写出的，日志里照常算输出速度。
+			res.StreamGen = true
 			res.GenMs = genMs
 			res.FirstByteMs = firstByte
 			res.LatencyMs = time.Since(start).Milliseconds()
@@ -948,7 +953,7 @@ outer:
 				res.Usage = outcome.usage
 				res.UsageEstimate = outcome.estimated
 				res.FirstByteMs = outcome.firstByte
-				res.Stream = outcome.streamed
+				res.StreamGen = outcome.streamGen
 				res.GenMs = outcome.genMs
 				res.ReasoningChars = outcome.reasoning
 				res.ReasoningTokens = outcome.usage.ReasoningTokens
@@ -959,9 +964,9 @@ outer:
 			}
 			wrote = wrote || outcome.wrote
 			// 已经写给客户端的形态就是最终形态：中途失败也改不回来，
-			// 日志里的「流式」标记与速度窗口都按它记。
+			// 日志里的速度窗口按实际收到的内容记。
 			if outcome.wrote {
-				res.Stream = outcome.streamed
+				res.StreamGen = outcome.streamGen
 				res.GenMs = outcome.genMs
 			}
 			if outcome.err == nil {
@@ -972,7 +977,7 @@ outer:
 				res.Usage = outcome.usage
 				res.UsageEstimate = outcome.estimated
 				res.FirstByteMs = outcome.firstByte
-				res.Stream = outcome.streamed
+				res.StreamGen = outcome.streamGen
 				res.GenMs = outcome.genMs
 				res.ReasoningChars = outcome.reasoning
 				res.ReasoningTokens = outcome.usage.ReasoningTokens
@@ -1063,9 +1068,9 @@ type attemptOutcome struct {
 	wrote     bool
 	estimated bool
 	reasoning int
-	// streamed 表示这次响应确实是按 SSE 流式写给客户端的。
-	// 调用方要流式、但上游直接回了完整 JSON 时为 false。
-	streamed bool
+	// streamGen 表示这次输出是流式一块块生成出来的。
+	// 与写给客户端的形态无关：调用方要非流式、网关收完再返回时同样是 true。
+	streamGen bool
 	// genMs 是流式响应从首块内容到末块内容的实际窗口（毫秒）；
 	// 一次性吐完时为 0，表示没有可用的速度样本。
 	genMs int64
@@ -1400,24 +1405,24 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				if done && st.Err() == nil {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						wrote: true, estimated: est, reasoning: st.ReasoningChars(),
-						streamed: true, genMs: genWindow()}
+						streamGen: true, genMs: genWindow()}
 				}
 				// 客户端断开和上游断开要分开记账：前者黄色 200 记成功，后者红色 200 记错误
 				if ctx.Err() != nil {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						err: errors.New("客户端已断开连接"), canceled: true, wrote: true, estimated: est,
-						reasoning: st.ReasoningChars(), streamed: true, genMs: genWindow()}
+						reasoning: st.ReasoningChars(), streamGen: true, genMs: genWindow()}
 				}
 				if reason := clock.reason(); reason != "" {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						err: errors.New(reason), retryable: false, wrote: true, estimated: est,
 						reasoning: st.ReasoningChars(), upstreamBroken: true,
-						streamed: true, genMs: genWindow()}
+						streamGen: true, genMs: genWindow()}
 				}
 				return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 					err: errors.New(cleanNetErr(rerr)), retryable: false, wrote: true, estimated: est,
 					reasoning: st.ReasoningChars(), upstreamBroken: true,
-					streamed: true, genMs: genWindow()}
+					streamGen: true, genMs: genWindow()}
 			}
 			break
 		}
@@ -1432,7 +1437,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	usage, estimated := streamUsage(st, req)
 	outcome := attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 		wrote: true, estimated: estimated, reasoning: st.ReasoningChars(),
-		streamed: true, genMs: genWindow()}
+		streamGen: true, genMs: genWindow()}
 	if err := st.Err(); err != nil {
 		outcome.err = err
 	}

@@ -101,6 +101,13 @@
   const dashRange = { key: 'today' };
   const dashRangeInfo = () => DASH_RANGES[dashRange.key] || DASH_RANGES.today;
   const dashMetric = { m: 'requests' };
+  // 调用趋势的视图选择：all = 每个模型一条线，total = 总计三条曲线，model = 单个模型三条曲线。
+  // 三个视图都在图例里点，不额外占上面的维度切换位。
+  const dashSel = { kind: 'all', id: '' };
+  // 各模型的固定配色，和模型调用分布的环形图保持一致。
+  // 刻意避开失败数用的红色，免得图例里分不清哪个是失败线。
+  const DASH_MODEL_COLORS = ['#4d9e2f', '#e9a316', '#3f8fbf', '#8a5ac2', '#d9557f', '#7cc243',
+    '#5f9e8b', '#b07b3e', '#6b7f9e', '#a05a9b', '#3f9e8f', '#8a8f98'];
   const DASH_UNIT_KEY = 'ldmapi.dashboard.unit';
   const dashUnit = { mode: 'cn' };
   try {
@@ -163,13 +170,13 @@
       actions.querySelector('#dash-unit').onchange = (e) => {
         dashUnit.mode = e.target.value;
         try { localStorage.setItem(DASH_UNIT_KEY, dashUnit.mode); } catch (err) { /* 忽略配额错误 */ }
-        if (dashData) renderBody();
+        if (dashData) paintAll();
       };
       actions.querySelectorAll('#range-toggle button').forEach((b) => {
         b.onclick = () => {
           dashRange.key = b.dataset.r;
           actions.querySelectorAll('#range-toggle button').forEach((x) => x.classList.toggle('is-on', x === b));
-          load();
+          loadAll();
         };
       });
 
@@ -177,15 +184,18 @@
       const body = root.querySelector('#dash-body');
 
       let dashData = null;
+      let dom = null;
       let loadSeq = 0;
-      async function load() {
+
+      // 拉全量数据：首次进入、切区间、刷新
+      async function loadAll() {
         const seq = ++loadSeq;
-        dashData = null;
-        body.innerHTML = loadingBlock();
         try {
+          // 选中某个模型时，统计和序列都按该模型取；「各模型」「总计」都是全局视图。
+          const scope = dashSel.kind === 'model' ? '&model=' + encodeURIComponent(dashSel.id) : '';
           const [overview, series, breakdown, logs] = await Promise.all([
-            API.get('/api/stats/overview?range=' + dashRange.key),
-            API.get('/api/stats/series?range=' + dashRange.key),
+            API.get('/api/stats/overview?range=' + dashRange.key + scope),
+            API.get('/api/stats/series?range=' + dashRange.key + scope),
             API.get('/api/stats/breakdown?range=' + dashRange.key),
             API.get('/api/logs?limit=8'),
           ]);
@@ -196,66 +206,45 @@
           body.innerHTML = `<div class="card card--pad"><div class="alert alert--warn">${icon('alert', 16)}<div>${esc(e.message)}</div></div></div>`;
           return;
         }
-        renderBody();
+        if (!dom) buildSkeleton();
+        paintAll();
       }
 
-      function renderBody() {
-        hideTip();
-        const { overview, series, breakdown, logs } = dashData;
-        const t = overview.current;
-        const y = overview.previous;
-        const info = dashRangeInfo();
-        const delta = (cur, prev) => {
-          // 全部区间没有上一周期可比，脚注改成累计起点，避免出现「新增」这种误导
-          if (!info.compare) {
-            const from = overview.start ? dashDay(overview.start) : '';
-            return `<span class="muted">${from ? from + ' 起' : '全部记录'}</span>`;
-          }
-          if (!prev) return cur > 0 ? '<span class="stat__delta up">新增</span>' : '<span class="muted">—</span>';
-          const d = ((cur - prev) / prev) * 100;
-          const cls = d >= 0 ? 'up' : 'down';
-          const arrow = d >= 0 ? '↑' : '↓';
-          return `<span class="stat__delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)}%</span> ${info.compare}`;
-        };
+      // 换视图：只重新拉统计和曲线，分布与日志不变。
+      // 页面骨架不动，只重画受影响的几个区域，不会整块闪一下。
+      async function loadView() {
+        const seq = ++loadSeq;
+        try {
+          // 「各模型」「总计」都是全局视图，只有单个模型才带 model 参数。
+          const scope = dashSel.kind === 'model' ? '&model=' + encodeURIComponent(dashSel.id) : '';
+          const [overview, series] = await Promise.all([
+            API.get('/api/stats/overview?range=' + dashRange.key + scope),
+            API.get('/api/stats/series?range=' + dashRange.key + scope),
+          ]);
+          if (seq !== loadSeq) return;
+          dashData.overview = overview;
+          dashData.series = series;
+        } catch (e) {
+          if (seq !== loadSeq) return;
+          Toast.error(e.message || '加载失败');
+          return;
+        }
+        paintStats();
+        paintTrend();
+        paintLegend();
+        paintDonut();
+      }
 
-        const points = series.points || [];
-        const labels = points.map((p) => timeLabel(p.time, series.step_ms * points.length));
-        const times = points.map((p) => p.time);
-
+      // 骨架只建一次，之后所有操作都只重画局部
+      function buildSkeleton() {
         body.innerHTML = `
           <div class="stat-grid">
-            <div class="stat">
-              <div class="stat__label">${icon('zap', 13)}${dashRangeInfo().label}请求</div>
-              <div class="stat__value">${fmtDash(t.requests)}<small>次</small></div>
-              <div class="stat__foot">${delta(t.requests, y.requests)}</div>
-            </div>
-            <div class="stat">
-              <div class="stat__label">${icon('bolt', 13)}${dashRangeInfo().label} Token</div>
-              <div class="stat__value">${fmtDash(t.total_tokens)}</div>
-              <div class="stat__foot">${delta(t.total_tokens, y.total_tokens)}</div>
-            </div>
-            <div class="stat">
-              <div class="stat__label">${icon('check', 13)}成功率</div>
-              <div class="stat__value" style="color:${rateColor(t.requests ? t.success_rate : 100)}">${t.requests ? t.success_rate.toFixed(1) : '100.0'}<small style="color:inherit">%</small></div>
-              <div class="stat__foot">${t.errors ? `${fmtInt(t.errors)} 次失败` : '全部成功'}</div>
-            </div>
-            <div class="stat">
-              <div class="stat__label">${icon('clock', 13)}平均速度</div>
-              <div class="stat__value">${t.speed_samples ? `${t.avg_speed.toFixed(1)}<small>t/s</small>` : '—'}</div>
-              <div class="stat__foot">${t.speed_samples
-                ? `首字 ${fmtDuration(t.avg_first_byte)} · 总耗时 ${fmtDuration(t.avg_speed_latency)}`
-                : '暂无流式记录'}</div>
-            </div>
-            <div class="stat">
-              <div class="stat__label">${icon('channels', 13)}渠道</div>
-              <div class="stat__value">${fmtDash(overview.channels.enabled)}<small>/ ${fmtDash(overview.channels.total)}</small></div>
-              <div class="stat__foot">已启用 / 总数</div>
-            </div>
-            <div class="stat">
-              <div class="stat__label">${icon('models', 13)}模型</div>
-              <div class="stat__value">${fmtDash(overview.models.enabled)}<small>/ ${fmtDash(overview.models.total)}</small></div>
-              <div class="stat__foot">运行 ${fmtUptime(overview.uptime)}</div>
-            </div>
+            <div class="stat" id="card-req"></div>
+            <div class="stat" id="card-token"></div>
+            <div class="stat" id="card-rate"></div>
+            <div class="stat" id="card-speed"></div>
+            <div class="stat" id="card-chan"></div>
+            <div class="stat" id="card-model"></div>
           </div>
 
           <div class="chart-grid">
@@ -263,7 +252,7 @@
               <div class="card__head">
                 <div>
                   <div class="card__title">调用趋势</div>
-                  <div class="card__sub">请求量与 Token 消耗</div>
+                  <div class="card__sub" id="trend-sub"></div>
                 </div>
                 <div class="card__actions">
                   <div class="pill-toggle" id="metric-toggle">
@@ -272,14 +261,18 @@
                   </div>
                 </div>
               </div>
-              <div class="card__body"><div id="trend-chart"></div></div>
+              <div class="card__body">
+                <div id="trend-chart"></div>
+                <div class="chart-legend" id="model-legend"></div>
+                <div class="fs-12 muted" id="trend-note" style="margin-top:6px"></div>
+              </div>
             </div>
 
             <div class="card">
               <div class="card__head">
                 <div>
                   <div class="card__title">模型调用分布</div>
-                  <div class="card__sub">${dashRangeInfo().label}</div>
+                  <div class="card__sub" id="donut-sub"></div>
                 </div>
               </div>
               <div class="card__body"><div id="model-donut"></div></div>
@@ -320,42 +313,299 @@
             <div id="recent-logs"></div>
           </div>`;
 
-        const trendHost = body.querySelector('#trend-chart');
-        const drawTrend = (metric) => {
-          const s = metric === 'tokens'
-            ? [
-                { name: '输入 Token', color: '#3f8fbf', values: points.map((p) => p.prompt_tokens) },
-                { name: '输出 Token', color: '#4d9e2f', values: points.map((p) => p.completion_tokens) },
-              ]
-            : [
-                { name: '请求数', color: '#4d9e2f', values: points.map((p) => p.requests) },
-                { name: '失败数', color: '#c9483a', values: points.map((p) => p.errors) },
-              ];
-          areaChart(trendHost, {
-            labels, times, series: s, height: 216, spanMs: series.step_ms,
-            valueFmt: fmtDash,
-            axisFmt: fmtDash,
-          });
+        dom = {
+          req: body.querySelector('#card-req'),
+          token: body.querySelector('#card-token'),
+          rate: body.querySelector('#card-rate'),
+          speed: body.querySelector('#card-speed'),
+          chan: body.querySelector('#card-chan'),
+          model: body.querySelector('#card-model'),
+          trendSub: body.querySelector('#trend-sub'),
+          trend: body.querySelector('#trend-chart'),
+          legend: body.querySelector('#model-legend'),
+          note: body.querySelector('#trend-note'),
+          donutSub: body.querySelector('#donut-sub'),
+          donut: body.querySelector('#model-donut'),
+          channelRank: body.querySelector('#channel-rank'),
+          tokenRank: body.querySelector('#token-rank'),
+          recent: body.querySelector('#recent-logs'),
         };
-        drawTrend(dashMetric.m);
         body.querySelectorAll('#metric-toggle button').forEach((b) => {
           b.onclick = () => {
             dashMetric.m = b.dataset.m;
             body.querySelectorAll('#metric-toggle button').forEach((x) => x.classList.toggle('is-on', x === b));
-            drawTrend(b.dataset.m);
+            paintTrend();
           };
         });
+        body.querySelector('#go-logs').onclick = () => { location.hash = '#/logs'; };
+      }
 
-        donutChart(body.querySelector('#model-donut'), {
-          items: (breakdown.models || []).map((x) => ({ name: x.name, value: x.value })),
+      // 选中的模型没有 Token / 速度记录时（老数据只记了请求数和失败数），
+      // 显示「—」并说明原因，别让 0 看起来像「没用 Token」。
+      function knownFlags() {
+        const t = dashData.overview.current;
+        const scoped = dashSel.kind === 'model';
+        return {
+          token: !(scoped && t.requests > 0 && t.total_tokens === 0),
+          speed: !(scoped && t.requests > 0 && t.speed_samples === 0),
+        };
+      }
+
+      function paintStats() {
+        const { overview } = dashData;
+        const t = overview.current;
+        const y = overview.previous;
+        const info = dashRangeInfo();
+        const scoped = dashSel.kind === 'model';
+        const known = knownFlags();
+        const delta = (cur, prev) => {
+          // 全部区间没有上一周期可比，脚注改成累计起点，避免出现「新增」这种误导
+          if (!info.compare) {
+            const from = overview.start ? dashDay(overview.start) : '';
+            return `<span class="muted">${from ? from + ' 起' : '全部记录'}</span>`;
+          }
+          if (!prev) return cur > 0 ? '<span class="stat__delta up">新增</span>' : '<span class="muted">—</span>';
+          const d = ((cur - prev) / prev) * 100;
+          const cls = d >= 0 ? 'up' : 'down';
+          const arrow = d >= 0 ? '↑' : '↓';
+          return `<span class="stat__delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)}%</span> ${info.compare}`;
+        };
+
+        dom.req.innerHTML = `
+          <div class="stat__label">${icon('zap', 13)}${info.label}请求</div>
+          <div class="stat__value">${fmtDash(t.requests)}<small>次</small></div>
+          <div class="stat__foot">${delta(t.requests, y.requests)}</div>`;
+        dom.token.innerHTML = `
+          <div class="stat__label">${icon('bolt', 13)}${info.label} Token</div>
+          <div class="stat__value">${known.token ? fmtDash(t.total_tokens) : '—'}</div>
+          <div class="stat__foot">${known.token
+            ? delta(t.total_tokens, y.total_tokens)
+            : '历史数据未按模型记录 Token'}</div>`;
+        dom.rate.innerHTML = `
+          <div class="stat__label">${icon('check', 13)}成功率</div>
+          <div class="stat__value" style="color:${rateColor(t.requests ? t.success_rate : 100)}">${t.requests ? t.success_rate.toFixed(1) : '100.0'}<small style="color:inherit">%</small></div>
+          <div class="stat__foot">${t.errors ? `${fmtInt(t.errors)} 次失败` : '全部成功'}</div>`;
+        dom.speed.innerHTML = `
+          <div class="stat__label">${icon('clock', 13)}平均速度</div>
+          <div class="stat__value">${known.speed ? `${t.avg_speed.toFixed(1)}<small>t/s</small>` : '—'}</div>
+          <div class="stat__foot">${known.speed
+            ? `首字 ${fmtDuration(t.avg_first_byte)} · 总耗时 ${fmtDuration(t.avg_speed_latency)}`
+            : (scoped ? '历史数据未按模型记录速度' : '暂无速度样本')}</div>`;
+        dom.chan.innerHTML = `
+          <div class="stat__label">${icon('channels', 13)}渠道</div>
+          <div class="stat__value">${fmtDash(overview.channels.enabled)}<small>/ ${fmtDash(overview.channels.total)}</small></div>
+          <div class="stat__foot">已启用 / 总数</div>`;
+        dom.model.innerHTML = `
+          <div class="stat__label">${icon('models', 13)}模型</div>
+          <div class="stat__value">${fmtDash(overview.models.enabled)}<small>/ ${fmtDash(overview.models.total)}</small></div>
+          <div class="stat__foot">运行 ${fmtUptime(overview.uptime)}</div>`;
+      }
+
+      function paintTrend() {
+        hideTip();
+        const { series, breakdown } = dashData;
+        const points = series.points || [];
+        const labels = points.map((p) => timeLabel(p.time, series.step_ms * points.length));
+        const times = points.map((p) => p.time);
+        const kind = dashSel.kind;
+        const modelRows = breakdown.models || [];
+        const ms = series.model_series || {};
+        // 汇总曲线：请求数 / 成功数 / 失败数
+        const summary = (pts) => ([
+          { name: '请求数', color: '#3f8fbf', values: pts.map((p) => p.requests) },
+          { name: '成功数', color: '#4d9e2f', values: pts.map((p) => Math.max(0, p.requests - p.errors)) },
+          { name: '失败数', color: '#c9483a', values: pts.map((p) => p.errors) },
+        ]);
+        // Token 构成：输入 / 输出 / 总。三条同时画在图上时，总计只能取「总 Token」
+        // 那一条，否则输入 + 输出 + 总会被重复相加。
+        const tokenSummary = (pts) => ([
+          { name: '输入 Token', color: '#3f8fbf', values: pts.map((p) => p.prompt_tokens) },
+          { name: '输出 Token', color: '#4d9e2f', values: pts.map((p) => p.completion_tokens) },
+          { name: '总 Token', color: '#e9a316', values: pts.map((p) => p.total_tokens) },
+        ]);
+        let s;
+        let totalFrom = null;
+        let sub;
+        if (dashMetric.m === 'tokens') {
+          if (kind === 'all') {
+            // 各模型：每个模型一条总 Token 曲线，和请求数维度一一对应。
+            // 没有 Token 数据的模型照画（值是 0），在图下注明有几个模型缺数据，
+            // 免得贴底的 0 线被当成「这段时间没调用」。
+            s = [];
+            modelRows.forEach((m, i) => {
+              const one = ms[m.name];
+              if (!one) return;
+              s.push({
+                name: m.name,
+                color: DASH_MODEL_COLORS[i % DASH_MODEL_COLORS.length],
+                values: one.total_tokens,
+              });
+            });
+            if (s.length) {
+              sub = '每个模型一条曲线（总 Token），点下面的图例可单独查看';
+            } else {
+              // 老数据没有按模型记 Token 时退回整体构成
+              s = tokenSummary(points);
+              totalFrom = '总 Token';
+              sub = '总计的输入 / 输出 / 总 Token';
+            }
+          } else {
+            // 总计 / 单个模型：输入、输出、总 Token 三条线。
+            s = tokenSummary(points);
+            totalFrom = '总 Token';
+            sub = kind === 'model'
+              ? `当前只看 ${dashSel.id}：输入 / 输出 / 总 Token`
+              : '总计的输入 / 输出 / 总 Token';
+          }
+        } else if (kind === 'model') {
+          // 单个模型：请求数 / 成功数 / 失败数三条都是这个模型的。
+          s = summary(points);
+          totalFrom = '请求数';
+          sub = `当前只看 ${dashSel.id}`;
+        } else if (kind === 'total') {
+          // 总计：请求数 / 成功数 / 失败数。
+          s = summary(points);
+          totalFrom = '请求数';
+          sub = '总计的请求数 / 成功数 / 失败数';
+        } else {
+          // 各模型：每个模型一条总请求数曲线，另加一条总失败数。
+          s = [];
+          modelRows.forEach((m, i) => {
+            const one = ms[m.name];
+            if (!one) return;
+            s.push({
+              name: m.name,
+              color: DASH_MODEL_COLORS[i % DASH_MODEL_COLORS.length],
+              values: one.requests,
+            });
+          });
+          if (s.length) {
+            s.push({ name: '失败数', color: '#c9483a', values: points.map((p) => p.errors), noTotal: true });
+            sub = '每个模型一条曲线，点下面的图例可单独查看';
+          } else {
+            // 老数据没有按模型记的曲线时退回整体
+            s = summary(points);
+            totalFrom = '请求数';
+            sub = '总计的请求数 / 成功数 / 失败数';
+          }
+        }
+        // 副标题顺带说清图例里那个数字是什么口径，跟上面的维度保持一致。
+        dom.trendSub.textContent = sub
+          + (dashMetric.m === 'tokens' ? '（图例里的模型数字为 Token 消耗）' : '（图例里的模型数字为调用次数）');
+        areaChart(dom.trend, {
+          labels, times, series: s, height: 216, spanMs: series.step_ms,
+          valueFmt: fmtDash,
+          axisFmt: fmtDash,
+          totalName: '总计',
+          totalFrom,
+        });
+        // 选了模型又切到 Token 维度、而这个模型没有 Token 记录时说明一下，
+        // 否则图上几条平线会让人以为调用量是 0。
+        // 各模型视图同理：缺 Token 数据的模型画不出曲线，要告诉用户少了几个。
+        let note = '';
+        if (dashMetric.m === 'tokens') {
+          if (kind === 'model' && !knownFlags().token) {
+            note = '该模型没有 Token 记录（历史数据未按模型统计 Token）';
+          } else if (kind === 'all') {
+            const noTok = modelRows.filter((m) => {
+              const one = ms[m.name];
+              return !one || !one.total_tokens.some((v) => v > 0);
+            });
+            if (noTok.length) {
+              note = `${noTok.length} 个模型没有 Token 数据（历史数据未按模型统计 Token），曲线为 0`;
+            }
+          }
+        }
+        dom.note.textContent = note;
+      }
+
+      // 图例既是曲线说明也是视图开关：「各模型」「总计」和各个模型都能点。
+      function paintLegend() {
+        const { breakdown, series } = dashData;
+        const kind = dashSel.kind;
+        const modelRows = breakdown.models || [];
+        const ms = series.model_series || {};
+        const totalReq = breakdown.total || 0;
+        const totalErr = breakdown.errors || 0;
+        const totalTok = breakdown.tokens_used || 0;
+        const failTag = (n) => (n ? `<span class="chart-legend__fail">${fmtDash(n)} 失败</span>` : '');
+        // 图例数字跟着上面的维度走：请求数维度显示调用次数，Token 维度显示 Token 消耗，
+        // 这样图例数字和图上的曲线是同一个口径，不会对不上。
+        const isTok = dashMetric.m === 'tokens';
+        const totalVal = isTok ? totalTok : totalReq;
+        const items = [
+          `<button type="button" class="chart-legend__item chart-legend__btn${kind === 'all' ? ' is-on' : ''}" data-sel="all" title="每个模型一条曲线">
+            <span class="chart-legend__swatch" style="background:linear-gradient(135deg,#4d9e2f,#3f8fbf 55%,#8a5ac2)"></span>
+            <span class="nowrap">各模型</span>
+            <b>${modelRows.length}</b>
+          </button>`,
+          `<button type="button" class="chart-legend__item chart-legend__btn${kind === 'total' ? ' is-on' : ''}" data-sel="total" title="全部模型：调用 ${fmtDash(totalReq)} 次（成功 ${fmtDash(Math.max(0, totalReq - totalErr))} · 失败 ${fmtDash(totalErr)}）· Token 消耗 ${fmtDash(totalTok)}">
+            <span class="chart-legend__swatch" style="background:#3f8fbf"></span>
+            <span class="nowrap">总计</span>
+            <b>${fmtDash(totalVal)}</b>
+            ${failTag(totalErr)}
+          </button>`,
+        ];
+        modelRows.forEach((m, i) => {
+          const color = DASH_MODEL_COLORS[i % DASH_MODEL_COLORS.length];
+          const hasLine = !!ms[m.name];
+          const on = kind === 'model' && dashSel.id === m.name;
+          const val = isTok ? (m.tokens || 0) : m.value;
+          items.push(`<button type="button" class="chart-legend__item chart-legend__btn${on ? ' is-on' : ''}${hasLine ? '' : ' chart-legend__btn--plain'}" data-sel="${esc(m.name)}" title="${esc(m.name)} · 区间内调用 ${fmtDash(m.value)} 次${m.errors ? ` · 失败 ${fmtDash(m.errors)} 次` : ''} · Token 消耗 ${fmtDash(m.tokens || 0)}">
+            <span class="chart-legend__swatch" style="background:${color}"></span>
+            <span class="truncate chart-legend__name">${esc(m.name)}</span>
+            <b>${fmtDash(val)}</b>
+            ${failTag(m.errors)}
+          </button>`);
+        });
+        dom.legend.innerHTML = items.join('');
+        dom.legend.querySelectorAll('[data-sel]').forEach((btn) => {
+          btn.onclick = () => {
+            const sel = btn.dataset.sel;
+            if (sel === 'all') {
+              if (dashSel.kind === 'all') return;
+              dashSel.kind = 'all';
+              dashSel.id = '';
+            } else if (sel === 'total') {
+              if (dashSel.kind === 'total') return;
+              dashSel.kind = 'total';
+              dashSel.id = '';
+            } else {
+              if (dashSel.kind === 'model' && dashSel.id === sel) return;
+              dashSel.kind = 'model';
+              dashSel.id = sel;
+            }
+            loadView();
+          };
+        });
+      }
+
+      function paintDonut() {
+        const { breakdown } = dashData;
+        const scoped = dashSel.kind === 'model';
+        const modelRows = breakdown.models || [];
+        donutChart(dom.donut, {
+          items: modelRows.map((x, i) => ({
+            name: x.name,
+            value: x.value,
+            color: scoped && x.name !== dashSel.id
+              ? 'var(--border)'
+              : DASH_MODEL_COLORS[i % DASH_MODEL_COLORS.length],
+          })),
           valueFmt: fmtDash,
         });
+        dom.donutSub.textContent = dashRangeInfo().label;
+      }
 
-        rankList(body.querySelector('#channel-rank'), breakdown.channels || [], { nameWidth: 200, fmt: fmtDash });
-        rankList(body.querySelector('#token-rank'), breakdown.tokens || [], { nameWidth: 200, fmt: fmtDash });
+      function paintRanks() {
+        const { breakdown } = dashData;
+        rankList(dom.channelRank, breakdown.channels || [], { nameWidth: 200, fmt: fmtDash });
+        rankList(dom.tokenRank, breakdown.tokens || [], { nameWidth: 200, fmt: fmtDash });
+      }
 
-        const items = logs.items || [];
-        body.querySelector('#recent-logs').innerHTML = items.length
+      function paintLogs() {
+        const items = (dashData.logs && dashData.logs.items) || [];
+        dom.recent.innerHTML = items.length
           ? `<div class="table-wrap" style="border:none;border-radius:0">
               <table class="tbl tbl--flat">
                 <thead><tr>
@@ -377,15 +627,21 @@
               </table>
             </div>`
           : emptyState('还没有调用记录', '通过 API 调用任意模型后，这里会显示实时统计。', '', 'logs');
-
-        body.querySelectorAll('#recent-logs [data-recent-error]').forEach((btn) => {
+        dom.recent.querySelectorAll('[data-recent-error]').forEach((btn) => {
           btn.onclick = () => showLogError(items[Number(btn.dataset.recentError)]);
         });
-
-        body.querySelector('#go-logs').onclick = () => { location.hash = '#/logs'; };
       }
 
-      await load();
+      function paintAll() {
+        paintStats();
+        paintTrend();
+        paintLegend();
+        paintDonut();
+        paintRanks();
+        paintLogs();
+      }
+
+      await loadAll();
     },
   });
 
@@ -4099,7 +4355,7 @@
               <td>
                 <div class="flex-center gap-6">
                   ${colorBadge(l.model_id)}
-                  ${l.stream ? '<span class="badge badge--blue">流式</span>' : ''}
+                  ${l.stream ? '<span class="badge badge--blue" title="客户端请求了流式输出（请求体里 stream: true）">流式</span>' : ''}
                   ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看渠道重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
                 </div>
               </td>
@@ -4117,7 +4373,7 @@
               <td class="num">${tok(l.prompt_tokens)}${estMark(l)}${l.cached_tokens ? sub(`缓存读 ${tok(l.cached_tokens)}`) : ''}</td>
               <td class="num">${tok(l.completion_tokens)}${reasoning ? sub(reasoning) : ''}</td>
               <td class="num">${l.tokens_per_sec
-                ? `<span title="输出 tokens / 生成耗时，流式从首字开始计算">${l.tokens_per_sec.toFixed(1)} t/s</span>`
+                ? `<span title="输出 tokens / 生成耗时，按流式请求上游的记录计算（首块内容到末块内容）">${l.tokens_per_sec.toFixed(1)} t/s</span>`
                 : '<span class="muted">—</span>'}</td>
               <td class="num">${tok(l.total_tokens)}</td>
               <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>

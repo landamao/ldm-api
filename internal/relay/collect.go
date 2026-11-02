@@ -38,6 +38,24 @@ func collectStream(ctx context.Context, w http.ResponseWriter, req *Request, res
 	// 至少还能看出等响应头花了多久。拿到第一段真正的内容后会覆盖成更准的值。
 	firstByte := elapsedMs(started)
 	gotContent := false
+	// 输出窗口：首段真正的内容到末段内容的间隔，用来算输出速度。
+	// 调用方要非流式也一样——上游确实是流式吐出来的，速度照样有意义。
+	var firstAt, lastAt time.Time
+	genWindow := func() int64 {
+		if firstAt.IsZero() || lastAt.IsZero() {
+			return 0
+		}
+		if ms := lastAt.Sub(firstAt).Milliseconds(); ms > 0 {
+			return ms
+		}
+		return 0
+	}
+	// streamOut 统一给收流结果打上「流式生成」标记和真实输出窗口。
+	streamOut := func(o attemptOutcome) attemptOutcome {
+		o.streamGen = true
+		o.genMs = genWindow()
+		return o
+	}
 	reader := resp.Body
 	tmp := make([]byte, 32*1024)
 	var pending []byte
@@ -53,8 +71,10 @@ func collectStream(ctx context.Context, w http.ResponseWriter, req *Request, res
 		}
 		if !gotContent {
 			gotContent = true
+			firstAt = time.Now()
 			firstByte = elapsedMs(started)
 		}
+		lastAt = time.Now()
 		// 只有真实输出才续命：心跳、只带 role 的空块、纯 usage 块都不算。
 		// 上游靠心跳吊着连接却一直不出字时，停顿超过超时时间就判停滞换路由。
 		clock.progress()
@@ -81,15 +101,15 @@ func collectStream(ctx context.Context, w http.ResponseWriter, req *Request, res
 		}
 		// 调用方断开（点停止、关页面）不是上游的问题，也不能再写响应。
 		if ctx.Err() != nil {
-			return attemptOutcome{err: errors.New("客户端已断开连接"), canceled: true, firstByte: firstByte}
+			return streamOut(attemptOutcome{err: errors.New("客户端已断开连接"), canceled: true, firstByte: firstByte})
 		}
 		// 传输层失败只影响本次尝试，不记到 Key 头上（超时、断流跟 Key 本身无关）。
 		if reason := clock.reason(); reason != "" {
-			return attemptOutcome{err: errors.New(reason), retryable: true,
-				status: http.StatusBadGateway, firstByte: firstByte}
+			return streamOut(attemptOutcome{err: errors.New(reason), retryable: true,
+				status: http.StatusBadGateway, firstByte: firstByte})
 		}
-		return attemptOutcome{err: fmt.Errorf("读取上游响应失败: %w", rerr), retryable: true,
-			status: http.StatusBadGateway, firstByte: firstByte}
+		return streamOut(attemptOutcome{err: fmt.Errorf("读取上游响应失败: %w", rerr), retryable: true,
+			status: http.StatusBadGateway, firstByte: firstByte})
 	}
 	if len(pending) > 0 {
 		consume(pending)
@@ -102,16 +122,16 @@ func collectStream(ctx context.Context, w http.ResponseWriter, req *Request, res
 	// 此时还没写给调用方，按上游失败处理，让请求换下一条路由。
 	// 已经收到的半截内容直接丢弃，不能当成正常回复返回。
 	if err := st.Err(); err != nil {
-		return attemptOutcome{err: fmt.Errorf("上游流式响应出错: %v", err), retryable: true,
+		return streamOut(attemptOutcome{err: fmt.Errorf("上游流式响应出错: %v", err), retryable: true,
 			status: http.StatusBadGateway, firstByte: firstByte,
-			upstreamBroken: true}
+			upstreamBroken: true})
 	}
 	// 一个数据块都没解析出来：上游的流不是可用的对话内容（协议不匹配、
 	// 只有心跳等）。这种空响应不能当成成功返回，按上游失败处理换路由。
 	if col.Chunks() == 0 {
-		return attemptOutcome{err: errors.New("上游流式响应为空"), retryable: true,
+		return streamOut(attemptOutcome{err: errors.New("上游流式响应为空"), retryable: true,
 			status: http.StatusBadGateway, firstByte: firstByte,
-			upstreamBroken: true}
+			upstreamBroken: true})
 	}
 
 	h := w.Header()
@@ -128,8 +148,8 @@ func collectStream(ctx context.Context, w http.ResponseWriter, req *Request, res
 	w.WriteHeader(resp.StatusCode)
 	w.Write(mustJSON(collectedResponse(req.Path, modelOf(req), col, usage)))
 
-	return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
-		wrote: true, estimated: estimated, reasoning: st.ReasoningChars()}
+	return streamOut(attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
+		wrote: true, estimated: estimated, reasoning: st.ReasoningChars()})
 }
 
 // collectedResponse 把聚合结果写成对应端点的非流式响应体。

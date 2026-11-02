@@ -8,18 +8,33 @@
 
   const PALETTE = ['#4d9e2f', '#e9a316', '#3f8fbf', '#8a5ac2', '#d9557f', '#7cc243', '#c9483a', '#5f9e8b'];
 
-  function niceMax(v) {
-    if (v <= 0) return 4;
-    const exp = Math.floor(Math.log10(v));
-    const base = Math.pow(10, exp);
-    const n = v / base;
-    let m;
-    if (n <= 1) m = 1;
-    else if (n <= 2) m = 2;
-    else if (n <= 2.5) m = 2.5;
-    else if (n <= 5) m = 5;
-    else m = 10;
-    return m * base;
+  // 坐标轴上限：挑一个刚好装得下数据的「漂亮数」。
+  // 上限挑得太高就会出现「数据最高 66、上限却到 100」这种上面一大截全空的情况，
+  // 所以步长在 1 / 1.5 / 2 / 2.5 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 10 里逐档试，
+  // 刻度段数在 4 段和 5 段之间挑更贴合的一个，步长为整数的优先。
+  function niceScale(v, wantTicks) {
+    if (!(v > 0)) return { max: 4, ticks: wantTicks, step: 4 / wantTicks };
+    const cands = [];
+    for (const ticks of [wantTicks, wantTicks + 1]) {
+      const exp = Math.floor(Math.log10(v / ticks));
+      const base = Math.pow(10, exp);
+      for (const mult of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9, 10]) {
+        const step = mult * base;
+        const top = step * ticks;
+        if (top < v) continue;
+        cands.push({ top, ticks, step });
+      }
+    }
+    if (!cands.length) return { max: 4, ticks: wantTicks, step: 4 / wantTicks };
+    cands.sort((a, b) => {
+      const ai = Number.isInteger(a.step) ? 0 : 1;
+      const bi = Number.isInteger(b.step) ? 0 : 1;
+      return (ai - bi) || (a.top - b.top) || (a.ticks - b.ticks);
+    });
+    const best = cands[0];
+    // 上限不低于 4，免得数据很少时坐标轴挤成一小截
+    if (best.top < 4) return { max: 4, ticks: 4, step: 1 };
+    return { max: best.top, ticks: best.ticks, step: best.step };
   }
 
   function fmtAxis(v) {
@@ -55,6 +70,69 @@
   }
 
   /**
+   * 折线从左到右画出来：给每条 path 设置 dasharray，用 dashoffset 从全长收到 0。
+   * 面积块同步淡入。多条曲线时按顺序错开一点，层次更清楚。
+   * 系统开了「减少动态效果」或页面在后台时直接画完。
+   */
+  function animateLines(svg, dur, stagger) {
+    const paths = Array.from(svg.querySelectorAll('path.line'));
+    const areas = Array.from(svg.querySelectorAll('path.area'));
+    const dots = Array.from(svg.querySelectorAll('circle.dot'))
+      .filter((c) => !(c.parentElement && c.parentElement.classList.contains('hover-group')));
+    if (!paths.length) return;
+    const gap = stagger || 0;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // 后台标签页不播动画：requestAnimationFrame 在那里不触发，
+    // 否则曲线会一直停在「没画出来」的状态。
+    if (reduce || (typeof document !== 'undefined' && document.hidden)) return;
+    const lens = paths.map((p) => {
+      let len = 0;
+      try { len = p.getTotalLength(); } catch (e) { len = 0; }
+      return len;
+    });
+    paths.forEach((p, i) => {
+      if (!lens[i]) return;
+      p.style.strokeDasharray = `${lens[i]} ${lens[i]}`;
+      p.style.strokeDashoffset = String(lens[i]);
+    });
+    areas.forEach((a) => { a.style.opacity = '0'; });
+    // 数据点跟着曲线走，线画到哪它再亮到哪
+    dots.forEach((d) => {
+      d.style.opacity = '0';
+      d.style.transition = `opacity .35s ease-out ${(dur / 1000) * 0.45}s`;
+    });
+    requestAnimationFrame(() => {
+      dots.forEach((d) => { d.style.opacity = ''; });
+    });
+    // 收尾统一还原样式；后台标签页里定时器会被拖慢，这条兜底保证曲线一定会显示出来
+    const finish = () => {
+      paths.forEach((p) => { p.style.strokeDasharray = ''; p.style.strokeDashoffset = ''; });
+      areas.forEach((a) => { a.style.transition = ''; a.style.opacity = ''; });
+      dots.forEach((d) => { d.style.transition = ''; d.style.opacity = ''; });
+    };
+    setTimeout(finish, dur + gap * (paths.length - 1) + 400);
+    const start = performance.now();
+    const step = (now) => {
+      let done = true;
+      paths.forEach((p, i) => {
+        if (!lens[i]) return;
+        // 后面的曲线依次晚一点起笔
+        const t = Math.min(1, Math.max(0, (now - start - i * gap) / dur));
+        if (t < 1) done = false;
+        const e = 1 - Math.pow(1 - t, 3); // 缓出，起步快收尾稳
+        p.style.strokeDashoffset = String(lens[i] * (1 - e));
+      });
+      areas.forEach((a) => {
+        a.style.transition = 'opacity .45s ease-out';
+        a.style.opacity = '';
+      });
+      if (!done) requestAnimationFrame(step);
+      else finish();
+    };
+    requestAnimationFrame(step);
+  }
+
+  /**
    * 面积折线图
    * opts: { labels:[string], series:[{name,color,values:number[],unit}], height, spanMs, valueFmt }
    */
@@ -63,17 +141,18 @@
     const valueFmt = opts.valueFmt || ((v) => fmtInt(v));
     const axisFmt = opts.axisFmt || fmtAxis;
 
-    function draw() {
+    function draw(animate) {
       const W = Math.max(container.clientWidth || 600, 320);
       const H = height;
       const padR = 14, padT = 14, padB = 26;
 
       let max = 0;
       series.forEach((s) => s.values.forEach((v) => { if (v > max) max = v; }));
-      max = niceMax(max);
+      const scale = niceScale(max, 4);
+      max = scale.max;
 
       // 坐标轴标签会随单位设置变长（例如 1,000,000），左侧留白按最长标签自动加宽
-      const ticks = 4;
+      const ticks = scale.ticks;
       const tickVals = [];
       for (let i = 0; i <= ticks; i++) tickVals.push((max / ticks) * i);
       const tickTexts = tickVals.map((v) => axisFmt(v));
@@ -130,6 +209,9 @@
       const hdots = Array.from(hg.querySelectorAll('circle'));
       const t = tip();
 
+      // 折线从左往右画出来（尺寸变化重画时不重播）
+      if (animate) animateLines(svg, 1150, 110);
+
       const idxFromEvent = (e) => {
         const rect = svg.getBoundingClientRect();
         const scale = W / rect.width;
@@ -159,8 +241,23 @@
             <span style="width:7px;height:7px;border-radius:2px;background:${s.color || PALETTE[0]};display:inline-block"></span>
             <span>${esc(s.name)}</span>
             <b style="margin-left:auto">${esc(valueFmt(s.values[i] || 0))}</b>
-          </div>`).join('');
-        t.innerHTML = `<div style="opacity:.75;margin-bottom:3px">${esc(fullLabel(i))}</div>${rows}`;
+          </div>`);
+        // 总计行：把参与汇总的序列加起来放在最上面（失败数不计入）。
+        // totalFrom 可以指定只算某一条曲线——请求数 / 成功数 / 失败数三条并排时，
+        // 求和没有意义，总计应该就是其中的请求数。
+        if (opts.totalName) {
+          let sum = 0;
+          for (const s of series) {
+            if (s.noTotal) continue;
+            if (opts.totalFrom && s.name !== opts.totalFrom) continue;
+            sum += s.values[i] || 0;
+          }
+          rows.unshift(`<div style="display:flex;gap:10px;align-items:center;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid rgba(255,255,255,.22)">
+            <span>${esc(opts.totalName)}</span>
+            <b style="margin-left:auto">${esc(valueFmt(sum))}</b>
+          </div>`);
+        }
+        t.innerHTML = `<div style="opacity:.75;margin-bottom:3px">${esc(fullLabel(i))}</div>${rows.join('')}`;
         t.classList.add('is-on');
         const tw = t.offsetWidth, th = t.offsetHeight;
         let left = e.clientX + 14, top = e.clientY - th - 10;
@@ -185,8 +282,9 @@
       void spanMs;
     }
 
-    draw();
-    observe(container, draw);
+    draw(true);
+    // 窗口尺寸变化只是重画，不重播动画
+    observe(container, () => draw(false));
   }
 
   /**
@@ -202,9 +300,10 @@
       const W = Math.max(container.clientWidth || 600, 320);
       const H = height;
       const padR = 14, padT = 14, padB = 26;
-      let max = niceMax(Math.max(0, ...values));
+      const scale = niceScale(Math.max(0, ...values), 4);
+      let max = scale.max;
 
-      const ticks = 4;
+      const ticks = scale.ticks;
       const tickVals = [];
       for (let i = 0; i <= ticks; i++) tickVals.push((max / ticks) * i);
       const tickTexts = tickVals.map((v) => axisFmt(v));
@@ -347,5 +446,5 @@
     };
   }
 
-  window.Charts = { areaChart, barChart, donutChart, rankList, PALETTE, timeLabel, hideTip };
+  window.Charts = { areaChart, barChart, donutChart, rankList, PALETTE, timeLabel, hideTip, animateLines, niceScale };
 })();

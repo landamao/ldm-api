@@ -278,8 +278,14 @@ func localDayStart(ms int64, loc *time.Location) int64 {
 func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(dashboardLocation)
 	rng := s.statRangeFor(r.URL.Query().Get("range"), now)
+	model := strings.TrimSpace(r.URL.Query().Get("model"))
 	current, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
 	previous, _ := s.store.RangeStats(rng.PrevStart.UnixMilli(), rng.PrevEnd.UnixMilli()-1)
+	// 带 model 时把统计收窄到单个模型，指标口径和全部模型时完全一致。
+	if model != "" {
+		current = scopeBucketsByModel(current, model)
+		previous = scopeBucketsByModel(previous, model)
+	}
 
 	chans, _ := s.store.ListChannels()
 	models, _ := s.store.ListModels()
@@ -299,6 +305,7 @@ func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
 
 	writeOK(w, map[string]any{
 		"range":       rng.Key,
+		"model":       model,
 		"start":       rng.Start.UnixMilli(),
 		"current":     sumBuckets(current),
 		"previous":    sumBuckets(previous),
@@ -308,6 +315,29 @@ func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
 		"server_time": now.UnixMilli(),
 		"uptime":      int64(time.Since(s.StartedAt).Seconds()),
 	})
+}
+
+// scopeBucketsByModel 把桶里的统计收窄到单个模型。
+// 返回的桶结构不变，可以继续走 sumBuckets，指标口径和全部模型时一致。
+func scopeBucketsByModel(buckets []store.Bucket, model string) []store.Bucket {
+	out := make([]store.Bucket, 0, len(buckets))
+	for _, b := range buckets {
+		ms := b.ModelStatOf(model)
+		out = append(out, store.Bucket{
+			Hour:              b.Hour,
+			Requests:          ms.Requests,
+			Errors:            ms.Errors,
+			PromptTokens:      ms.PromptTokens,
+			CompletionTokens:  ms.CompletionTokens,
+			TotalTokens:       ms.TotalTokens,
+			LatencySum:        ms.LatencySum,
+			SpeedCount:        ms.SpeedCount,
+			SpeedSum:          ms.SpeedSum,
+			SpeedLatencySum:   ms.SpeedLatencySum,
+			SpeedFirstByteSum: ms.SpeedFirstByteSum,
+		})
+	}
+	return out
 }
 
 type bucketSummary struct {
@@ -357,12 +387,31 @@ func sumBuckets(bs []store.Bucket) bucketSummary {
 
 // statsSeries 返回按小时（今天、跨度不足一天的全部）或按自然日（本周 / 本月 / 全部）
 // 聚合的时间序列。
+// 带 model 参数时只返回该模型的分项；不带时额外返回每个模型的分项序列
+// （model_series），看板据此在总览里按模型画曲线。
 func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(dashboardLocation)
 	rng := s.statRangeFor(r.URL.Query().Get("range"), now)
+	model := strings.TrimSpace(r.URL.Query().Get("model"))
 	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
 
+	// 先把时间点按区间粒度铺好，所有序列都按这个下标对齐。
+	keys := []int64{}
+	for t := rng.Start; !t.After(now); {
+		key := t.UnixMilli()
+		if rng.Step < 24*time.Hour {
+			key = t.Truncate(time.Hour).UnixMilli()
+		}
+		keys = append(keys, key)
+		if rng.Step >= 24*time.Hour {
+			t = t.AddDate(0, 0, 1)
+		} else {
+			t = t.Add(rng.Step)
+		}
+	}
+
 	byKey := map[int64]store.Bucket{}
+	byModel := map[string]map[int64]modelPoint{}
 	for _, b := range buckets {
 		key := b.Hour
 		if rng.Step >= 24*time.Hour {
@@ -377,6 +426,22 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 		acc.TotalTokens += b.TotalTokens
 		acc.LatencySum += b.LatencySum
 		byKey[key] = acc
+
+		for name, ms := range b.ModelStatsMerged() {
+			mm := byModel[name]
+			if mm == nil {
+				mm = map[int64]modelPoint{}
+				byModel[name] = mm
+			}
+			mp := mm[key]
+			mp.Requests += ms.Requests
+			mp.Errors += ms.Errors
+			mp.PromptTokens += ms.PromptTokens
+			mp.CompletionTokens += ms.CompletionTokens
+			mp.TotalTokens += ms.TotalTokens
+			mp.LatencySum += ms.LatencySum
+			mm[key] = mp
+		}
 	}
 
 	type point struct {
@@ -389,11 +454,7 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 		AvgLatency   float64 `json:"avg_latency"`
 	}
 	points := []point{}
-	for t := rng.Start; !t.After(now); {
-		key := t.UnixMilli()
-		if rng.Step < 24*time.Hour {
-			key = t.Truncate(time.Hour).UnixMilli()
-		}
+	for _, key := range keys {
 		b := byKey[key]
 		p := point{Time: key, Requests: b.Requests, Errors: b.Errors,
 			TotalTokens: b.TotalTokens, PromptTokens: b.PromptTokens, CompTokens: b.CompletionTokens}
@@ -401,13 +462,84 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 			p.AvgLatency = float64(b.LatencySum) / float64(b.Requests)
 		}
 		points = append(points, p)
-		if rng.Step >= 24*time.Hour {
-			t = t.AddDate(0, 0, 1)
-		} else {
-			t = t.Add(rng.Step)
+	}
+
+	out := map[string]any{"step_ms": int64(rng.Step / time.Millisecond), "points": points}
+
+	// 单模型视图：只画这个模型的分项。
+	if model != "" {
+		mm := byModel[model]
+		mpts := []point{}
+		for _, key := range keys {
+			mp := mm[key]
+			p := point{Time: key, Requests: mp.Requests, Errors: mp.Errors,
+				TotalTokens: mp.TotalTokens, PromptTokens: mp.PromptTokens, CompTokens: mp.CompletionTokens}
+			if mp.Requests > 0 {
+				p.AvgLatency = float64(mp.LatencySum) / float64(mp.Requests)
+			}
+			mpts = append(mpts, p)
+		}
+		out["points"] = mpts
+		writeOK(w, out)
+		return
+	}
+
+	// 总览视图：附带每个模型的分项序列，前端按模型画曲线。
+	// 只保留调用量前 dashModelSeriesLimit 个模型，避免模型很多时响应过大。
+	totals := map[string]int64{}
+	for name, mm := range byModel {
+		var total int64
+		for _, mp := range mm {
+			total += mp.Requests
+		}
+		if total > 0 {
+			totals[name] = total
 		}
 	}
-	writeOK(w, map[string]any{"step_ms": int64(rng.Step / time.Millisecond), "points": points})
+	series := map[string]modelSeries{}
+	for _, kv := range topN(totals, dashModelSeriesLimit) {
+		mm := byModel[kv.Name]
+		ms := modelSeries{
+			Requests:         make([]int64, 0, len(keys)),
+			Errors:           make([]int64, 0, len(keys)),
+			PromptTokens:     make([]int64, 0, len(keys)),
+			CompletionTokens: make([]int64, 0, len(keys)),
+			TotalTokens:      make([]int64, 0, len(keys)),
+		}
+		for _, key := range keys {
+			mp := mm[key]
+			ms.Requests = append(ms.Requests, mp.Requests)
+			ms.Errors = append(ms.Errors, mp.Errors)
+			ms.PromptTokens = append(ms.PromptTokens, mp.PromptTokens)
+			ms.CompletionTokens = append(ms.CompletionTokens, mp.CompletionTokens)
+			ms.TotalTokens = append(ms.TotalTokens, mp.TotalTokens)
+		}
+		series[kv.Name] = ms
+	}
+	out["model_series"] = series
+	writeOK(w, out)
+}
+
+// dashModelSeriesLimit 是总览里附带分模型序列的模型数量上限。
+const dashModelSeriesLimit = 12
+
+// modelPoint 是单个模型在一个时间点上的分项统计。
+type modelPoint struct {
+	Requests         int64
+	Errors           int64
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	LatencySum       int64
+}
+
+// modelSeries 是单个模型在各时间点上的分项序列，下标与 points 一一对应。
+type modelSeries struct {
+	Requests         []int64 `json:"requests"`
+	Errors           []int64 `json:"errors"`
+	PromptTokens     []int64 `json:"prompt_tokens"`
+	CompletionTokens []int64 `json:"completion_tokens"`
+	TotalTokens      []int64 `json:"total_tokens"`
 }
 
 // statsBreakdown 返回按模型 / 渠道 / 令牌的调用分布。
@@ -417,6 +549,8 @@ func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
 
 	models := map[string]int64{}
+	modelErrs := map[string]int64{}
+	modelToks := map[string]int64{}
 	channels := map[string]int64{}
 	tokenUsage := map[string]int64{}
 	var totalReq, totalErr, totalTok int64
@@ -424,8 +558,10 @@ func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 		totalReq += b.Requests
 		totalErr += b.Errors
 		totalTok += b.TotalTokens
-		for k, v := range b.ModelCounts {
-			models[k] += v
+		for k, v := range b.ModelStatsMerged() {
+			models[k] += v.Requests
+			modelErrs[k] += v.Errors
+			modelToks[k] += v.TotalTokens
 		}
 		for k, v := range b.ChannelCounts {
 			channels[k] += v
@@ -435,14 +571,34 @@ func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 模型维度额外带上失败数和 Token 消耗，看板图例要按模型显示成功 / 失败，
+	// 切到 Token 维度时图例数字也要跟着换成 Token 数。
+	modelList := []modelBreakdown{}
+	for _, kv := range topN(models, 12) {
+		modelList = append(modelList, modelBreakdown{
+			Name:   kv.Name,
+			Value:  kv.Value,
+			Errors: modelErrs[kv.Name],
+			Tokens: modelToks[kv.Name],
+		})
+	}
+
 	writeOK(w, map[string]any{
-		"models":      topN(models, 12),
+		"models":      modelList,
 		"channels":    topN(channels, 12),
 		"tokens":      topN(tokenUsage, 12),
 		"total":       totalReq,
 		"errors":      totalErr,
 		"tokens_used": totalTok,
 	})
+}
+
+// modelBreakdown 是单个模型在区间内的调用量、失败量与 Token 消耗。
+type modelBreakdown struct {
+	Name   string `json:"name"`
+	Value  int64  `json:"value"`
+	Errors int64  `json:"errors"`
+	Tokens int64  `json:"tokens"`
 }
 
 type kv struct {

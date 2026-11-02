@@ -71,11 +71,9 @@ func (s *Server) plaza(w http.ResponseWriter, r *http.Request) {
 	reqs := map[string]int64{}
 	errs := map[string]int64{}
 	for _, b := range stats {
-		for k, v := range b.ModelCounts {
-			reqs[k] += v
-		}
-		for k, v := range b.ModelErrors {
-			errs[k] += v
+		for k, v := range b.ModelStatsMerged() {
+			reqs[k] += v.Requests
+			errs[k] += v.Errors
 		}
 	}
 

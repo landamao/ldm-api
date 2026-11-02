@@ -28,6 +28,7 @@ import http.client
 import http.cookiejar
 import json
 import os
+import platform
 import random
 import re
 import shutil
@@ -917,8 +918,10 @@ CHANNELS: list[dict[str, Any]] = [
     },
     {
         "id": "demo-bulk",
+        "multi_key": True,
         "name": "OpenAI 多 Key（顺序）",
         "type": "openai",
+        "key_cooldown_status": "401,429",
         "keys": [
             (BULK_KEYS[0], "已过期 Key"),
             (BULK_KEYS[1], "触发限流的 Key"),
@@ -936,8 +939,10 @@ CHANNELS: list[dict[str, Any]] = [
     },
     {
         "id": "demo-random",
+        "multi_key": True,
         "name": "OpenAI 多 Key（随机）",
         "type": "openai",
+        "key_cooldown_status": "401,429",
         "keys": [
             (RANDOM_KEYS[0], "随机 Key A"),
             (RANDOM_KEYS[1], "随机 Key B"),
@@ -955,8 +960,10 @@ CHANNELS: list[dict[str, Any]] = [
     },
     {
         "id": "demo-deepseek",
+        "multi_key": True,
         "name": "DeepSeek 多 Key（顺序 + 亲和）",
         "type": "openai",
+        "key_cooldown_status": "401",
         "keys": [
             (DEEPSEEK_KEYS[0], "已过期 Key"),
             (DEEPSEEK_KEYS[1], "主力 Key"),
@@ -1006,6 +1013,7 @@ CHANNELS: list[dict[str, Any]] = [
         "id": "demo-revoked",
         "name": "失效 Key 演示渠道",
         "type": "openai",
+        "key_cooldown_status": "401",
         "keys": [(REVOKED_KEY, "固定 401")],
         "key_mode": "sequential",
         "key_affinity": False,
@@ -1021,6 +1029,7 @@ CHANNELS: list[dict[str, Any]] = [
         "id": "demo-ratelimit",
         "name": "限流上游演示渠道",
         "type": "openai",
+        "key_cooldown_status": "429",
         "keys": [(RATELIMIT_KEY, "固定 429")],
         "key_mode": "sequential",
         "key_affinity": False,
@@ -1558,7 +1567,13 @@ class DemoBuilder:
             "nt": "windows",
             "posix": "darwin" if sys.platform == "darwin" else "linux",
         }.get(os.name, "linux")
-        arch = "arm64" if os.uname().machine.lower() in ("arm64", "aarch64") else "amd64"
+        # os.uname() 只有 Unix 才有，Windows 上退回 platform.machine()。
+        machine = (
+            os.uname().machine.lower()
+            if hasattr(os, "uname")
+            else platform.machine().lower()
+        )
+        arch = "arm64" if machine in ("arm64", "aarch64") else "amd64"
         candidate = PROJECT_ROOT / "dist" / f"ldmapi-{platform}-{arch}{exe}"
         if candidate.exists():
             print(f"  使用已有二进制: {candidate}")
@@ -1688,10 +1703,17 @@ class DemoBuilder:
                 "key_rows": [
                     {"key": key, "note": note} for key, note in ch["keys"]
                 ],
+                # 多 Key 模式：新建渠道默认关闭，不显式打开就只调度第一个 Key，
+                # 坏 Key 后面那些根本不会被尝试，演示不出「跳过坏 Key」的链路。
+                "multi_key": ch.get("multi_key", False),
                 "key_mode": ch["key_mode"],
                 "key_affinity": ch["key_affinity"],
                 "key_cooldown_sec": ch["key_cooldown_sec"],
                 "key_cooldown_reset": ch["key_cooldown_reset"],
+                # 触发 Key 冷却的状态码：状态码命中这里，坏 Key 才会被跳过、
+                # 换下一个 Key 重试。渠道默认留空（任何状态码都不冷却 Key），
+                # 不填的话 401 只会直接返回，多 Key 渠道演示不出重试链路。
+                "key_cooldown_status": ch.get("key_cooldown_status", ""),
                 "append_v1": ch["append_v1"],
                 "models": ch["models"],
                 "enabled": ch["enabled"],

@@ -590,6 +590,13 @@ func ensureCounts(m map[string]int64) map[string]int64 {
 	return m
 }
 
+func ensureModelStats(m map[string]ModelStat) map[string]ModelStat {
+	if m == nil {
+		return map[string]ModelStat{}
+	}
+	return m
+}
+
 // RecordStat 把一次请求计入小时桶。
 func (s *Store) RecordStat(l Log) error {
 	s.mu.Lock()
@@ -602,10 +609,20 @@ func (s *Store) RecordStat(l Log) error {
 			_ = json.Unmarshal(raw, &bk)
 		}
 		bk.Hour = h
-		bk.ModelCounts = ensureCounts(bk.ModelCounts)
-		bk.ModelErrors = ensureCounts(bk.ModelErrors)
+		bk.ModelStats = ensureModelStats(bk.ModelStats)
 		bk.ChannelCounts = ensureCounts(bk.ChannelCounts)
 		bk.TokenCounts = ensureCounts(bk.TokenCounts)
+		// 早期版本把按模型的请求数、失败数写在 ModelCounts / ModelErrors 里，
+		// 现在统一记进 ModelStats。老桶在第一次被写入时顺手迁移一次，
+		// 迁移前后的数据不会被重复累加。
+		if len(bk.ModelStats) == 0 && len(bk.ModelCounts) > 0 {
+			bk.ModelStats = make(map[string]ModelStat, len(bk.ModelCounts))
+			for name, c := range bk.ModelCounts {
+				bk.ModelStats[name] = ModelStat{Requests: c, Errors: bk.ModelErrors[name]}
+			}
+		}
+		bk.ModelCounts = nil
+		bk.ModelErrors = nil
 		bk.Requests++
 		failed := l.Failed()
 		if failed {
@@ -623,10 +640,22 @@ func (s *Store) RecordStat(l Log) error {
 			bk.SpeedFirstByteSum += l.FirstByteMs
 		}
 		if l.ModelID != "" {
-			bk.ModelCounts[l.ModelID]++
+			ms := bk.ModelStats[l.ModelID]
+			ms.Requests++
 			if failed {
-				bk.ModelErrors[l.ModelID]++
+				ms.Errors++
 			}
+			ms.PromptTokens += int64(l.PromptTokens)
+			ms.CompletionTokens += int64(l.CompletionTokens)
+			ms.TotalTokens += int64(l.TotalTokens)
+			ms.LatencySum += l.LatencyMs
+			if l.TokensPerSec > 0 && l.FirstByteMs > 0 && l.LatencyMs > 0 {
+				ms.SpeedCount++
+				ms.SpeedSum += l.TokensPerSec
+				ms.SpeedLatencySum += l.LatencyMs
+				ms.SpeedFirstByteSum += l.FirstByteMs
+			}
+			bk.ModelStats[l.ModelID] = ms
 		}
 		if l.ChannelID != "" {
 			bk.ChannelCounts[l.ChannelID]++

@@ -14,6 +14,14 @@ import (
 // handleAPI 是对外的 OpenAI 兼容入口。任何 /v1/* 请求都会在这里做鉴权、
 // 路由解析，然后交给 relay 转发。
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
+	// 鉴权失败、额度不足、IP 不在名单这些「提前返回」的分支都不会读请求体。
+	// 客户端常带 Connection: close（Python 的 urllib、requests 都默认带），
+	// 服务端关闭连接时接收缓冲区里还留着没读完的 body，Windows 会直接发 RST，
+	// 客户端读错误响应时收到的是「连接被重置」，而不是这里本该写出的 401 / 403。
+	// 统一在 handler 结束时把 body 读干净，任何分支都能让调用方收到完整响应。
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 64<<20))
+	}()
 	started := time.Now()
 	token, err := s.findToken(r.Header.Get("Authorization"), r.Header.Get("x-api-key"))
 	if err != nil {
@@ -169,7 +177,9 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		StatusCode:       res.StatusCode,
 		Error:            truncateErr(res.Err),
 		ClientError:      truncateErr(res.ClientErr),
-		Stream:           res.Stream,
+		// 「流式」徽章只看客户端请求的形态：请求体里写了 stream: true 就标，
+		// 上游最后回的是 SSE 还是完整 JSON 都不影响这个标记。
+		Stream:           req.Stream,
 		Retries:          res.Retries,
 		Attempts:         res.Attempts,
 		Affinity:         res.Affinity,
@@ -180,7 +190,7 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		Canceled:         res.Canceled,
 		AsContent:        res.AsContent,
 	}
-	entry.TokensPerSec = tokensPerSecond(entry, res.GenMs)
+	entry.TokensPerSec = tokensPerSecond(entry, res.GenMs, res.StreamGen)
 	_ = s.store.AppendLog(entry)
 	_ = s.store.RecordStat(entry)
 	if res.Usage.TotalTokens > 0 {
@@ -196,10 +206,12 @@ const minSpeedWindowMs = 50
 // tokensPerSecond 计算流式请求的输出速度。分母用「生成耗时」而不是总耗时：
 // 首字之前的排队、建连时间不应该算进生成速度里。
 // genMs 是转发层量到的真实输出窗口（首块内容到末块内容）；为 0 时退回
-// 「总耗时 - 首字耗时」的估算。非流式是一次性返回的，没有有意义的生成窗口，
-// 直接返回 0。
-func tokensPerSecond(l store.Log, genMs int64) float64 {
-	if !l.Stream || l.CompletionTokens <= 0 {
+// 「总耗时 - 首字耗时」的估算。
+// streamGen 表示这次输出是一块块流式生成出来的（上游按流式请求并回了 SSE，
+// 或自定义内容按模拟速度分块写出）：只看它，不看写给客户端的形态——
+// 调用方要非流式、网关收完再返回时，生成过程一样有速度，这类记录同样要算。
+func tokensPerSecond(l store.Log, genMs int64, streamGen bool) float64 {
+	if !streamGen || l.CompletionTokens <= 0 {
 		return 0
 	}
 	if genMs <= 0 {
