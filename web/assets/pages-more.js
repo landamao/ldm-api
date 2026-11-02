@@ -1581,6 +1581,10 @@
                       ${switchEl(true, '', 'id="chat-stream" title="关闭后等完整回复再一次性显示"')}
                     </div>
                     <div class="chat-switch-row">
+                      <span class="chat-switch-row__label">Markdown 渲染</span>
+                      ${switchEl(true, '', 'id="chat-md" title="把气泡里的 Markdown 渲染出来，关掉后显示原文"')}
+                    </div>
+                    <div class="chat-switch-row">
                       <span class="chat-switch-row__label">工具调用</span>
                       ${switchEl(false, '', 'id="chat-tools" title="开启后向模型提供获取当前时间的工具，用于测试工具调用"')}
                     </div>
@@ -1742,6 +1746,110 @@
         setTools(toolsInput.checked);
         focusText();
       };
+
+      // ---------- 气泡里的 Markdown ----------
+      // 解析交给 assets/markdown.js（marked + DOMPurify，随二进制分发），
+      // 这里只管「渲染 / 原文」的状态与节流重绘。
+      const MD_KEY = 'ldmapi.chat.md';
+      let mdOn = true;
+      try { mdOn = localStorage.getItem(MD_KEY) !== '0'; } catch (e) { /* 存储不可用 */ }
+      const mdSwitch = root.querySelector('#chat-md');
+      const mdInput = mdSwitch.querySelector('input');
+      const mdReady = !!(window.LDMMD && typeof window.LDMMD.render === 'function');
+      // 库没加载出来（极端情况）就别留一个点了没反应的开关
+      if (!mdReady) mdSwitch.closest('.chat-switch-row').hidden = true;
+
+      // 正文段统一从这里出：md 模式下转成 HTML，否则保持原文。
+      // 流式输出会反复重画同一段，按 80ms 节流，避免每个 token 都重排一次版。
+      const paintText = (el, value, force) => {
+        if (!el) return;
+        el._raw = value == null ? '' : String(value);
+        if (el._md == null) el._md = mdOn;
+        if (!el._md || !mdReady) {
+          el.classList.remove('msg__answer--md');
+          el.textContent = el._raw;
+          return;
+        }
+        el.classList.add('msg__answer--md');
+        const draw = () => {
+          el._mdAt = Date.now();
+          el.innerHTML = window.LDMMD.render(el._raw);
+        };
+        if (force || Date.now() - (el._mdAt || 0) >= 80) {
+          if (el._mdTimer) {
+            clearTimeout(el._mdTimer);
+            el._mdTimer = null;
+          }
+          draw();
+          return;
+        }
+        if (!el._mdTimer) {
+          el._mdTimer = setTimeout(() => {
+            el._mdTimer = null;
+            // 元素已经被移除（切页或清空对话）就不用再画了
+            if (el.isConnected) draw();
+          }, 80);
+        }
+      };
+
+      // 切换按钮与旁边的重试 / 复制 / 删除同款样式：只看图标不看文字，
+      // 渲染着的时候显示代码图标（看原文），原文时显示眼睛图标（看渲染）
+      const syncMdBtn = (body) => {
+        const btn = body && body.querySelector('[data-md-toggle]');
+        if (!btn) return;
+        const el = body.querySelector('.msg__answer');
+        const on = !!(el && el._md);
+        const title = on ? '查看 Markdown 原文' : '查看渲染后的显示';
+        btn.innerHTML = icon(on ? 'code' : 'eye', 12);
+        btn.title = title;
+        btn.setAttribute('aria-label', title);
+      };
+      const syncMdButtons = () => log.querySelectorAll('.msg__body').forEach(syncMdBtn);
+
+      // 单个气泡切换：渲染后的显示 ↔ Markdown 原文
+      const setBubbleMd = (body, on) => {
+        if (!body) return;
+        body.querySelectorAll('.msg__answer').forEach((el) => {
+          el._md = on;
+          if (el._mdTimer) {
+            clearTimeout(el._mdTimer);
+            el._mdTimer = null;
+          }
+          paintText(el, el._raw || '', true);
+        });
+        syncMdBtn(body);
+      };
+
+      // 全局开关：立即作用到已有气泡，新消息也按它来
+      const setMd = (on, applyAll) => {
+        mdOn = on;
+        mdInput.checked = on;
+        try { localStorage.setItem(MD_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
+        if (applyAll === false) return;
+        log.querySelectorAll('.msg__answer').forEach((el) => {
+          el._md = on;
+          if (el._mdTimer) {
+            clearTimeout(el._mdTimer);
+            el._mdTimer = null;
+          }
+          paintText(el, el._raw || '', true);
+        });
+        syncMdButtons();
+      };
+      setMd(mdOn, false);
+      mdInput.onchange = () => {
+        setMd(mdInput.checked);
+        focusText();
+      };
+
+      // 渲染后的代码块带「复制」按钮，事件代理挂在对话列表上
+      log.addEventListener('click', (e) => {
+        const btn = e.target.closest && e.target.closest('[data-md-copy]');
+        if (!btn) return;
+        const box = btn.closest('.md-code');
+        const code = box && box.querySelector('code');
+        if (code) copyText(code.textContent, '代码');
+      });
 
       const paramEls = paramDefs.map((p) => ({
         def: p,
@@ -2186,8 +2294,9 @@
         if (!t) return;
         const el = document.createElement('div');
         el.className = 'msg__answer';
-        el.textContent = t;
         box.appendChild(el);
+        // 原文同时存在 el._raw 上，切换「原文 / 渲染」时不用再回查历史
+        paintText(el, t, true);
       };
 
       // 深度思考折叠块：多轮工具调用时每轮各一块，按输出顺序插在气泡里。
@@ -2596,6 +2705,17 @@
           ? ((entry.content ? entry.content + '\n\n' : '') + entry.error)
           : (entry.content || '');
         makeBtn('copy', 'copy', entry.error ? '复制错误信息' : '复制这条回复', () => copyText(copySource, entry.error ? '错误信息' : '回复内容'));
+        // 这条回复单独切换：渲染后的显示 ↔ Markdown 原文
+        if (body.querySelector('.msg__answer')) {
+          const mdBtn = document.createElement('button');
+          mdBtn.className = 'btn btn--ghost btn--sm btn--icon';
+          mdBtn.dataset.mdToggle = '1';
+          mdBtn.onclick = () => {
+            const cur = body.querySelector('.msg__answer');
+            setBubbleMd(body, !(cur && cur._md));
+          };
+          row.appendChild(mdBtn);
+        }
         makeBtn('delete', 'trash', '删除这一轮对话（含用户消息）', () => {
           const aiIdx = history.indexOf(entry);
           // 找到这条回复对应的用户消息，连同它一起删除
@@ -2619,6 +2739,7 @@
           Toast.success('这一轮对话已删除');
         });
         body.appendChild(row);
+        syncMdBtn(body);
       };
 
       // ---------- 附件 ----------
@@ -3060,6 +3181,7 @@
           if (run.answerEl && b.contains(run.answerEl)) return run.answerEl;
           run.answerEl = document.createElement('div');
           run.answerEl.className = 'msg__answer';
+          run.answerEl._md = mdOn;
           b.appendChild(run.answerEl);
           return run.answerEl;
         };
@@ -3079,7 +3201,7 @@
           foldThink();
           if (!run.bubble || !run.curText) return;
           const el = ensureAnswer();
-          if (el) el.textContent = run.curText.text;
+          if (el) paintText(el, run.curText.text);
         };
         const paintFailure = (message) => {
           const b = run.bubble;
@@ -3122,8 +3244,9 @@
             } else if (part.type === 'text') {
               const el = document.createElement('div');
               el.className = 'msg__answer';
-              el.textContent = part.text;
+              el._md = mdOn;
               b.appendChild(el);
+              paintText(el, part.text, true);
               run.answerEl = el;
               run.curText = part;
             } else if (part.type === 'tools') {

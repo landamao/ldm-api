@@ -2863,6 +2863,218 @@ html[data-theme="dark"] .tool-call__code { background: rgba(255, 255, 255, .06);
 .msg__answer:empty { display: none; }
 .msg__content { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .msg__content:empty { display: none; }
+
+/* ---------- 气泡里的 Markdown ---------- */
+/* 渲染后由 HTML 自己控制排版，正文段的 pre-wrap 必须让位，否则段落之间会多出空白 */
+.msg__answer--md { white-space: normal; }
+.msg__answer--md > :first-child { margin-top: 0; }
+.msg__answer--md > :last-child { margin-bottom: 0; }
+
+.msg__answer--md .md-p { margin: 0 0 8px; }
+.msg__answer--md h1,
+.msg__answer--md h2,
+.msg__answer--md h3,
+.msg__answer--md h4,
+.msg__answer--md h5,
+.msg__answer--md h6 {
+  margin: 12px 0 6px;
+  font-weight: 800;
+  line-height: 1.4;
+  color: var(--text);
+}
+.msg__answer--md h1 { font-size: 16.5px; }
+.msg__answer--md h2 { font-size: 15.5px; }
+.msg__answer--md h3 { font-size: 14.5px; }
+.msg__answer--md h4,
+.msg__answer--md h5,
+.msg__answer--md h6 { font-size: 13.5px; }
+.msg__answer--md h1,
+.msg__answer--md h2 {
+  padding-bottom: 4px;
+  border-bottom: 1.5px solid var(--border-line);
+}
+
+.msg__answer--md ul,
+.msg__answer--md ol { margin: 0 0 8px; padding-left: 22px; }
+.msg__answer--md li { margin: 2px 0; }
+.msg__answer--md li > ul,
+.msg__answer--md li > ol { margin: 2px 0 0; }
+.msg__answer--md li > .md-p { margin: 0; }
+.msg__answer--md input[type="checkbox"] {
+  margin: 0 5px 0 0;
+  vertical-align: -1px;
+  accent-color: var(--leaf-600);
+}
+
+.msg__answer--md a {
+  color: var(--leaf-700);
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1.5px;
+}
+html[data-theme="dark"] .msg__answer--md a { color: var(--leaf-300); }
+.msg__answer--md a:hover { color: var(--leaf-600); }
+
+.msg__answer--md code {
+  padding: 1px 5px;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border: 1.5px solid var(--border-line);
+  border-radius: 6px;
+  word-break: break-word;
+}
+.msg__answer--md pre {
+  margin: 0;
+  padding: 9px 11px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.62;
+  color: var(--text-2);
+  background: transparent;
+}
+.msg__answer--md pre code {
+  padding: 0;
+  font-size: 12px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  white-space: pre;
+  word-break: normal;
+}
+.msg__answer--md .md-code {
+  margin: 0 0 9px;
+  background: var(--code-bg);
+  border: 2px solid var(--border-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.msg__answer--md .md-code__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 6px 0 11px;
+  background: var(--surface-2);
+  border-bottom: 1.5px solid var(--border-line);
+}
+.msg__answer--md .md-code__lang {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .02em;
+  text-transform: lowercase;
+  color: var(--text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.msg__answer--md .md-code__copy {
+  height: 19px;
+  padding: 0 8px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-3);
+  background: var(--surface);
+  border: 1.5px solid var(--border-line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.msg__answer--md .md-code__copy:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.msg__answer--md blockquote {
+  margin: 0 0 8px;
+  padding: 6px 11px;
+  color: var(--text-2);
+  background: var(--leaf-100);
+  border-left: 3px solid var(--leaf-500);
+  border-radius: 0 10px 10px 0;
+}
+.msg__answer--md blockquote > :last-child { margin-bottom: 0; }
+
+.msg__answer--md hr {
+  margin: 11px 0;
+  height: 0;
+  border: 0;
+  border-top: 1.5px dashed var(--border-strong);
+}
+
+.msg__answer--md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+  border: 1.5px solid var(--border-line);
+}
+
+.msg__answer--md .md-table-wrap {
+  margin: 0 0 9px;
+  overflow-x: auto;
+  border: 2px solid var(--border-line);
+  border-radius: 10px;
+}
+.msg__answer--md table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.msg__answer--md th,
+.msg__answer--md td {
+  padding: 5px 10px;
+  text-align: left;
+  border-bottom: 1.5px solid var(--border-line);
+}
+.msg__answer--md th {
+  font-weight: 750;
+  color: var(--text);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+.msg__answer--md tr:last-child td { border-bottom: 0; }
+.msg__answer--md tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
+
+/* 用户气泡是绿底白字，代码、链接、引用要换成能在深色底上看清的颜色 */
+.msg--user .msg__answer--md a { color: #fff; text-decoration-color: rgba(255, 255, 255, .7); }
+.msg--user .msg__answer--md code {
+  color: #1f3316;
+  background: rgba(255, 255, 255, .82);
+  border-color: rgba(255, 255, 255, .5);
+}
+.msg--user .msg__answer--md blockquote {
+  color: #f2ffe6;
+  background: rgba(255, 255, 255, .14);
+  border-left-color: rgba(255, 255, 255, .6);
+}
+.msg--user .msg__answer--md .md-code {
+  background: rgba(0, 0, 0, .22);
+  border-color: rgba(255, 255, 255, .34);
+}
+.msg--user .msg__answer--md .md-code__bar {
+  background: rgba(0, 0, 0, .2);
+  border-bottom-color: rgba(255, 255, 255, .26);
+}
+.msg--user .msg__answer--md .md-code__lang { color: rgba(255, 255, 255, .72); }
+.msg--user .msg__answer--md pre { color: #f6ffe9; }
+.msg--user .msg__answer--md pre code { color: inherit; background: none; border: 0; }
+.msg--user .msg__answer--md .md-code__copy {
+  color: #fff;
+  background: rgba(255, 255, 255, .18);
+  border-color: rgba(255, 255, 255, .4);
+}
+.msg--user .msg__answer--md th {
+  color: #fff;
+  background: rgba(255, 255, 255, .18);
+}
+.msg--user .msg__answer--md th,
+.msg--user .msg__answer--md td { border-bottom-color: rgba(255, 255, 255, .28); }
+.msg--user .msg__answer--md .md-table-wrap { border-color: rgba(255, 255, 255, .34); }
+
 .msg__image-link { display: block; line-height: 0; }
 .msg__image {
   max-width: min(320px, 100%);
