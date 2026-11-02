@@ -247,14 +247,21 @@ func (s *Server) statRangeFor(key string, now time.Time) statRange {
 		return parseStatRange(key, now)
 	}
 	now = now.In(dashboardLocation)
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	start := s.earliestRangeStart(now)
+	// 一天以内按小时看曲线更细；再长就按自然日聚合，时间刻度也不会跨天混淆。
+	return statRange{Key: "all", Start: start, End: now, PrevStart: start, PrevEnd: start, Step: statStep(now.Sub(start))}
+}
+
+// earliestRangeStart 最早一条统计记录所在自然日的 0 点；一条记录都没有时取 end 当天 0 点。
+func (s *Server) earliestRangeStart(end time.Time) time.Time {
+	loc := end.Location()
+	start := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, loc)
 	if ms, ok, err := s.store.EarliestStat(); err == nil && ok {
-		if t := time.UnixMilli(ms).In(now.Location()); t.Before(start) {
+		if t := time.UnixMilli(ms).In(loc); t.Before(start) {
 			start = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 		}
 	}
-	// 一天以内按小时看曲线更细；再长就按自然日聚合，时间刻度也不会跨天混淆。
-	return statRange{Key: "all", Start: start, End: now, PrevStart: start, PrevEnd: start, Step: statStep(now.Sub(start))}
+	return start
 }
 
 // statRangeFromQuery 在看板预设区间的基础上支持自定义起止：
@@ -263,15 +270,22 @@ func (s *Server) statRangeFor(key string, now time.Time) statRange {
 func (s *Server) statRangeFromQuery(q url.Values, now time.Time) statRange {
 	startMS := int64(atoiDefault(q.Get("start"), 0))
 	endMS := int64(atoiDefault(q.Get("end"), 0))
-	if startMS > 0 || endMS > 0 {
-		return customStatRange(startMS, endMS, now)
+	key := strings.TrimSpace(q.Get("range"))
+	// range=custom 且两端都没给：开始和结束都不限，等于「全部时间」。
+	// 不这么兜底会落到 parseStatRange 的默认分支，变成「今日」。
+	if strings.EqualFold(key, "custom") && startMS <= 0 && endMS <= 0 {
+		return s.statRangeFor("all", now)
 	}
-	return s.statRangeFor(q.Get("range"), now)
+	if startMS > 0 || endMS > 0 {
+		return s.customStatRange(startMS, endMS, now)
+	}
+	return s.statRangeFor(key, now)
 }
 
 // customStatRange 把自定义起止换算成看板区间。结束时间不填（或用未来时间）
-// 就是此刻，开始时间不填就取结束前 24 小时；上一周期取紧邻的等长区间用于环比。
-func customStatRange(startMS, endMS int64, now time.Time) statRange {
+// 就是此刻；开始时间不填就从最早一条统计记录算起，和「全部时间」同一个起点。
+// 上一周期取紧邻的等长区间用于环比。
+func (s *Server) customStatRange(startMS, endMS int64, now time.Time) statRange {
 	now = now.In(dashboardLocation)
 	loc := now.Location()
 	end := now
@@ -280,7 +294,7 @@ func customStatRange(startMS, endMS int64, now time.Time) statRange {
 			end = t
 		}
 	}
-	start := end.Add(-24 * time.Hour)
+	start := s.earliestRangeStart(end)
 	if startMS > 0 {
 		if t := time.UnixMilli(startMS).In(loc); t.Before(end) {
 			start = t

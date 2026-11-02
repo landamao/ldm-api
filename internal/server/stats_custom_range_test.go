@@ -13,11 +13,12 @@ import (
 
 // 自定义区间按毫秒起止取，上一周期取紧邻的等长区间。
 func TestCustomStatRange(t *testing.T) {
+	s, _ := newTestServer(t, "custom-stat-range")
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, dashboardLocation)
 	start := time.Date(2026, 11, 1, 0, 0, 0, 0, dashboardLocation)
 	end := time.Date(2026, 11, 3, 0, 0, 0, 0, dashboardLocation) // 两天，按天聚合
 
-	rng := customStatRange(start.UnixMilli(), end.UnixMilli(), now)
+	rng := s.customStatRange(start.UnixMilli(), end.UnixMilli(), now)
 	if !rng.Start.Equal(start) || !rng.End.Equal(end) {
 		t.Fatalf("区间应为 %s ~ %s，得到 %s ~ %s", start, end, rng.Start, rng.End)
 	}
@@ -31,23 +32,38 @@ func TestCustomStatRange(t *testing.T) {
 		t.Errorf("超过一天的区间按天聚合，得到 %s", rng.Step)
 	}
 
-	// 两端留空 = 最近 24 小时
-	open := customStatRange(0, 0, now)
-	if !open.End.Equal(now) || !open.Start.Equal(now.Add(-24*time.Hour)) {
-		t.Errorf("两端留空应取最近 24 小时，得到 %s ~ %s", open.Start, open.End)
+	// 两端留空：一条记录都没有时，起点就是今天 0 点
+	open := s.customStatRange(0, 0, now)
+	if want := time.Date(2026, 11, 3, 0, 0, 0, 0, dashboardLocation); !open.End.Equal(now) || !open.Start.Equal(want) {
+		t.Errorf("两端留空应取今天 0 点到现在，得到 %s ~ %s", open.Start, open.End)
 	}
 	if open.Step != time.Hour {
 		t.Errorf("一天以内按小时聚合，得到 %s", open.Step)
 	}
 
+	// 有更早的记录时，开始时间不填就从最早那条所在自然日算起
+	if err := s.store.RecordStat(store.Log{Time: time.Date(2026, 11, 1, 9, 0, 0, 0, dashboardLocation).UnixMilli(), StatusCode: 200}); err != nil {
+		t.Fatal(err)
+	}
+	from := s.customStatRange(0, 0, now)
+	if want := time.Date(2026, 11, 1, 0, 0, 0, 0, dashboardLocation); !from.Start.Equal(want) {
+		t.Errorf("开始时间不填时应从最早记录所在自然日开始，得到 %s", from.Start)
+	}
+
+	// 只给结束时间：起点同样从最早记录算起，不是结束前 24 小时
+	onlyEnd := s.customStatRange(0, time.Date(2026, 11, 2, 12, 0, 0, 0, dashboardLocation).UnixMilli(), now)
+	if want := time.Date(2026, 11, 1, 0, 0, 0, 0, dashboardLocation); !onlyEnd.Start.Equal(want) {
+		t.Errorf("只给结束时间时应从最早记录开始，得到 %s", onlyEnd.Start)
+	}
+
 	// 结束时间给到未来时截到此刻，不会把没发生的时间算进区间
-	future := customStatRange(start.UnixMilli(), now.Add(48*time.Hour).UnixMilli(), now)
+	future := s.customStatRange(start.UnixMilli(), now.Add(48*time.Hour).UnixMilli(), now)
 	if !future.End.Equal(now) {
 		t.Errorf("未来结束时间应截到此刻，得到 %s", future.End)
 	}
 
 	// 只带开始时间时，终点默认此刻
-	half := customStatRange(start.UnixMilli(), 0, now)
+	half := s.customStatRange(start.UnixMilli(), 0, now)
 	if !half.Start.Equal(start) || !half.End.Equal(now) {
 		t.Errorf("只给开始时间应到此刻结束，得到 %s ~ %s", half.Start, half.End)
 	}
@@ -162,5 +178,25 @@ func TestStatsOverviewCustomRange(t *testing.T) {
 	}
 	if br.Total != 1 {
 		t.Errorf("分布接口应只算自定义区间内的 1 次请求，得到 %d", br.Total)
+	}
+
+	// range=custom 但不带起止：两端都不限，等同于「全部时间」
+	recAll := httptest.NewRecorder()
+	s.statsOverview(recAll, httptest.NewRequest(http.MethodGet, "/api/stats/overview?range=custom", nil))
+	if recAll.Code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", recAll.Code, recAll.Body.String())
+	}
+	var allOut struct {
+		Range   string         `json:"range"`
+		Current map[string]any `json:"current"`
+	}
+	if err := json.Unmarshal(recAll.Body.Bytes(), &allOut); err != nil {
+		t.Fatal(err)
+	}
+	if allOut.Range != "all" {
+		t.Errorf("两端都不限时应按全部时间统计，得到区间 %s", allOut.Range)
+	}
+	if got := allOut.Current["requests"].(float64); got != 2 {
+		t.Errorf("全部时间应有 2 次请求，得到 %v", got)
 	}
 }

@@ -262,6 +262,16 @@
             syncTimeInputs();
             return;
           }
+          // 两端都清空 = 起止都不限，等于「全部时间」，下拉跟着切过去。
+          // 只清空一端时按自定义区间查：开始空 = 从最早记录算起，结束空 = 到此刻。
+          if (!s && !e) {
+            dashRange.key = 'all';
+            dashRange.start = 0;
+            dashRange.end = 0;
+            presetEl.value = 'all';
+            loadAll();
+            return;
+          }
           // 手动改时间就落到「自定义」，下拉跟着变
           dashRange.key = 'custom';
           dashRange.start = s;
