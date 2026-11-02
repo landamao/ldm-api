@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -210,6 +211,7 @@ var dashboardLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 type statRange struct {
 	Key       string
 	Start     time.Time
+	End       time.Time // 区间终点（含）；固定区间取当前时刻
 	PrevStart time.Time
 	PrevEnd   time.Time
 	Step      time.Duration // 时间序列的聚合粒度
@@ -221,7 +223,7 @@ func parseStatRange(key string, now time.Time) statRange {
 	case "week":
 		start := startOfWeek(now)
 		prevStart := start.AddDate(0, 0, -7)
-		return statRange{Key: "week", Start: start, PrevStart: prevStart, PrevEnd: prevStart.Add(now.Sub(start)), Step: 24 * time.Hour}
+		return statRange{Key: "week", Start: start, End: now, PrevStart: prevStart, PrevEnd: prevStart.Add(now.Sub(start)), Step: 24 * time.Hour}
 	case "month":
 		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 		prevStart := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, now.Location())
@@ -230,11 +232,11 @@ func parseStatRange(key string, now time.Time) statRange {
 		if prevEnd.After(start) {
 			prevEnd = start
 		}
-		return statRange{Key: "month", Start: start, PrevStart: prevStart, PrevEnd: prevEnd, Step: 24 * time.Hour}
+		return statRange{Key: "month", Start: start, End: now, PrevStart: prevStart, PrevEnd: prevEnd, Step: 24 * time.Hour}
 	default:
 		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 		prevStart := start.AddDate(0, 0, -1)
-		return statRange{Key: "today", Start: start, PrevStart: prevStart, PrevEnd: prevStart.Add(now.Sub(start)), Step: time.Hour}
+		return statRange{Key: "today", Start: start, End: now, PrevStart: prevStart, PrevEnd: prevStart.Add(now.Sub(start)), Step: time.Hour}
 	}
 }
 
@@ -252,11 +254,55 @@ func (s *Server) statRangeFor(key string, now time.Time) statRange {
 		}
 	}
 	// 一天以内按小时看曲线更细；再长就按自然日聚合，时间刻度也不会跨天混淆。
-	step := 24 * time.Hour
-	if now.Sub(start) <= 24*time.Hour {
-		step = time.Hour
+	return statRange{Key: "all", Start: start, End: now, PrevStart: start, PrevEnd: start, Step: statStep(now.Sub(start))}
+}
+
+// statRangeFromQuery 在看板预设区间的基础上支持自定义起止：
+// 请求里带 start / end（毫秒时间戳，和调用日志接口同一套参数）时按自定义区间算，
+// 否则退回 range 预设。两端的 0 / 空都表示这一端不限。
+func (s *Server) statRangeFromQuery(q url.Values, now time.Time) statRange {
+	startMS := int64(atoiDefault(q.Get("start"), 0))
+	endMS := int64(atoiDefault(q.Get("end"), 0))
+	if startMS > 0 || endMS > 0 {
+		return customStatRange(startMS, endMS, now)
 	}
-	return statRange{Key: "all", Start: start, PrevStart: start, PrevEnd: start, Step: step}
+	return s.statRangeFor(q.Get("range"), now)
+}
+
+// customStatRange 把自定义起止换算成看板区间。结束时间不填（或用未来时间）
+// 就是此刻，开始时间不填就取结束前 24 小时；上一周期取紧邻的等长区间用于环比。
+func customStatRange(startMS, endMS int64, now time.Time) statRange {
+	now = now.In(dashboardLocation)
+	loc := now.Location()
+	end := now
+	if endMS > 0 {
+		if t := time.UnixMilli(endMS).In(loc); t.Before(end) {
+			end = t
+		}
+	}
+	start := end.Add(-24 * time.Hour)
+	if startMS > 0 {
+		if t := time.UnixMilli(startMS).In(loc); t.Before(end) {
+			start = t
+		}
+	}
+	span := end.Sub(start)
+	return statRange{
+		Key:       "custom",
+		Start:     start,
+		End:       end,
+		PrevStart: start.Add(-span),
+		PrevEnd:   start,
+		Step:      statStep(span),
+	}
+}
+
+// statStep 决定时间序列的聚合粒度：一天以内按小时，更长按自然日。
+func statStep(span time.Duration) time.Duration {
+	if span <= 24*time.Hour {
+		return time.Hour
+	}
+	return 24 * time.Hour
 }
 
 // startOfWeek 返回本周一 0 点。
@@ -277,9 +323,9 @@ func localDayStart(ms int64, loc *time.Location) int64 {
 
 func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(dashboardLocation)
-	rng := s.statRangeFor(r.URL.Query().Get("range"), now)
+	rng := s.statRangeFromQuery(r.URL.Query(), now)
 	model := strings.TrimSpace(r.URL.Query().Get("model"))
-	current, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
+	current, _ := s.store.RangeStats(rng.Start.UnixMilli(), rng.End.UnixMilli())
 	previous, _ := s.store.RangeStats(rng.PrevStart.UnixMilli(), rng.PrevEnd.UnixMilli()-1)
 	// 带 model 时把统计收窄到单个模型，指标口径和全部模型时完全一致。
 	if model != "" {
@@ -307,6 +353,7 @@ func (s *Server) statsOverview(w http.ResponseWriter, r *http.Request) {
 		"range":       rng.Key,
 		"model":       model,
 		"start":       rng.Start.UnixMilli(),
+		"end":         rng.End.UnixMilli(),
 		"current":     sumBuckets(current),
 		"previous":    sumBuckets(previous),
 		"channels":    map[string]int{"total": len(chans), "enabled": enabledChans},
@@ -391,13 +438,19 @@ func sumBuckets(bs []store.Bucket) bucketSummary {
 // （model_series），看板据此在总览里按模型画曲线。
 func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(dashboardLocation)
-	rng := s.statRangeFor(r.URL.Query().Get("range"), now)
+	rng := s.statRangeFromQuery(r.URL.Query(), now)
 	model := strings.TrimSpace(r.URL.Query().Get("model"))
-	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
+	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), rng.End.UnixMilli())
 
 	// 先把时间点按区间粒度铺好，所有序列都按这个下标对齐。
+	// 起点要先对齐到粒度边界（整点 / 自然日 0 点）：自定义区间的起止是任意时刻，
+	// 不对齐的话铺出来的下标和按小时 / 自然日归并出来的桶 key 对不上，曲线会全是 0。
+	base := rng.Start.Truncate(time.Hour)
+	if rng.Step >= 24*time.Hour {
+		base = time.UnixMilli(localDayStart(rng.Start.UnixMilli(), now.Location())).In(now.Location())
+	}
 	keys := []int64{}
-	for t := rng.Start; !t.After(now); {
+	for t := base; !t.After(rng.End); {
 		key := t.UnixMilli()
 		if rng.Step < 24*time.Hour {
 			key = t.Truncate(time.Hour).UnixMilli()
@@ -565,8 +618,8 @@ type modelSeries struct {
 // statsBreakdown 返回按模型 / 渠道 / 令牌的调用分布。
 func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(dashboardLocation)
-	rng := s.statRangeFor(r.URL.Query().Get("range"), now)
-	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), now.UnixMilli())
+	rng := s.statRangeFromQuery(r.URL.Query(), now)
+	buckets, _ := s.store.RangeStats(rng.Start.UnixMilli(), rng.End.UnixMilli())
 
 	models := map[string]int64{}
 	modelErrs := map[string]int64{}

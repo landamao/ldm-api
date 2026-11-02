@@ -91,15 +91,40 @@
   // ======================================================================
   // 数据看板
   // ======================================================================
+  // 看板的时间区间和调用日志保持一致：预设下拉 + 起止时间输入。
+  // pick 是下拉里的写法，label 进统计卡标题（「近 7 天请求」），compare 是环比文案。
   const DASH_RANGES = {
-    today: { label: '今日', compare: '较昨日同期' },
-    week: { label: '本周', compare: '较上周同期' },
-    month: { label: '本月', compare: '较上月同期' },
+    today: { pick: '今日', label: '今日', compare: '较昨日同期' },
+    yesterday: { pick: '昨日', label: '昨日', compare: '较前日同期' },
+    '7d': { pick: '近 7 天', label: '近 7 天', compare: '较前 7 天' },
+    '30d': { pick: '近 30 天', label: '近 30 天', compare: '较前 30 天' },
     // 全部区间从最早一条统计记录开始累计，没有可对比的上一周期
-    all: { label: '累计', compare: '' },
+    all: { pick: '全部时间', label: '累计', compare: '' },
+    custom: { pick: '自定义', label: '区间', compare: '较上一周期' },
   };
-  const dashRange = { key: 'today' };
+  const DASH_PRESET_KEYS = ['today', 'yesterday', '7d', '30d', 'all', 'custom'];
+  // start / end 为毫秒时间戳，只有自定义区间才用到；预设区间每次请求时现算。
+  const dashRange = { key: 'today', start: 0, end: 0 };
   const dashRangeInfo = () => DASH_RANGES[dashRange.key] || DASH_RANGES.today;
+  // 当前区间的起止毫秒（0 = 该端不限）。预设直接复用调用日志那套换算，
+  // 两个页面的「今日」「近 7 天」指的是同一段时间。
+  function dashBounds() {
+    if (dashRange.key === 'custom') return { start: dashRange.start, end: dashRange.end };
+    return rangeOfPreset(dashRange.key) || { start: 0, end: 0 };
+  }
+  // 统计接口的查询串：预设也换算成 start / end 传，后端按自定义区间算环比。
+  function dashRangeQuery() {
+    const p = new URLSearchParams();
+    if (dashRange.key === 'all') {
+      p.set('range', 'all');
+      return p;
+    }
+    const b = dashBounds();
+    p.set('range', 'custom');
+    if (b.start) p.set('start', String(b.start));
+    if (b.end) p.set('end', String(b.end));
+    return p;
+  }
   const dashMetric = { m: 'requests' };
   // 环形图（模型调用分布）自己的口径开关：请求数 / Token。
   // 和调用趋势的维度开关各管各的，互不影响。
@@ -180,12 +205,16 @@
     desc: '网关调用量、Token 消耗与渠道健康度',
     async render(root, actions) {
       actions.innerHTML = `
-        <div class="pill-toggle" id="range-toggle">
-          <button data-r="today" class="${dashRange.key === 'today' ? 'is-on' : ''}">今日</button>
-          <button data-r="week" class="${dashRange.key === 'week' ? 'is-on' : ''}">本周</button>
-          <button data-r="month" class="${dashRange.key === 'month' ? 'is-on' : ''}">本月</button>
-          <button data-r="all" class="${dashRange.key === 'all' ? 'is-on' : ''}">全部</button>
-        </div>
+        <select class="select" id="dash-preset" aria-label="统计区间" style="width:auto;min-width:96px">
+          ${DASH_PRESET_KEYS.map((k) => `<option value="${k}"${dashRange.key === k ? ' selected' : ''}>${DASH_RANGES[k].pick}</option>`).join('')}
+        </select>
+        <input class="input log-time" id="dash-start" type="datetime-local" aria-label="开始时间"
+               value="${toLocalInput(dashBounds().start)}" style="width:auto;min-width:168px">
+        <span class="log-range-end">
+          <span class="muted fs-12">至</span>
+          <input class="input log-time" id="dash-end" type="datetime-local" aria-label="结束时间"
+                 title="留空表示到此刻" value="${toLocalInput(dashBounds().end)}" style="width:auto;min-width:168px">
+        </span>
         <select class="select" id="dash-unit" aria-label="数字单位" style="width:auto;min-width:128px">
           <option value="en"${dashUnit.mode === 'en' ? ' selected' : ''}>英文单位 K/M</option>
           <option value="cn"${dashUnit.mode === 'cn' ? ' selected' : ''}>中文单位 万/亿</option>
@@ -199,12 +228,49 @@
         try { localStorage.setItem(DASH_UNIT_KEY, dashUnit.mode); } catch (err) { /* 忽略配额错误 */ }
         if (dashData) paintAll();
       };
-      actions.querySelectorAll('#range-toggle button').forEach((b) => {
-        b.onclick = () => {
-          dashRange.key = b.dataset.r;
-          actions.querySelectorAll('#range-toggle button').forEach((x) => x.classList.toggle('is-on', x === b));
+
+      // 时间区间：预设下拉和起止输入框是同一份状态，改哪个都能生效。
+      const presetEl = actions.querySelector('#dash-preset');
+      const startEl = actions.querySelector('#dash-start');
+      const endEl = actions.querySelector('#dash-end');
+      // 预设切换后把区间换算成具体时间填进输入框，方便看清到底查的是哪一段
+      const syncTimeInputs = () => {
+        const b = dashBounds();
+        startEl.value = toLocalInput(b.start);
+        endEl.value = toLocalInput(b.end);
+      };
+      syncTimeInputs();
+
+      presetEl.onchange = () => {
+        const next = presetEl.value;
+        // 从预设切到「自定义」时，把输入框里正显示的那段区间留下来当起点，
+        // 免得刚看清是哪一段、一切自定义就被清空。
+        if (next === 'custom') {
+          dashRange.start = startEl.value ? new Date(startEl.value).getTime() : 0;
+          dashRange.end = endEl.value ? new Date(endEl.value).getTime() : 0;
+        }
+        dashRange.key = next;
+        syncTimeInputs();
+        loadAll();
+      };
+      [startEl, endEl].forEach((el) => {
+        const apply = () => {
+          const s = startEl.value ? new Date(startEl.value).getTime() : 0;
+          const e = endEl.value ? new Date(endEl.value).getTime() : 0;
+          if (s && e && e < s) {
+            Toast.error('结束时间不能早于开始时间');
+            syncTimeInputs();
+            return;
+          }
+          // 手动改时间就落到「自定义」，下拉跟着变
+          dashRange.key = 'custom';
+          dashRange.start = s;
+          dashRange.end = e;
+          presetEl.value = 'custom';
           loadAll();
         };
+        el.onchange = apply;
+        el.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); apply(); } };
       });
 
       root.innerHTML = `<div id="dash-body">${loadingBlock()}</div>`;
@@ -220,10 +286,12 @@
         try {
           // 选中某个模型时，统计和序列都按该模型取；「各模型」「总计」都是全局视图。
           const scope = dashSel.kind === 'model' ? '&model=' + encodeURIComponent(dashSel.id) : '';
+          // 区间查询串只算一次，三个接口用的是同一段起止时间
+          const rangeQS = dashRangeQuery().toString();
           const [overview, series, breakdown, logs] = await Promise.all([
-            API.get('/api/stats/overview?range=' + dashRange.key + scope),
-            API.get('/api/stats/series?range=' + dashRange.key + scope),
-            API.get('/api/stats/breakdown?range=' + dashRange.key),
+            API.get('/api/stats/overview?' + rangeQS + scope),
+            API.get('/api/stats/series?' + rangeQS + scope),
+            API.get('/api/stats/breakdown?' + rangeQS),
             API.get('/api/logs?limit=8'),
           ]);
           if (seq !== loadSeq) return;
@@ -244,9 +312,10 @@
         try {
           // 「各模型」「总计」都是全局视图，只有单个模型才带 model 参数。
           const scope = dashSel.kind === 'model' ? '&model=' + encodeURIComponent(dashSel.id) : '';
+          const rangeQS = dashRangeQuery().toString();
           const [overview, series] = await Promise.all([
-            API.get('/api/stats/overview?range=' + dashRange.key + scope),
-            API.get('/api/stats/series?range=' + dashRange.key + scope),
+            API.get('/api/stats/overview?' + rangeQS + scope),
+            API.get('/api/stats/series?' + rangeQS + scope),
           ]);
           if (seq !== loadSeq) return;
           dashData.overview = overview;
