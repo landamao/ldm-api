@@ -1764,7 +1764,7 @@
                 <!-- 空会话时的问候语，浮在输入框上方 -->
                 <div class="chat-hello" id="chat-hello">你好，有什么我可以帮你的？</div>
                 <div class="chat-input">
-                  <textarea class="textarea chat-input__text" id="chat-text" rows="1" placeholder="给懒大猫发消息，Enter 发送，Shift+Enter 换行；可粘贴或拖入图片/附件"></textarea>
+                  <textarea class="textarea chat-input__text" id="chat-text" rows="1" placeholder="快使用我吧♡"></textarea>
                   <div class="chat-input__bar">
                     <div class="chat-input__chips">
                       <select class="chat-chip chat-chip--model" id="chat-chip-model" aria-label="模型">
@@ -1823,7 +1823,7 @@
       const chatMain = root.querySelector('#chat-main');
       const text = root.querySelector('#chat-text');
       // 触摸屏上用软键盘，回车当换行用，发送只能点按钮
-      if (isCoarsePointer) text.placeholder = '给懒大猫发消息，点右下角按钮发送；可粘贴或拖入图片/附件';
+      if (isCoarsePointer) text.placeholder = '快使用我吧♡';
       // 触摸设备上程序化聚焦会弹出虚拟键盘，切模型 / 改开关后不应打断输入
       const focusText = () => { if (!isCoarsePointer) text.focus(); };
       const sendBtn = root.querySelector('#chat-send');
