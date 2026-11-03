@@ -631,7 +631,11 @@ func (s *Store) RecordStat(l Log) error {
 		bk.PromptTokens += int64(l.PromptTokens)
 		bk.CompletionTokens += int64(l.CompletionTokens)
 		bk.TotalTokens += int64(l.TotalTokens)
-		bk.LatencySum += l.LatencyMs
+		// 平均耗时只统计成功请求：失败请求往往几毫秒就返回，
+		// 混进分母会把平均耗时拉得虚低，也容易被垃圾请求刷动。
+		if !failed {
+			bk.LatencySum += l.LatencyMs
+		}
 		// 平均速度只统计首字、总耗时、速度三项都有的记录
 		if l.TokensPerSec > 0 && l.FirstByteMs > 0 && l.LatencyMs > 0 {
 			bk.SpeedCount++
@@ -648,7 +652,9 @@ func (s *Store) RecordStat(l Log) error {
 			ms.PromptTokens += int64(l.PromptTokens)
 			ms.CompletionTokens += int64(l.CompletionTokens)
 			ms.TotalTokens += int64(l.TotalTokens)
-			ms.LatencySum += l.LatencyMs
+			if !failed {
+				ms.LatencySum += l.LatencyMs
+			}
 			if l.TokensPerSec > 0 && l.FirstByteMs > 0 && l.LatencyMs > 0 {
 				ms.SpeedCount++
 				ms.SpeedSum += l.TokensPerSec
@@ -738,6 +744,11 @@ func (s *Store) RecentModelStats(modelIDs []string, limit, maxScan int) (map[str
 				continue
 			}
 			if _, ok := want[l.ModelID]; !ok {
+				continue
+			}
+			// 400 属于调用方请求问题（含网关侧拒绝），不计入「近 N 次」
+			// 成功率窗口，避免垃圾请求把某个模型的成功率刷低。
+			if l.StatusCode == 400 {
 				continue
 			}
 			r := out[l.ModelID]

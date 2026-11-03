@@ -249,8 +249,9 @@ type Result struct {
 	// AsContent 表示这次响应是错误覆写里的「覆写为正文」：调用方实际收到的是
 	// 200 的正常回复，日志按成功记账（黄色 200），但内部失败原因仍然保留。
 	AsContent bool
-	// SkipRecord 表示这次请求只做了配置侧拒绝（模型已禁用），
-	// 调用方不要写入日志与统计。
+	// SkipRecord 表示这次请求没有真正转发到上游就被拒绝了：模型已禁用、
+	// 缺少 model、模型不存在、能力校验不通过、端点不支持。这类请求
+	// 不写日志、不计统计，也不消耗额度，避免垃圾请求污染成功率。
 	SkipRecord bool
 }
 
@@ -755,6 +756,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	if !IsAllowedEndpoint(req.Method, req.Path) {
 		const msg = "不支持的接口，API 密钥只能调用模型相关端点"
 		writeAPIError(w, http.StatusNotFound, "invalid_request_error", msg)
+		res.SkipRecord = true
 		res.StatusCode = http.StatusNotFound
 		res.ClientErr = msg
 		res.Err = "unsupported endpoint: " + req.Method + " " + req.Path
@@ -766,6 +768,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	if modelID == "" {
 		const msg = "请求体中缺少 model 字段"
 		writeAPIError(w, http.StatusBadRequest, "invalid_request_error", msg)
+		res.SkipRecord = true
 		res.StatusCode = http.StatusBadRequest
 		res.ClientErr = msg
 		res.Err = "missing model"
@@ -778,6 +781,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		code := http.StatusNotFound
 		msg := "模型「" + modelID + "」不存在"
 		typ := "invalid_request_error"
+		res.SkipRecord = true
 		if errors.Is(err, ErrModelDisabled) {
 			code = http.StatusForbidden
 			msg = "模型「" + modelID + "」不可用"
@@ -798,6 +802,7 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 	// 能力参数：模型明确标记为「不支持」的输入（思考 / 工具调用 / 图片），
 	// 开启报错时直接返回 400，未开启时从上下文里移除后继续转发。
 	if rej := enforceModelCaps(w, req, resolved.Model); rej != nil {
+		res.SkipRecord = true
 		res.StatusCode = rej.status
 		res.ClientErr = rej.clientErr
 		res.Err = rej.detail

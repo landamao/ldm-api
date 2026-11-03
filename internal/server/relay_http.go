@@ -192,7 +192,11 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 	}
 	entry.TokensPerSec = tokensPerSecond(entry, res.GenMs, res.StreamGen)
 	_ = s.store.AppendLog(entry)
-	_ = s.store.RecordStat(entry)
+	// 上游返回的 400 是调用方请求本身的问题，写日志便于排查，
+	// 但不计入统计：否则垃圾请求能把成功率刷低、把调用量刷高。
+	if entry.StatusCode != http.StatusBadRequest {
+		_ = s.store.RecordStat(entry)
+	}
 	if res.Usage.TotalTokens > 0 {
 		s.store.AddTokenUsage(token.ID, int64(res.Usage.TotalTokens))
 	}

@@ -433,10 +433,13 @@ func sumBuckets(bs []store.Bucket) bucketSummary {
 		firstByteSum += b.SpeedFirstByteSum
 	}
 	if out.Requests > 0 {
-		out.AvgLatency = float64(latencySum) / float64(out.Requests)
 		out.SuccessRate = float64(out.Requests-out.Errors) * 100 / float64(out.Requests)
 	} else {
 		out.SuccessRate = 100
+	}
+	// LatencySum 只累计成功请求，分母同样用成功数。
+	if success := out.Requests - out.Errors; success > 0 {
+		out.AvgLatency = float64(latencySum) / float64(success)
 	}
 	if out.SpeedSamples > 0 {
 		out.AvgSpeed = speedSum / float64(out.SpeedSamples)
@@ -525,8 +528,8 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 		b := byKey[key]
 		p := point{Time: key, Requests: b.Requests, Errors: b.Errors,
 			TotalTokens: b.TotalTokens, PromptTokens: b.PromptTokens, CompTokens: b.CompletionTokens}
-		if b.Requests > 0 {
-			p.AvgLatency = float64(b.LatencySum) / float64(b.Requests)
+		if success := b.Requests - b.Errors; success > 0 {
+			p.AvgLatency = float64(b.LatencySum) / float64(success)
 		}
 		points = append(points, p)
 	}
@@ -541,9 +544,9 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 			mp := mm[key]
 			p := point{Time: key, Requests: mp.Requests, Errors: mp.Errors,
 				TotalTokens: mp.TotalTokens, PromptTokens: mp.PromptTokens, CompTokens: mp.CompletionTokens}
-			if mp.Requests > 0 {
-				p.AvgLatency = float64(mp.LatencySum) / float64(mp.Requests)
-			}
+		if success := mp.Requests - mp.Errors; success > 0 {
+			p.AvgLatency = float64(mp.LatencySum) / float64(success)
+		}
 			mpts = append(mpts, p)
 		}
 		out["points"] = mpts
