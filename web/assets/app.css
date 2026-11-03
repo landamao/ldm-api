@@ -218,17 +218,21 @@ html[data-theme="dark"] body::before {
   opacity: .85;
 }
 
-/* 牛皮纸颗粒 */
+/* 牛皮纸颗粒
+   注意 z-index 必须是负的：写 0 时它会盖在 .app 所有内容上面，
+   手机 3 倍屏上一看就是糊了一层网纹薄膜 */
 body::after {
   content: "";
   position: fixed;
   inset: 0;
-  z-index: 0;
+  z-index: -1;
   pointer-events: none;
   background-image: radial-gradient(rgba(122, 83, 48, .06) 1px, transparent 1.3px);
   background-size: 5px 5px;
   opacity: .7;
 }
+/* 聊天页整页都是背景，网点会糊在消息后面，直接不画 */
+body.is-chat-page::after { display: none; }
 html[data-theme="dark"] body::after {
   background-image: radial-gradient(rgba(255, 240, 205, .05) 1px, transparent 1.3px);
   opacity: .45;
@@ -584,7 +588,14 @@ html[data-theme="dark"] .topbar .btn--ghost:hover { background: rgba(255, 236, 2
 .content__inner { max-width: 1400px; margin: 0 auto; }
 
 /* 在线聊天页：整块顶栏收掉，把高度让给对话区（DeepSeek 式布局）
-   聊天区直接铺在页面背景上：不画卡片、不铺底色，底下的森林照旧露出来 */
+   对话区不垫底板，消息直接铺在页面背景上（森林剪影照旧露出来）；
+   手机屏小，顶部那两团高光会连成一条发白的「薄膜」，聊天页把它们去掉，只留底色渐变 */
+body.is-chat-page {
+  background-image: linear-gradient(168deg, #e8f5d2 0%, #f8f4e4 48%, #efe7cf 100%);
+}
+html[data-theme="dark"] body.is-chat-page {
+  background-image: linear-gradient(168deg, #172216 0%, #131b12 52%, #0f150e 100%);
+}
 body.is-chat-page .topbar { display: none; }
 body.is-chat-page .content { overflow: hidden; padding: 14px 16px 18px; }
 body.is-chat-page .content__inner { max-width: none; height: 100%; }
@@ -1715,7 +1726,7 @@ html[data-theme="dark"] .ct-run-btn.is-stopping {
   background-image: linear-gradient(180deg, var(--leaf-400), var(--leaf-600));
   box-shadow: inset 0 2px 3px rgba(44, 95, 30, .35);
 }
-.switch input:checked + .switch__track::after { transform: translateX(14px); }
+.switch input:checked + .switch__track::after { transform: translateX(16px); }
 .switch input:focus-visible + .switch__track { outline: 3px solid var(--leaf-300); outline-offset: 2px; }
 .switch__label { font-size: 13px; color: var(--text); font-weight: 600; }
 .switch.is-disabled { opacity: .55; cursor: not-allowed; }
@@ -3217,7 +3228,7 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
 .chat-layout { display: flex; flex: 1; min-height: 0; position: relative; }
 
 /* 左侧：对话列表（往左收）
-   三栏之间不画线、不铺实色，只用一层薄薄的透明底色区分，森林背景照样透上来 */
+   桌面上不垫底板，跟中间一样直接铺在背景上；底板只在窄屏抽屉里用（见文末 @media） */
 .chat-conv {
   order: 0;
   width: 236px;
@@ -3225,10 +3236,11 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: rgba(122, 83, 48, .07);
+  margin: 10px;
+  background: transparent;
   transition: margin-left .24s cubic-bezier(.4, 0, .2, 1);
 }
-.chat-layout.is-conv-collapsed .chat-conv { margin-left: -238px; }
+.chat-layout.is-conv-collapsed .chat-conv { margin-left: -246px; }
 .chat-conv__head {
   display: flex;
   align-items: center;
@@ -3238,7 +3250,7 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
 .chat-conv__new {
   flex: 1;
   min-width: 0;
-  height: 32px;
+  height: 28px;
   padding: 0 10px;
   display: inline-flex;
   align-items: center;
@@ -3247,17 +3259,32 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
   font-size: 12.5px;
   font-weight: 700;
   border-radius: 999px;
-  border: none;
+  /* 跟会话条目同一套胶囊语言：描边 + 硬阴影 */
+  border: 1.5px solid var(--primary-border);
   background-color: var(--primary-soft);
   color: var(--leaf-700);
+  box-shadow: 0 1px 0 rgba(74, 49, 32, .1);
   cursor: pointer;
   white-space: nowrap;
-  transition: background .16s, color .16s;
+  transition: background .16s, color .16s, border-color .16s;
 }
-.chat-conv__new:hover { background-color: var(--leaf-100); color: var(--leaf-700); }
-html[data-theme="dark"] .chat-conv__new { color: var(--leaf-300); }
+.chat-conv__new:hover {
+  background-color: var(--leaf-100);
+  border-color: var(--leaf-500);
+  color: var(--leaf-700);
+}
+html[data-theme="dark"] .chat-conv__new { color: var(--leaf-300); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
 .chat-conv__collapse { flex-shrink: 0; }
-.chat-conv__body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 12px; }
+.chat-conv__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 12px;
+  display: flex;
+  flex-direction: column;
+}
+/* 会话没几条时整块从中间开始排；多到撑满就自动变成正常滚动 */
+.chat-conv__inner { display: flex; flex-direction: column; margin: auto 0; }
 .chat-conv__group {
   padding: 12px 6px 5px;
   font-size: 10.5px;
@@ -3270,16 +3297,23 @@ html[data-theme="dark"] .chat-conv__new { color: var(--leaf-300); }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 8px;
-  border-radius: 11px;
+  margin-bottom: 6px;
+  padding: 7px 8px 7px 14px;
+  border-radius: 999px;
   font-size: 12.5px;
   color: var(--text-2);
+  background: var(--surface-solid);
+  border: 1.5px solid var(--border-line);
+  box-shadow: 0 1px 0 rgba(74, 49, 32, .1);
   cursor: pointer;
-  transition: background .15s, color .15s;
+  transition: background .15s, color .15s, border-color .15s;
 }
-.chat-conv__item:hover { background: var(--surface-hover); color: var(--text); }
+html[data-theme="dark"] .chat-conv__item { box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.chat-conv__item:hover { background: #fffdf5; border-color: var(--leaf-400); color: var(--text); }
+html[data-theme="dark"] .chat-conv__item:hover { background: var(--surface-hover); border-color: var(--leaf-500); }
 .chat-conv__item.is-active {
   background: var(--primary-soft);
+  border-color: var(--primary-border);
   color: var(--text);
   font-weight: 700;
 }
@@ -3304,7 +3338,7 @@ html[data-theme="dark"] .chat-conv__new { color: var(--leaf-300); }
 .chat-conv__empty { padding: 16px 8px; font-size: 12px; color: var(--text-3); text-align: center; }
 .chat-conv-scrim { display: none; }
 
-/* 配置栏在右边：order 把 aside 排到对话区之后 */
+/* 配置栏在右边：order 把 aside 排到对话区之后，桌面同样不垫底板 */
 .chat-side {
   order: 2;
   width: 292px;
@@ -3312,7 +3346,8 @@ html[data-theme="dark"] .chat-conv__new { color: var(--leaf-300); }
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: rgba(122, 83, 48, .07);
+  margin: 10px;
+  background: transparent;
   transition: margin-right .24s cubic-bezier(.4, 0, .2, 1);
 }
 .chat-side__head {
@@ -3438,7 +3473,7 @@ html[data-theme="dark"] .chat-conv__new { color: var(--leaf-300); }
 .chat-range:disabled { cursor: not-allowed; opacity: .5; }
 .chat-param .switch__track { width: 34px; height: 20px; }
 .chat-param .switch__track::after { width: 13px; height: 13px; }
-.chat-param .switch input:checked + .switch__track::after { transform: translateX(11px); }
+.chat-param .switch input:checked + .switch__track::after { transform: translateX(13px); }
 .chat-main { order: 1; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: transparent; }
 /* 对话区外面套一层，用来放「回到底部」的悬浮按钮 */
 .chat-log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
@@ -3596,6 +3631,8 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
 }
 .chat-chip:hover { border-color: var(--leaf-400); color: var(--text); }
 .chat-chip--model { max-width: 200px; }
+/* 箭头是绝对定位的，芯片的 padding 得给它留出位置，否则文字压到箭头上 */
+.chat-chip.ldm-select { padding: 0 28px 0 12px; }
 .chat-chip--model .ldm-select__value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-chip .switch { gap: 6px; }
 .chat-chip .switch__label { font-size: 11.5px; font-weight: 600; }
@@ -3626,7 +3663,7 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
 .chat-edge--right { right: 10px; }
 
 @media (min-width: 901px) {
-  .chat-layout.is-settings-collapsed .chat-side { margin-right: -294px; }
+  .chat-layout.is-settings-collapsed .chat-side { margin-right: -302px; }
 }
 
 @media (max-width: 900px) {
@@ -3638,11 +3675,24 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
     left: 0;
     z-index: 6;
     width: min(280px, 84%);
-    transform: translateX(-100%);
-    transition: transform .22s cubic-bezier(.4, 0, .2, 1);
-    box-shadow: var(--shadow-lg);
+    margin: 10px;
+    /* 收起来时必须彻底不可见：光靠 translateX 会在左边留一条几像素的边，
+       阴影也会透出来（手机上就是一条灰竖条） */
+    transform: translateX(calc(-100% - 24px));
+    visibility: hidden;
+    box-shadow: none;
+    transition: transform .22s cubic-bezier(.4, 0, .2, 1), visibility 0s linear .22s;
+    /* 抽屉是浮在对话区上面的，必须有实底，否则字叠在一起 */
+    background: var(--surface-2);
+    border: 2px solid var(--card-line);
+    border-radius: 16px;
   }
-  .chat-layout.is-conv-open .chat-conv { transform: none; }
+  .chat-layout.is-conv-open .chat-conv {
+    transform: none;
+    visibility: visible;
+    box-shadow: var(--shadow-lg);
+    transition: transform .22s cubic-bezier(.4, 0, .2, 1), visibility 0s;
+  }
   .chat-layout.is-conv-open .chat-conv-scrim {
     display: block;
     position: absolute;
@@ -3658,11 +3708,21 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
     right: 0;
     z-index: 6;
     width: min(320px, 86%);
-    transform: translateX(100%);
-    transition: transform .22s cubic-bezier(.4, 0, .2, 1);
-    box-shadow: var(--shadow-lg);
+    margin: 10px;
+    transform: translateX(calc(100% + 24px));
+    visibility: hidden;
+    box-shadow: none;
+    transition: transform .22s cubic-bezier(.4, 0, .2, 1), visibility 0s linear .22s;
+    background: var(--surface-2);
+    border: 2px solid var(--card-line);
+    border-radius: 16px;
   }
-  .chat-layout.is-settings-open .chat-side { transform: none; }
+  .chat-layout.is-settings-open .chat-side {
+    transform: none;
+    visibility: visible;
+    box-shadow: var(--shadow-lg);
+    transition: transform .22s cubic-bezier(.4, 0, .2, 1), visibility 0s;
+  }
   .chat-layout.is-settings-open .chat-side-scrim {
     display: block;
     position: absolute;
@@ -3673,6 +3733,12 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
   }
   /* 窄屏顶栏横向可滚动，模型下拉别把整行撑爆 */
   .chat-top__model { min-width: 110px; max-width: 180px; }
+  /* 手机左上 / 右上各有一个抽屉把手，第一条消息别被压在把手底下 */
+  .chat-log { padding-top: 48px; }
+  /* 桌面上顶栏一直是收起的，但窄屏只有顶栏里有「打开导航」的汉堡按钮，
+     聊天页要是把顶栏藏了，手机上就再也点不进左边那排页面了 —— 窄屏留出来 */
+  body.is-chat-page .topbar { display: flex; }
+  body.is-chat-page .content { padding: 6px 10px 10px; }
 }
 
 .typing { display: inline-flex; gap: 4px; align-items: center; height: 20px; }
@@ -3996,10 +4062,18 @@ html[data-theme="dark"] .backup-result__head { color: var(--leaf-300); }
     bottom: 0;
     z-index: 90;
     transform: translateX(-100%);
-    transition: transform .24s cubic-bezier(.4, 0, .2, 1);
-    box-shadow: var(--shadow-lg);
+    /* 收起来的时候阴影会从左边漏出来，在手机上就是一条灰竖条（俗称的「薄膜」），
+       所以关着的时候阴影和可见性一起关掉 */
+    visibility: hidden;
+    box-shadow: none;
+    transition: transform .24s cubic-bezier(.4, 0, .2, 1), visibility 0s linear .24s;
   }
-  .sidebar.is-open { transform: none; }
+  .sidebar.is-open {
+    transform: none;
+    visibility: visible;
+    box-shadow: var(--shadow-lg);
+    transition: transform .24s cubic-bezier(.4, 0, .2, 1), visibility 0s;
+  }
   .mobile-toggle { display: inline-flex; flex-shrink: 0; }
   .content { padding: 14px; }
   /* 窄屏顶栏：标题一行、操作另一行，避免互相挤压 */

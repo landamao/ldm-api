@@ -1611,7 +1611,10 @@
                 <button class="chat-conv__new" id="chat-conv-new" type="button">${icon('plus', 14)}开启新对话</button>
                 <button class="btn btn--ghost btn--icon btn--sm chat-conv__collapse" id="chat-conv-collapse" title="收起对话列表" aria-label="收起对话列表">${icon('chevronLeft', 15)}</button>
               </div>
-              <div class="chat-conv__body" id="chat-conv-list"></div>
+              <div class="chat-conv__body">
+                <!-- 内层单独一层，会话少的时候靠 margin:auto 垂直居中，多了照常滚动 -->
+                <div class="chat-conv__inner" id="chat-conv-list"></div>
+              </div>
             </aside>
 
             <!-- 右侧：模型配置（往右收） -->
@@ -1771,6 +1774,8 @@
       const hello = root.querySelector('#chat-hello');
       const chatMain = root.querySelector('#chat-main');
       const text = root.querySelector('#chat-text');
+      // 触摸屏上用软键盘，回车当换行用，发送只能点按钮
+      if (isCoarsePointer) text.placeholder = '给懒大猫发消息，点右下角按钮发送；可粘贴或拖入图片/附件';
       // 触摸设备上程序化聚焦会弹出虚拟键盘，切模型 / 改开关后不应打断输入
       const focusText = () => { if (!isCoarsePointer) text.focus(); };
       const sendBtn = root.querySelector('#chat-send');
@@ -4346,7 +4351,11 @@
         if (had) Toast.success('已清空对话');
       };
       text.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
+        // 手机 / 平板上回车只是换行，必须点发送按钮才发出去
+        if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+        if (isCoarsePointer) return;
+        e.preventDefault();
+        doSend();
       });
       text.addEventListener('input', () => {
         text.style.height = 'auto';
