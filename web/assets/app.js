@@ -179,6 +179,8 @@
     up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
     down: '<path d="M12 5v14M19 12l-7 7-7-7"/>',
     chevron: '<path d="M6 9l6 6 6-6"/>',
+    chevronLeft: '<path d="M15 18l-6-6 6-6"/>',
+    chevronRight: '<path d="M9 18l6-6-6-6"/>',
     grip: '<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>',
     link: '<path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7L12 19"/>',
     unlink: '<path d="M10 13a5 5 0 007.5.5l3-3a5 5 0 00-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 00-7.5-.5l-3 3a5 5 0 007 7L12 19"/><path d="M3 3l18 18"/>',
@@ -1332,6 +1334,8 @@
   async function navigate() {
     const name = currentRoute();
     const def = PAGES[name];
+    // 在线聊天页自己占满整屏（DeepSeek 式布局），把顶栏收起来腾地方
+    document.body.classList.toggle('is-chat-page', name === 'chat');
     // 看板娘全站常驻，登录页不显示；各页面的摆位在 render 完之后调 layout
     if (window.LDMPet) window.LDMPet.show();
     renderNav();

@@ -1354,16 +1354,43 @@
 
   // 对话状态放在页面外面：切到其它页面时请求继续在后台跑，
   // 回到对话页再把还在进行的流重新挂到新的气泡上。
-  const CHAT_KEY = 'ldmapi.chat';
+  const CHAT_KEY = 'ldmapi.chat';                   // 旧版：只有一个数组
+  const CHAT_SESSIONS_KEY = 'ldmapi.chat.sessions'; // 现在：多会话
   const CHAT_MODEL_KEY = 'ldmapi.chat.model';
   const chatStore = {
-    history: [],
+    sessions: [],
+    activeId: '',
     loaded: false,
     run: null,
     view: null,
     model: '',
   };
+  // 当前会话的消息；切会话时这个引用会跟着换
+  Object.defineProperty(chatStore, 'history', {
+    get() {
+      const s = chatStore.sessions.find((x) => x.id === chatStore.activeId);
+      return s ? s.messages : [];
+    },
+  });
   let chatQuotaWarned = false;
+
+  const chatSessionId = () => 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+  // 标题取第一条用户消息的前几个字，和 DeepSeek 的习惯一致
+  function chatSessionTitle(messages) {
+    const first = (messages || []).find((m) => m && m.role === 'user');
+    let raw = '';
+    if (first) {
+      raw = typeof first.content === 'string' ? first.content : '';
+      if (!raw && Array.isArray(first.content)) {
+        const part = first.content.find((p) => p && p.type === 'text');
+        raw = part ? String(part.text || '') : '';
+      }
+    }
+    const t = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    return t.length > 24 ? t.slice(0, 24) + '…' : t;
+  }
 
   function loadChatHistory() {
     try {
@@ -1374,6 +1401,44 @@
     } catch (e) {
       return [];
     }
+  }
+
+  // 读取全部会话；旧版只有一份数组，迁移成第一个会话
+  function loadChatSessions() {
+    let sessions = [];
+    let activeId = '';
+    try {
+      const raw = localStorage.getItem(CHAT_SESSIONS_KEY);
+      if (raw) {
+        const j = JSON.parse(raw);
+        if (j && Array.isArray(j.sessions) && j.sessions.length) {
+          sessions = j.sessions
+            .filter((s) => s && Array.isArray(s.messages))
+            .map((s) => ({
+              id: s.id || chatSessionId(),
+              title: s.title || chatSessionTitle(s.messages),
+              createdAt: s.createdAt || Date.now(),
+              updatedAt: s.updatedAt || Date.now(),
+              model: s.model || '',
+              messages: s.messages,
+            }));
+          activeId = j.activeId || '';
+        }
+      }
+    } catch (e) { /* 数据损坏就当没有 */ }
+    if (!sessions.length) {
+      const old = loadChatHistory();
+      sessions = [{
+        id: chatSessionId(),
+        title: chatSessionTitle(old),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        model: '',
+        messages: old,
+      }];
+    }
+    if (!sessions.some((s) => s.id === activeId)) activeId = sessions[0].id;
+    return { sessions, activeId };
   }
 
   function loadChatModel() {
@@ -1391,10 +1456,12 @@
     } catch (e) { /* 存储不可用时忽略 */ }
   }
 
-  function persistChatHistory() {
+  function persistChatSessions() {
     try {
-      if (!chatStore.history.length) localStorage.removeItem(CHAT_KEY);
-      else localStorage.setItem(CHAT_KEY, JSON.stringify(chatStore.history));
+      localStorage.setItem(CHAT_SESSIONS_KEY, JSON.stringify({
+        activeId: chatStore.activeId,
+        sessions: chatStore.sessions,
+      }));
     } catch (e) {
       // 带图片/附件的对话可能超出 localStorage 配额：内存里继续可用，
       // 只提醒一次，避免每发一条都弹错误
@@ -1435,7 +1502,7 @@
     entry.meta = [[`模型 ${run.sentModel.id}`], ['页面关闭，已停止生成']];
     if (run.sentModel.provider_icon) entry.provider_icon = run.sentModel.provider_icon;
     chatStore.history.push(entry);
-    persistChatHistory();
+    persistChatSessions();
   });
 
   window.LDM.registerPage('chat', {
@@ -1457,17 +1524,8 @@
       chatStore.model = initial;
       persistChatModel(initial);
 
-      // 顶栏：配置栏收起时，模型下拉、流式开关和「展开设置」按钮都搬到顶栏最右边；
-      // 配置栏展开时这几个控件就在配置栏里，顶栏不再重复。
-      actions.innerHTML = `
-        <div class="chat-top" id="chat-top" hidden>
-          <select class="select chat-top__model" id="chat-top-model" aria-label="模型">
-            ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
-            <option value="${TEST_MODEL_ID}"${initial === TEST_MODEL_ID ? ' selected' : ''}>临时测试（直连上游）</option>
-          </select>
-          ${switchEl(true, '流式', 'id="chat-stream-top" title="流式输出"')}
-          <button class="btn btn--ghost btn--icon" id="chat-side-toggle" title="展开设置" aria-label="展开设置">${icon('settings', 16)}</button>
-        </div>`;
+      // 顶栏不再放聊天控件：模型下拉、流式开关都下沉到输入框那一行，
+      // 对话列表和模型配置各自在左右两侧，收起时往自己那边收。
 
       // 临时测试的地址与模型记在本地，Key 只放 sessionStorage：
       // 关掉标签页就清掉，避免长期留在浏览器里。
@@ -1545,11 +1603,23 @@
         <div class="card chat-card" id="chat-card">
           <div class="chat-layout" id="chat-layout">
             <div class="chat-side-scrim" id="chat-side-scrim"></div>
+            <div class="chat-conv-scrim" id="chat-conv-scrim"></div>
+
+            <!-- 左侧：对话列表（往左收） -->
+            <aside class="chat-conv" id="chat-conv">
+              <div class="chat-conv__head">
+                <button class="chat-conv__new" id="chat-conv-new" type="button">${icon('plus', 14)}开启新对话</button>
+                <button class="btn btn--ghost btn--icon btn--sm chat-conv__collapse" id="chat-conv-collapse" title="收起对话列表" aria-label="收起对话列表">${icon('chevronLeft', 15)}</button>
+              </div>
+              <div class="chat-conv__body" id="chat-conv-list"></div>
+            </aside>
+
+            <!-- 右侧：模型配置（往右收） -->
             <aside class="chat-side" id="chat-side">
               <div class="chat-side__head">
                 ${icon('settings', 15)}
                 <span class="chat-side__title">模型配置</span>
-                <button class="btn btn--ghost btn--icon btn--sm chat-side__close" id="chat-side-close" title="收起设置" aria-label="收起设置">${icon('x', 15)}</button>
+                <button class="btn btn--ghost btn--icon btn--sm chat-side__close" id="chat-side-close" title="收起设置" aria-label="收起设置">${icon('chevronRight', 15)}</button>
               </div>
               <div class="chat-side__body">
                 <div class="chat-field chat-custom-toggle">
@@ -1631,34 +1701,58 @@
                 <button class="btn btn--sm btn--block" id="chat-clear">${icon('trash', 13)}清空对话</button>
               </div>
             </aside>
-            <div class="chat-main">
+
+            <!-- 中间：对话区 -->
+            <div class="chat-main" id="chat-main">
               <div class="chat-log-wrap">
                 <div class="chat-log" id="chat-log"></div>
                 <button class="chat-to-bottom" id="chat-to-bottom" type="button" title="回到底部" aria-label="回到底部" hidden>${icon('down', 18)}</button>
               </div>
               <div class="chat-compose">
                 <div class="chat-attachments" id="chat-attachments"></div>
+                <!-- 空会话时的问候语，浮在输入框上方 -->
+                <div class="chat-hello" id="chat-hello">你好，有什么我可以帮你的？</div>
                 <div class="chat-input">
-                  <button class="btn btn--ghost btn--icon" id="chat-pick-image" title="添加图片">${icon('image', 16)}</button>
-                  <button class="btn btn--ghost btn--icon" id="chat-pick-file" title="添加附件">${icon('paperclip', 16)}</button>
-                  <textarea class="textarea" id="chat-text" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行；可粘贴或拖入图片/附件"></textarea>
-                  <button class="btn btn--primary" id="chat-send">${icon('send', 14)}发送</button>
+                  <textarea class="textarea chat-input__text" id="chat-text" rows="1" placeholder="给懒大猫发消息，Enter 发送，Shift+Enter 换行；可粘贴或拖入图片/附件"></textarea>
+                  <div class="chat-input__bar">
+                    <div class="chat-input__chips">
+                      <select class="chat-chip chat-chip--model" id="chat-chip-model" aria-label="模型">
+                        ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
+                        <option value="${TEST_MODEL_ID}"${initial === TEST_MODEL_ID ? ' selected' : ''}>临时测试（直连上游）</option>
+                      </select>
+                      ${switchEl(true, '流式', 'id="chat-chip-stream" title="关闭后等完整回复再一次性显示"')}
+                    </div>
+                    <div class="chat-input__acts">
+                      <button class="btn btn--ghost btn--icon" id="chat-pick-image" title="添加图片">${icon('image', 16)}</button>
+                      <button class="btn btn--ghost btn--icon" id="chat-pick-file" title="添加附件">${icon('paperclip', 16)}</button>
+                      <button class="btn btn--primary btn--icon" id="chat-send" title="发送">${icon('send', 15)}</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
           <input type="file" id="chat-image-input" accept="image/*" multiple hidden>
           <input type="file" id="chat-file-input" multiple hidden>
+          <!-- 侧栏收起后贴边留一个把手，方便再拉出来 -->
+          <button class="chat-edge chat-edge--left" id="chat-conv-open" type="button" title="展开对话列表" aria-label="展开对话列表" hidden>${icon('chevronRight', 16)}</button>
+          <button class="chat-edge chat-edge--right" id="chat-side-open" type="button" title="展开模型配置" aria-label="展开模型配置" hidden>${icon('chevronLeft', 16)}</button>
         </div>`;
 
       const card = root.querySelector('#chat-card');
       const layout = root.querySelector('#chat-layout');
-      // 顶栏那组控件（模型下拉 / 流式开关 / 展开设置）挂在页面外壳的顶栏上，不在 root 里
-      const topBar = actions.querySelector('#chat-top');
-      const sideToggle = actions.querySelector('#chat-side-toggle');
+      // 左侧对话列表
+      const convList = root.querySelector('#chat-conv-list');
+      const convNew = root.querySelector('#chat-conv-new');
+      const convCollapse = root.querySelector('#chat-conv-collapse');
+      const convOpen = root.querySelector('#chat-conv-open');
+      const convScrim = root.querySelector('#chat-conv-scrim');
+      // 右侧模型配置
       const sideClose = root.querySelector('#chat-side-close');
+      const sideOpen = root.querySelector('#chat-side-open');
       const sideScrim = root.querySelector('#chat-side-scrim');
-      const topModelSel = actions.querySelector('#chat-top-model');
+      // 模型下拉和流式开关在输入框里有一份，配置栏里也有一份，两边同步
+      const chipModelSel = root.querySelector('#chat-chip-model');
       const modelSel = root.querySelector('#chat-model');
       const kindEl = root.querySelector('#chat-kind');
       const modelMeta = root.querySelector('.chat-model-meta');
@@ -1674,14 +1768,16 @@
       const routeEl = root.querySelector('#chat-route');
       const routeToggle = root.querySelector('#chat-route-toggle');
       const log = root.querySelector('#chat-log');
+      const hello = root.querySelector('#chat-hello');
+      const chatMain = root.querySelector('#chat-main');
       const text = root.querySelector('#chat-text');
       // 触摸设备上程序化聚焦会弹出虚拟键盘，切模型 / 改开关后不应打断输入
       const focusText = () => { if (!isCoarsePointer) text.focus(); };
       const sendBtn = root.querySelector('#chat-send');
       const streamToggle = root.querySelector('#chat-stream');
       const streamInput = streamToggle.querySelector('input');
-      const streamTop = actions.querySelector('#chat-stream-top');
-      const streamTopInput = streamTop.querySelector('input');
+      const chipStream = root.querySelector('#chat-chip-stream');
+      const chipStreamInput = chipStream.querySelector('input');
       const toolsSwitch = root.querySelector('#chat-tools');
       const toolsInput = toolsSwitch.querySelector('input');
       const customSwitch = root.querySelector('#chat-custom-switch');
@@ -1735,11 +1831,15 @@
         return '<div class="msg__avatar">🐱</div>';
       };
 
-      // 对话只有一份，存在页面外的 chatStore 里，切页面和后台请求共用
-      const history = chatStore.history;
+      // 会话数据存在页面外的 chatStore 里，切页面和后台请求共用。
+      // history 指向当前会话的消息数组；切会话时重新指向并重画消息区。
+      let history = chatStore.history;
       if (!chatStore.loaded) {
         chatStore.loaded = true;
-        history.push(...loadChatHistory());
+        const st = loadChatSessions();
+        chatStore.sessions = st.sessions;
+        chatStore.activeId = st.activeId;
+        history = chatStore.history;
       }
       let sending = false;
       // 暂存的图片/附件，发送后清空
@@ -1752,11 +1852,11 @@
       try { streaming = localStorage.getItem(STREAM_KEY) !== '0'; } catch (e) { /* 存储不可用时默认开启 */ }
       let customMode = false;
       try { customMode = localStorage.getItem(CUSTOM_KEY) === '1'; } catch (e) { /* 存储不可用 */ }
-      // 流式开关在设置栏和收起后的顶栏各有一个，始终同步
+      // 流式开关在配置栏和输入框芯片里各有一个，始终同步
       const setStreaming = (on) => {
         streaming = on;
         streamInput.checked = on;
-        streamTopInput.checked = on;
+        chipStreamInput.checked = on;
         try { localStorage.setItem(STREAM_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
       };
       setStreaming(streaming);
@@ -1764,8 +1864,8 @@
         setStreaming(streamInput.checked);
         focusText();
       };
-      streamTopInput.onchange = () => {
-        setStreaming(streamTopInput.checked);
+      chipStreamInput.onchange = () => {
+        setStreaming(chipStreamInput.checked);
         focusText();
       };
 
@@ -1903,10 +2003,12 @@
       };
       const syncAllParams = () => paramEls.forEach(syncParamRow);
 
-      // 桌面端可以收起设置栏；窄屏下这个状态不生效（窄屏用抽屉）
+      // 桌面端可以收起左右两侧；窄屏下改成抽屉开合
       const SIDE_KEY = 'ldmapi.chat.sidebar';
+      const CONV_KEY = 'ldmapi.chat.conv';
       try {
         if (localStorage.getItem(SIDE_KEY) === '0') layout.classList.add('is-settings-collapsed');
+        if (localStorage.getItem(CONV_KEY) === '0') layout.classList.add('is-conv-collapsed');
       } catch (e) { /* 存储不可用时保持展开 */ }
 
       const isTestMode = () => modelSel.value === TEST_MODEL_ID;
@@ -1983,6 +2085,12 @@
           ? !!(testUrlInput.value.trim() && testModelID())
           : usable.some((m) => m.id === modelSel.value);
         log.classList.toggle('is-ready', ready);
+        // 空会话时把输入区整块居中，并换一句问候
+        const empty = history.length === 0 && log.childElementCount === 0;
+        if (chatMain) chatMain.classList.toggle('is-empty', empty);
+        if (hello) {
+          hello.textContent = ready ? '你好，有什么我可以帮你的？' : '先在右边选个模型，就可以开始聊天啦';
+        }
       };
 
       const refreshMeta = () => {
@@ -1991,7 +2099,7 @@
         testPanel.hidden = !test;
         modelMeta.hidden = test;
         if (test) {
-          topModelSel.value = TEST_MODEL_ID;
+          chipModelSel.value = TEST_MODEL_ID;
           testHint.textContent = usable.length
             ? '临时直连上游（OpenAI 兼容），不经过渠道和模型配置，也不写入调用日志。地址与模型保存在本机，Key 只在当前标签页有效。'
             : '当前没有可用的渠道模型，已切换到临时测试（OpenAI 兼容）。地址与模型保存在本机，Key 只在当前标签页有效，不写入调用日志。';
@@ -2006,7 +2114,7 @@
         } else {
           setRouteText('来源：' + (m.channel_id || '') + (m.channel_name ? '（' + m.channel_name + '）' : ''));
         }
-        topModelSel.value = m.id;
+        chipModelSel.value = m.id;
       };
 
       routeToggle.onclick = () => setRouteExpanded(!routeExpanded);
@@ -2633,7 +2741,7 @@
         history.splice(0, history.length);
         staged = [];
         renderStaged();
-        persistChatHistory();
+        saveSessions();
         log.innerHTML = '';
         setBusy(false);
         if (customMode) syncCustomBody();
@@ -2652,13 +2760,13 @@
             chatStore.model = TEST_MODEL_ID;
             persistChatModel(TEST_MODEL_ID);
             modelSel.value = TEST_MODEL_ID;
-            topModelSel.value = TEST_MODEL_ID;
+            chipModelSel.value = TEST_MODEL_ID;
             refreshMeta();
           } else if (usable.some((m) => m.id === run.sentModel.id)) {
             chatStore.model = run.sentModel.id;
             persistChatModel(run.sentModel.id);
             modelSel.value = run.sentModel.id;
-            topModelSel.value = run.sentModel.id;
+            chipModelSel.value = run.sentModel.id;
             refreshMeta();
           }
           const bubble = addMsg('assistant', '', false, run.sentModel.provider_icon);
@@ -2667,6 +2775,182 @@
         }
         // 回到聊天页时先落在最后一条上
         scrollToBottom(true);
+        syncEmptyHint();
+      };
+
+      // ---------- 对话列表 ----------
+
+      // 会话按「今天 / 昨天 / 近 7 天 / 更早」分组，和 DeepSeek 的习惯一致
+      const convGroupOf = (ts) => {
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const day = 86400000;
+        if (ts >= startOfToday) return '今天';
+        if (ts >= startOfToday - day) return '昨天';
+        if (ts >= startOfToday - 7 * day) return '近 7 天';
+        return '更早';
+      };
+
+      const activeSession = () => chatStore.sessions.find((x) => x.id === chatStore.activeId) || null;
+
+      // 重画左侧列表：按时间分组，当前会话高亮
+      const renderConvList = () => {
+        if (!convList) return;
+        convList.innerHTML = '';
+        const groups = [];
+        const order = ['今天', '昨天', '近 7 天', '更早'];
+        const sorted = chatStore.sessions.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        sorted.forEach((s) => {
+          const g = convGroupOf(s.updatedAt || s.createdAt || Date.now());
+          let bucket = groups.find((x) => x.name === g);
+          if (!bucket) {
+            bucket = { name: g, items: [] };
+            // 分组按「今天 → 昨天 → 近 7 天 → 更早」的顺序插入
+            const idx = order.indexOf(g);
+            let at = groups.length;
+            for (let i = 0; i < groups.length; i += 1) {
+              if (order.indexOf(groups[i].name) > idx) { at = i; break; }
+            }
+            groups.splice(at, 0, bucket);
+          }
+          bucket.items.push(s);
+        });
+        groups.forEach((g) => {
+          const head = document.createElement('div');
+          head.className = 'chat-conv__group';
+          head.textContent = g.name;
+          convList.appendChild(head);
+          g.items.forEach((s) => {
+            const item = document.createElement('div');
+            item.className = 'chat-conv__item' + (s.id === chatStore.activeId ? ' is-active' : '');
+            const title = document.createElement('span');
+            title.className = 'chat-conv__title';
+            title.textContent = s.title || '新对话';
+            title.title = s.title || '新对话';
+            const del = document.createElement('button');
+            del.className = 'chat-conv__del';
+            del.type = 'button';
+            del.title = '删除对话';
+            del.innerHTML = icon('trash', 12);
+            del.onclick = (e) => {
+              e.stopPropagation();
+              removeSession(s.id);
+            };
+            item.appendChild(title);
+            item.appendChild(del);
+            item.onclick = () => switchSession(s.id);
+            convList.appendChild(item);
+          });
+        });
+        if (!convList.children.length) {
+          const empty = document.createElement('div');
+          empty.className = 'chat-conv__empty';
+          empty.textContent = '还没有对话';
+          convList.appendChild(empty);
+        }
+      };
+
+      // 会话标题和更新时间跟着消息走：标题取第一条用户消息
+      const touchSession = () => {
+        const s = activeSession();
+        if (!s) return;
+        const t = chatSessionTitle(s.messages);
+        if (t) s.title = t;
+        s.updatedAt = Date.now();
+        s.model = modelSel.value;
+      };
+      // 消息有变动：更新会话元信息 → 落盘 → 重画左侧列表
+      const saveSessions = () => {
+        touchSession();
+        persistChatSessions();
+        renderConvList();
+      };
+
+      // 切换会话：先把当前会话的消息存回它自己，再换 activeId 重画消息区
+      const switchSession = (id) => {
+        if (id === chatStore.activeId) return;
+        if (chatStore.run) {
+          Toast.info('正在生成中，等这一条回复结束再切换');
+          return;
+        }
+        const target = chatStore.sessions.find((x) => x.id === id);
+        if (!target) return;
+        chatStore.activeId = id;
+        history = chatStore.history;
+        // 每个会话记住自己用的模型，切换回来时恢复
+        if (target.model) {
+          const m = usable.find((x) => x.id === target.model);
+          if (m) {
+            modelSel.value = target.model;
+            chipModelSel.value = target.model;
+            chatStore.model = target.model;
+            persistChatModel(target.model);
+          }
+        }
+        persistChatSessions();
+        renderConvList();
+        restore();
+        focusText();
+      };
+
+      // 新建一条空会话并切过去；当前本来就是空会话就不再重复建
+      const createSession = () => {
+        if (chatStore.run) {
+          Toast.info('正在生成中，等这一条回复结束再新建');
+          return;
+        }
+        const cur = activeSession();
+        // 已经停在一条没有消息的会话上了，不用再建一条
+        if (cur && !cur.messages.length) {
+          focusText();
+          return;
+        }
+        const s = {
+          id: chatSessionId(),
+          title: '',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          model: modelSel.value,
+          messages: [],
+        };
+        chatStore.sessions.unshift(s);
+        chatStore.activeId = s.id;
+        history = chatStore.history;
+        persistChatSessions();
+        renderConvList();
+        restore();
+        focusText();
+      };
+
+      // 删除一条会话；删掉当前会话时退到相邻的一条
+      const removeSession = (id) => {
+        if (chatStore.run) {
+          Toast.info('正在生成中，等这一条回复结束再删除');
+          return;
+        }
+        const idx = chatStore.sessions.findIndex((x) => x.id === id);
+        if (idx < 0) return;
+        const wasActive = id === chatStore.activeId;
+        chatStore.sessions.splice(idx, 1);
+        if (!chatStore.sessions.length) {
+          // 至少留一个空会话
+          chatStore.sessions.push({
+            id: chatSessionId(), title: '', createdAt: Date.now(), updatedAt: Date.now(),
+            model: modelSel.value, messages: [],
+          });
+        }
+        if (wasActive) {
+          const next = chatStore.sessions[Math.min(idx, chatStore.sessions.length - 1)];
+          chatStore.activeId = next.id;
+          history = chatStore.history;
+          if (next.model && usable.some((x) => x.id === next.model)) {
+            modelSel.value = next.model;
+            chipModelSel.value = next.model;
+          }
+          restore();
+        }
+        persistChatSessions();
+        renderConvList();
       };
 
       // 生成过程中发送按钮变成停止按钮，点击中断流式请求
@@ -2675,16 +2959,17 @@
         sendBtn.disabled = false;
         sendBtn.classList.toggle('btn--primary', !busy);
         sendBtn.classList.toggle('btn--danger', busy);
-        sendBtn.innerHTML = busy ? icon('stop', 14) + '停止' : icon('send', 14) + '发送';
-        sendBtn.title = busy ? '停止生成' : '';
+        // 发送按钮是圆形图标键，文字放 tooltip 里
+        sendBtn.innerHTML = busy ? icon('stop', 15) : icon('send', 15);
+        sendBtn.title = busy ? '停止生成' : '发送';
         streamInput.disabled = busy || customMode;
         streamToggle.classList.toggle('is-disabled', busy || customMode);
-        streamTopInput.disabled = busy || customMode;
-        streamTop.classList.toggle('is-disabled', busy || customMode);
+        chipStreamInput.disabled = busy || customMode;
+        chipStream.classList.toggle('is-disabled', busy || customMode);
         toolsInput.disabled = busy || customMode;
         toolsSwitch.classList.toggle('is-disabled', busy || customMode);
         modelSel.disabled = busy || customMode;
-        topModelSel.disabled = busy || customMode;
+        chipModelSel.disabled = busy || customMode;
         paramsReset.disabled = busy || customMode;
         syncAllParams();
         customSwitchInput.disabled = busy;
@@ -2756,7 +3041,7 @@
           // 自定义模式要先按当前历史算出位置，再动 history
           if (customMode) editCustomMessages(entry, 'delete');
           history.splice(idx, 1);
-          persistChatHistory();
+          saveSessions();
         }
         msgEl.remove();
         Toast.success('消息已删除');
@@ -2777,7 +3062,7 @@
           return;
         }
         history.splice(idx + 1);
-        persistChatHistory();
+        saveSessions();
         const all = [...log.querySelectorAll('.msg')];
         const pos = all.indexOf(msgEl);
         if (pos >= 0) all.slice(pos + 1).forEach((el) => el.remove());
@@ -3077,13 +3362,13 @@
           updateCustomHint();
         }
         modelSel.disabled = on || sending;
-        topModelSel.disabled = on || sending;
+        chipModelSel.disabled = on || sending;
         paramsReset.disabled = on || sending;
         syncAllParams();
         streamInput.disabled = on || sending;
         streamToggle.classList.toggle('is-disabled', on || sending);
-        streamTopInput.disabled = on || sending;
-        streamTop.classList.toggle('is-disabled', on || sending);
+        chipStreamInput.disabled = on || sending;
+        chipStream.classList.toggle('is-disabled', on || sending);
         toolsInput.disabled = on || sending;
         toolsSwitch.classList.toggle('is-disabled', on || sending);
         customEditor.disabled = sending;
@@ -3699,7 +3984,7 @@
             }
           }
           history.push(res.entry);
-          persistChatHistory();
+          saveSessions();
         }
         if (chatStore.run === run) chatStore.run = null;
         const v = run.view;
@@ -3733,13 +4018,13 @@
           chatStore.model = TEST_MODEL_ID;
           persistChatModel(TEST_MODEL_ID);
           modelSel.value = TEST_MODEL_ID;
-          topModelSel.value = TEST_MODEL_ID;
+          chipModelSel.value = TEST_MODEL_ID;
           refreshMeta();
         } else if (usable.some((m) => m.id === sentModel.id)) {
           chatStore.model = sentModel.id;
           persistChatModel(sentModel.id);
           modelSel.value = sentModel.id;
-          topModelSel.value = sentModel.id;
+          chipModelSel.value = sentModel.id;
           refreshMeta();
         }
         setBusy(true);
@@ -3763,7 +4048,7 @@
           // 自定义请求体：移除这条错误，再用编辑器里的 JSON 重发
           const idx = history.indexOf(entry);
           if (idx >= 0) history.splice(idx);
-          persistChatHistory();
+          saveSessions();
           const all = [...log.querySelectorAll('.msg')];
           const pos = all.indexOf(msgEl);
           if (pos >= 0) all.slice(pos).forEach((el) => el.remove());
@@ -3777,7 +4062,7 @@
         const sentModel = currentModel();
         // 重试点之后的消息全部丢弃，保证上下文连续
         history.splice(idx);
-        persistChatHistory();
+        saveSessions();
         const all = [...log.querySelectorAll('.msg')];
         const pos = all.indexOf(msgEl);
         if (pos >= 0) all.slice(pos).forEach((el) => el.remove());
@@ -3801,7 +4086,7 @@
         const bubble = addMsg('user', display);
         const entry = { role: 'user', content, display };
         history.push(entry);
-        persistChatHistory();
+        saveSessions();
         addMessageActions(bubble.closest('.msg'), entry);
         staged = [];
         renderStaged();
@@ -3850,7 +4135,7 @@
         history.splice(0, history.length, ...payload.messages
           .filter((m) => m && typeof m === 'object' && (m.role === 'user' || m.role === 'assistant'))
           .map((m) => ({ role: m.role, content: m.content })));
-        persistChatHistory();
+        saveSessions();
         if (bubble) {
           // 刚插进去的气泡对应请求体里最后一条用户消息
           const lastUser = [...history].reverse().find((m) => m && m.role === 'user');
@@ -3865,15 +4150,7 @@
 
       // 桌面端收起 / 展开设置栏；窄屏下改为抽屉开合
       const isNarrow = () => window.matchMedia('(max-width: 900px)').matches;
-      // 配置栏没展开时，模型下拉 / 流式开关 / 展开设置按钮都挂在顶栏最右边
-      const syncTopBar = () => {
-        if (!topBar) return;
-        const collapsed = isNarrow()
-          ? !layout.classList.contains('is-settings-open')
-          : layout.classList.contains('is-settings-collapsed');
-        topBar.hidden = !collapsed;
-        if (actions) actions.classList.toggle('is-empty', !collapsed);
-      };
+      // 右侧模型配置栏：桌面端往右收起，窄屏从右边滑出
       const setSideOpen = (on) => {
         if (isNarrow()) {
           layout.classList.toggle('is-settings-open', on);
@@ -3881,13 +4158,37 @@
           layout.classList.toggle('is-settings-collapsed', !on);
           try { localStorage.setItem(SIDE_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
         }
-        syncTopBar();
+        syncEdges();
       };
-      sideToggle.onclick = () => setSideOpen(true);
+      // 左侧对话列表：桌面端往左收起，窄屏从左边滑出
+      const setConvOpen = (on) => {
+        if (isNarrow()) {
+          layout.classList.toggle('is-conv-open', on);
+        } else {
+          layout.classList.toggle('is-conv-collapsed', !on);
+          try { localStorage.setItem(CONV_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
+        }
+        syncEdges();
+      };
+      // 侧栏收起后，边缘留一个把手把面板再拉出来
+      const syncEdges = () => {
+        const convClosed = isNarrow()
+          ? !layout.classList.contains('is-conv-open')
+          : layout.classList.contains('is-conv-collapsed');
+        const sideClosed = isNarrow()
+          ? !layout.classList.contains('is-settings-open')
+          : layout.classList.contains('is-settings-collapsed');
+        convOpen.hidden = !convClosed;
+        sideOpen.hidden = !sideClosed;
+      };
       sideClose.onclick = () => setSideOpen(false);
+      sideOpen.onclick = () => setSideOpen(true);
       sideScrim.onclick = () => setSideOpen(false);
-      // 桌面 / 窄屏来回切换时，顶栏那组控件要跟着配置栏的显示状态走
-      window.addEventListener('resize', syncTopBar);
+      convCollapse.onclick = () => setConvOpen(false);
+      convOpen.onclick = () => setConvOpen(true);
+      convScrim.onclick = () => setConvOpen(false);
+      // 桌面 / 窄屏来回切换时，把手的显隐要跟着走
+      window.addEventListener('resize', syncEdges);
 
       // 参数值变更与单项开关
       paramEls.forEach((row) => {
@@ -3921,15 +4222,15 @@
 
       // 换模型只更新左侧的路由信息，已有的对话原样保留
       modelSel.onchange = () => {
-        topModelSel.value = modelSel.value;
+        chipModelSel.value = modelSel.value;
         chatStore.model = modelSel.value;
         persistChatModel(modelSel.value);
         refreshMeta();
         focusText();
       };
       // 收起设置栏后，顶部下拉框也能直接换模型
-      topModelSel.onchange = () => {
-        modelSel.value = topModelSel.value;
+      chipModelSel.onchange = () => {
+        modelSel.value = chipModelSel.value;
         chatStore.model = modelSel.value;
         persistChatModel(modelSel.value);
         refreshMeta();
@@ -4036,6 +4337,8 @@
         if (sending) stopStream();
         else doSend();
       };
+      // 左侧列表：新建对话
+      convNew.onclick = () => createSession();
       // 清空对话：点一下直接清，不再二次确认
       root.querySelector('#chat-clear').onclick = () => {
         const had = history.length;
@@ -4138,9 +4441,7 @@
 
       const onLeave = () => {
         if (routeObserver) routeObserver.disconnect();
-        window.removeEventListener('resize', syncTopBar);
-        // 顶栏那组控件跟着页面一起走，别在别的页面留个空壳
-        if (actions) actions.classList.remove('is-empty');
+        window.removeEventListener('resize', syncEdges);
         if (chatStore.view === view) chatStore.view = null;
         const run = chatStore.run;
         if (run && run.view === view) {
@@ -4159,7 +4460,8 @@
 
       restore();
       setCustomMode(customMode);
-      syncTopBar();
+      renderConvList();
+      syncEdges();
       if (!isCoarsePointer) setTimeout(() => text.focus(), 120);
     },
   });

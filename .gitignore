@@ -24,3 +24,4 @@
 # 前端验证脚本的截图和依赖
 /_test/shots/
 /_test/node_modules/
+/_test/tmp/
