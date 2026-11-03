@@ -1337,6 +1337,8 @@
     document.getElementById('page-desc').textContent = def.desc || '';
     const actions = document.getElementById('topbar-actions');
     actions.innerHTML = '';
+    // 页面可能把整组按钮收起来（is-empty），切页时复位，别把顶栏右侧留空
+    actions.classList.remove('is-empty');
     const inner = document.getElementById('content-inner');
     // 对话页需要撑满内容区；切到其它页面时恢复默认高度
     inner.classList.remove('content__inner--fill');

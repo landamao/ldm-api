@@ -1,0 +1,17 @@
+{
+  "name": "ldmapi-test",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "懒大猫 API 的前端验证脚本（playwright-core + 系统自带 Edge）",
+  "scripts": {
+    "verify:chat": "node verify-chat.mjs",
+    "verify:collapse": "node verify-collapse.mjs",
+    "verify:drawer": "node verify-drawer.mjs",
+    "verify:topbar": "node verify-topbar.mjs",
+    "verify:clear": "node verify-clear.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

@@ -3169,7 +3169,7 @@ html[data-theme="dark"] .msg__file { background: rgba(255, 255, 255, .08); }
 }
 .attachment-unsupported__title { font-size: 13px; font-weight: 750; color: var(--text-2); }
 
-/* 在线聊天：左侧模型配置栏 + 右侧对话区 */
+/* 在线聊天：左侧对话区 + 右侧模型配置栏 */
 .chat-card {
   position: relative;
   display: flex;
@@ -3197,14 +3197,16 @@ html[data-theme="dark"] .msg__file { background: rgba(255, 255, 255, .08); }
 }
 html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); }
 .chat-layout { display: flex; flex: 1; min-height: 0; position: relative; }
+/* 配置栏在右边：order 把 aside 排到对话区之后 */
 .chat-side {
+  order: 2;
   width: 292px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
   background: var(--surface-2);
-  border-right: 2px dashed var(--border-line);
+  border-left: 2px dashed var(--border-line);
 }
 .chat-side__head {
   display: flex;
@@ -3331,27 +3333,60 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
 .chat-param .switch__track { width: 34px; height: 20px; }
 .chat-param .switch__track::after { width: 13px; height: 13px; }
 .chat-param .switch input:checked + .switch__track::after { transform: translateX(11px); }
-.chat-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.chat-mobile-bar {
-  display: none;
+.chat-main { order: 1; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+/* 顶栏里的聊天控件：配置栏收起时才出现，靠右排布（模型下拉 → 流式开关 → 展开设置） */
+.chat-top {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px;
-  border-bottom: 2px dashed var(--border-line);
-  background: var(--surface);
+  gap: 8px;
 }
-.chat-mobile-bar__model {
+.chat-top[hidden] { display: none; }
+.chat-top__model {
   width: auto;
-  flex: 1;
-  min-width: 0;
-  max-width: 380px;
+  min-width: 132px;
+  max-width: 260px;
   height: 32px;
   font-family: var(--mono);
   font-size: 12px;
 }
-.chat-mobile-bar .switch { flex-shrink: 0; gap: 6px; }
-.chat-mobile-bar .switch__label { font-size: 11.5px; }
+.chat-top .switch { flex-shrink: 0; gap: 6px; }
+.chat-top .switch__label { font-size: 11.5px; }
+/* 整组都收起来时，顶栏右侧不留空位 */
+#topbar-actions.is-empty { display: none; }
 .chat-main .chat-log { border-radius: 0; border: none; }
+/* 对话区外面套一层，用来放「回到底部」的悬浮按钮 */
+.chat-log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
+.chat-log-wrap > .chat-log { flex: 1; min-width: 0; }
+.chat-to-bottom {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  z-index: 4;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 2px solid var(--leaf-700);
+  background-color: var(--leaf-500);
+  background-image: linear-gradient(180deg, var(--leaf-400), var(--leaf-600));
+  color: #fff;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, .26);
+  cursor: pointer;
+  box-shadow: 0 3px 0 var(--leaf-700), inset 0 1px 0 rgba(255, 255, 255, .45);
+  transition: transform .12s cubic-bezier(.3, 1.4, .5, 1), box-shadow .12s;
+  animation: riseIn .2s cubic-bezier(.2, .9, .3, 1);
+}
+.chat-to-bottom:hover {
+  background-image: linear-gradient(180deg, var(--leaf-300), var(--leaf-500));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 0 var(--leaf-700), inset 0 1px 0 rgba(255, 255, 255, .5);
+}
+.chat-to-bottom:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--leaf-700); }
+.chat-to-bottom:focus-visible { outline: 3px solid var(--leaf-300); outline-offset: 2px; }
+.chat-to-bottom[hidden] { display: none; }
+html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
 .chat-side-scrim { display: none; }
 .chat-custom {
   display: flex;
@@ -3432,7 +3467,6 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
 
 @media (min-width: 901px) {
   .chat-layout.is-settings-collapsed .chat-side { display: none; }
-  .chat-layout.is-settings-collapsed .chat-mobile-bar { display: flex; }
 }
 
 @media (max-width: 900px) {
@@ -3440,15 +3474,14 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
     position: absolute;
     top: 0;
     bottom: 0;
-    left: 0;
+    right: 0;
     z-index: 6;
     width: min(320px, 86%);
-    transform: translateX(-100%);
+    transform: translateX(100%);
     transition: transform .22s cubic-bezier(.4, 0, .2, 1);
     box-shadow: var(--shadow-lg);
   }
   .chat-layout.is-settings-open .chat-side { transform: none; }
-  .chat-mobile-bar { display: flex; }
   .chat-layout.is-settings-open .chat-side-scrim {
     display: block;
     position: absolute;
@@ -3457,6 +3490,8 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
     background: var(--overlay);
     animation: fadeIn .16s ease;
   }
+  /* 窄屏顶栏横向可滚动，模型下拉别把整行撑爆 */
+  .chat-top__model { min-width: 110px; max-width: 180px; }
 }
 
 .typing { display: inline-flex; gap: 4px; align-items: center; height: 20px; }
