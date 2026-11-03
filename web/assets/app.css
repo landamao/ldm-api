@@ -2802,8 +2802,17 @@ html[data-theme="dark"] .model-card__type.is-custom { color: #e8bd83; }
 }
 .msg__avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 9px; display: block; }
 .msg__avatar--logo { background: #fff; padding: 0; overflow: hidden; }
-.msg__avatar--provider { background: #fff; color: #16191e; }
+.msg__avatar--provider { background: #fff; color: #16191e; border-color: var(--card-line); }
 html[data-theme="dark"] .msg__avatar--provider { background: rgba(255, 255, 255, .92); }
+/* 图标是图片（直链 / data URI）时它自带底图，不用再垫白底板，否则图标外面会多出一圈白；
+   形状跟用户头像保持一致：30px 方框 + 2px 描边 + 9px 圆角，图片铺满内容区（26px），只把底色留空 */
+.msg__avatar--image,
+html[data-theme="dark"] .msg__avatar--image {
+  background: transparent;
+  padding: 0;
+  overflow: hidden;
+}
+.msg__avatar--image .provider-icon { object-fit: cover; }
 .msg__bubble {
   position: relative;
   padding: 10px 14px;

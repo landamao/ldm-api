@@ -1879,11 +1879,17 @@
 
       // 用户消息头像用站点图标；模型回复头像用该模型所属提供商的图标。
       const siteLogo = ((State.settings && State.settings.logo) || 'assets/logo.jpg').trim() || 'assets/logo.jpg';
+      // 图片类图标（直链 / data URI）自己就带底色，不用再垫白底板
+      const isImageIcon = (key) => /^(https?:\/\/|data:image\/)/i.test(key || '');
       const avatarHtml = (role, providerIconKey) => {
         if (role === 'user') {
           return `<div class="msg__avatar msg__avatar--logo"><img src="${esc(siteLogo)}" alt=""></div>`;
         }
         if (providerIconKey) {
+          if (isImageIcon(providerIconKey)) {
+            // 26px = 30px 方框去掉左右各 2px 描边，图片正好铺满内容区，形状跟用户头像一致
+            return `<div class="msg__avatar msg__avatar--provider msg__avatar--image">${providerIcon(providerIconKey, 26)}</div>`;
+          }
           return `<div class="msg__avatar msg__avatar--provider">${providerIcon(providerIconKey, 16)}</div>`;
         }
         return '<div class="msg__avatar">🐱</div>';
