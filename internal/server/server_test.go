@@ -2094,16 +2094,15 @@ func TestTokensPerSecond(t *testing.T) {
 		want     float64
 	}{
 		{"没有输出 token", store.Log{CompletionTokens: 0, LatencyMs: 1000, FirstByteMs: 100}, 0, true, 0},
-		{"按生成耗时计算", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0, true, 25},
-		{"没有首字时间就用总耗时", store.Log{CompletionTokens: 100, LatencyMs: 4000}, 0, true, 25},
-		{"首字晚于总耗时则退回总耗时", store.Log{CompletionTokens: 50, LatencyMs: 1000, FirstByteMs: 2000}, 0, true, 50},
+		{"按实测生成窗口计算", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 2000, true, 50},
+		// 没有实测窗口（上游一次写完、或整段在同一毫秒内写完）：不能退回
+		// 「总耗时 - 首字」当分母，那段时间里混着收尾，会算出几千 t/s 的假速度
+		{"没有实测窗口不算速度", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0, true, 0},
 		{"耗时为 0 不除零", store.Log{CompletionTokens: 10, LatencyMs: 0}, 0, true, 0},
 		// 没有按流式请求上游：上游一次性返回完整 JSON，没有生成窗口，不展示速度
 		{"非流式请求上游不算速度", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 0, false, 0},
 		// 客户端要非流式、网关按流式收完再返回：上游确实是流式吐的，速度照样算
 		{"客户端非流式但流式请求了上游", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 2000, true, 50},
-		// 转发层量到的真实输出窗口优先于「总耗时 - 首字」
-		{"优先用真实输出窗口", store.Log{CompletionTokens: 100, LatencyMs: 5000, FirstByteMs: 1000}, 2000, true, 50},
 		// 上游一次性吐完：首块到末块只差几毫秒，速度没有意义
 		{"一次性吐完不算速度", store.Log{CompletionTokens: 800, LatencyMs: 3, FirstByteMs: 3}, 1, true, 0},
 		{"输出窗口过短不算速度", store.Log{CompletionTokens: 800, LatencyMs: 4000, FirstByteMs: 1000}, 20, true, 0},
@@ -2132,6 +2131,9 @@ func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
 		// wantSSE 是日志里的「流式」徽章，只看客户端请求；wantTps 看上游是不是流式。
 		wantSSE bool
 		wantTps bool
+		// minTailMs 要求「总耗时 - 首字」至少有这么长，用来证明这段时间
+		// 全在首字之后，没有被当成生成窗口
+		minTailMs int64
 	}{
 		{
 			// 真正的流式：分块之间有间隔，速度有意义
@@ -2167,6 +2169,26 @@ func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
 				io.WriteString(w, "data: [DONE]\n\n")
 			},
 			reqStream: true, wantSSE: true, wantTps: false,
+		},
+		{
+			// 内容一次性吐完，之后连接空转 250ms 才关（上游常见：发完
+			// [DONE] 不急着断）。日志里「总耗时 - 首字」看着有 250ms，
+			// 但那全是收尾，不能当生成窗口算出几千 t/s。
+			name: "burst-then-idle-tail",
+			upstream: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				for i := 0; i < 10; i++ {
+					io.WriteString(w, sseChunk)
+				}
+				io.WriteString(w, sseUsage)
+				io.WriteString(w, "data: [DONE]\n\n")
+				if fl, ok := w.(http.Flusher); ok {
+					fl.Flush()
+				}
+				time.Sleep(250 * time.Millisecond)
+			},
+			reqStream: true, wantSSE: true, wantTps: false, minTailMs: 200,
 		},
 		{
 			// 调用方要流式、上游回完整 JSON：徽章照旧标「流式」（客户端要的就是流式），
@@ -2261,6 +2283,11 @@ func TestLogStreamFlagFollowsRealResponse(t *testing.T) {
 			} else if l.TokensPerSec != 0 {
 				t.Errorf("不应记录速度，得到 %v", l.TokensPerSec)
 			}
+			if c.minTailMs > 0 {
+				if gap := l.LatencyMs - l.FirstByteMs; gap < c.minTailMs {
+					t.Errorf("首字到结束应有 >=%dms 的收尾空转，得到 %dms", c.minTailMs, gap)
+				}
+			}
 		})
 	}
 }
@@ -2295,9 +2322,9 @@ func TestStatsOverviewAverageSpeed(t *testing.T) {
 	s, _ := newTestServer(t, "stats-speed")
 	tok := store.Token{ID: "tk", Name: "测试"}
 
-	// 流式请求上游且有首字：计入平均速度（100 / (2000-500) ms）
+	// 流式请求上游、有实测生成窗口：计入平均速度（100 / 2000 ms）
 	s.record(tok, &relay.Request{Path: "/v1/chat/completions", Stream: true}, &relay.Result{
-		ModelID: "m", StatusCode: http.StatusOK, Stream: true, StreamGen: true,
+		ModelID: "m", StatusCode: http.StatusOK, Stream: true, StreamGen: true, GenMs: 2000,
 		Usage:     upstream.Usage{CompletionTokens: 100, TotalTokens: 100},
 		LatencyMs: 2000, FirstByteMs: 500,
 	})
@@ -2312,6 +2339,12 @@ func TestStatsOverviewAverageSpeed(t *testing.T) {
 		ModelID: "m", StatusCode: http.StatusOK, StreamGen: true, GenMs: 600,
 		Usage:     upstream.Usage{CompletionTokens: 100, TotalTokens: 100},
 		LatencyMs: 1500, FirstByteMs: 600,
+	})
+	// 上游一次性吐完：有首字、有总耗时，但没有实测窗口（GenMs 为 0），不计入
+	s.record(tok, &relay.Request{Path: "/v1/chat/completions", Stream: true}, &relay.Result{
+		ModelID: "m", StatusCode: http.StatusOK, Stream: true, StreamGen: true,
+		Usage:     upstream.Usage{CompletionTokens: 100, TotalTokens: 100},
+		LatencyMs: 1000, FirstByteMs: 500,
 	})
 
 	rec := httptest.NewRecorder()
@@ -2330,7 +2363,7 @@ func TestStatsOverviewAverageSpeed(t *testing.T) {
 	if got := current["speed_samples"].(float64); got != 2 {
 		t.Errorf("速度样本数应为 2，得到 %v", got)
 	}
-	wantSpeed := (1000.0/15 + 1000.0/6) / 2
+	wantSpeed := (1000.0/20 + 1000.0/6) / 2
 	if got := current["avg_speed"].(float64); math.Abs(got-wantSpeed) > 0.001 {
 		t.Errorf("平均速度应为 %.4f，得到 %v", wantSpeed, got)
 	}

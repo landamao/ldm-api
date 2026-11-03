@@ -36,7 +36,7 @@ chmod +x ldmapi-linux-amd64
 
 ```
   ╭──────────────────────────────────────────────────────────────╮
-  │  🐱 懒大猫 API   v1.23.18                                    │
+  │  🐱 懒大猫 API   v1.23.19                                    │
   │                                                              │
   │  控制台     http://127.0.0.1:6700                            │
   │  API 地址   http://127.0.0.1:6700/v1                         │
@@ -532,6 +532,10 @@ Gemini 的 `cachedContentTokenCount`，最终都以 OpenAI 的字段形式透出
 上游侧做了缓冲、自定义内容返回没有配置流式速度），两者只差几毫秒，用它们当分母会算出几万 t/s 这种没有意义
 的数值。生成窗口小于 50 毫秒的记录一律不计速度，也不计入数据看板的「平均速度」。
 
+没量到生成窗口的记录同样不计速度，也不会退回用「总耗时 − 首字耗时」估算——那段时间里除了生成，还混着首字
+之后的收尾（usage 块、`[DONE]`、上游发完不急着断连接），拿它当分母会把「内容一把梭 + 连接空转」算成上千 t/s。
+上游一次性写完、整段内容在同一毫秒内写完，都属于这种情况，速度显示 `—`。
+
 请求模型列的「流式」徽章只看**客户端的请求**：请求体里写了 `stream: true` 就标，和上游最后回的是 SSE 还是
 完整 JSON 无关。
 
@@ -607,7 +611,7 @@ Windows 产物的图标和版本信息来自 `assets/ldmapi.ico`，由 `go-winre
 go install github.com/tc-hib/go-winres@latest
 go-winres simply --arch amd64,arm64 --icon assets/ldmapi.ico \
   --product-name "懒大猫 API" --file-description "懒大猫 API - 模型聚合网关" \
-  --product-version 1.23.18 --file-version 1.23.18 --original-filename ldmapi.exe
+  --product-version 1.23.19 --file-version 1.23.19 --original-filename ldmapi.exe
 ```
 
 修改前端时不必重新编译，让程序直接从磁盘读取前端资源即可：

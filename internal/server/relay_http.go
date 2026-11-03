@@ -205,20 +205,16 @@ const minSpeedWindowMs = 50
 
 // tokensPerSecond 计算流式请求的输出速度。分母用「生成耗时」而不是总耗时：
 // 首字之前的排队、建连时间不应该算进生成速度里。
-// genMs 是转发层量到的真实输出窗口（首块内容到末块内容）；为 0 时退回
-// 「总耗时 - 首字耗时」的估算。
+// genMs 是转发层量到的真实输出窗口（首块内容到末块内容）；0 表示没测到窗口
+// （上游一个字节都没写，或整段内容在同一毫秒内写完），这类记录同样不给速度。
+// 不能拿「总耗时 - 首字耗时」当替代品：那段时间里混着首字之后的收尾
+// （usage 块、[DONE]、连接关闭），会把一次性吐完的记录算成几千 t/s。
 // streamGen 表示这次输出是一块块流式生成出来的（上游按流式请求并回了 SSE，
 // 或自定义内容按模拟速度分块写出）：只看它，不看写给客户端的形态——
 // 调用方要非流式、网关收完再返回时，生成过程一样有速度，这类记录同样要算。
 func tokensPerSecond(l store.Log, genMs int64, streamGen bool) float64 {
 	if !streamGen || l.CompletionTokens <= 0 {
 		return 0
-	}
-	if genMs <= 0 {
-		genMs = l.LatencyMs
-		if l.FirstByteMs > 0 && l.FirstByteMs < l.LatencyMs {
-			genMs = l.LatencyMs - l.FirstByteMs
-		}
 	}
 	if genMs < minSpeedWindowMs {
 		return 0
