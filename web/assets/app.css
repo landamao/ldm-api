@@ -1958,11 +1958,16 @@ html[data-theme="dark"] .tab.is-active { color: var(--leaf-300); }
   align-items: center;
   justify-content: center;
   padding: 24px;
-  animation: fadeIn .18s ease;
+  /* 遮罩只淡入底色，不再做整层 opacity 动画：父层 opacity 会把弹窗一起拖进
+     离屏合成，动画结束时整屏重新光栅化，手机上左上角会空一帧（真机截图复现过）。
+     keyframes 只写 from，to 自动用 .modal-backdrop 自己的 background。 */
+  animation: overlayFade .18s ease;
 }
 .modal-backdrop--top { z-index: 200; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideUp { from { opacity: 0; transform: translateY(16px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes overlayFade { from { background-color: transparent; } }
+@keyframes modalIn { from { transform: translateY(16px); } }
 
 .modal {
   width: 100%;
@@ -1974,7 +1979,11 @@ html[data-theme="dark"] .tab.is-active { color: var(--leaf-300); }
   border: 3px solid var(--outline);
   border-radius: var(--radius-xl);
   box-shadow: 0 9px 0 rgba(74, 49, 32, .26), 0 40px 70px -28px rgba(43, 30, 17, .6);
-  animation: slideUp .24s cubic-bezier(.2, .9, .3, 1);
+  /* 只做平移，不做 opacity / scale：scale 让动画结束前后的纹理分辨率不一致，
+     合成层被回收时必然整块重画，手机上就是"渲染完之后闪一下"。
+     will-change 让它保持独立层，动画结束不回收，也就不会重画。 */
+  animation: modalIn .24s cubic-bezier(.2, .9, .3, 1);
+  will-change: transform;
   overflow: hidden;
 }
 html[data-theme="dark"] .modal { box-shadow: 0 9px 0 rgba(0, 0, 0, .45), 0 40px 70px -28px rgba(0, 0, 0, .9); }
