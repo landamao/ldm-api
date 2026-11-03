@@ -951,7 +951,7 @@
   window.LDM.registerPage('plaza', {
     title: '模型广场',
     desc: '所有已启用、可被调用的模型',
-    async render(root, actions) {
+    async render(root, actions, filters) {
       const [items, providers] = await Promise.all([
         API.get('/api/plaza'),
         State.loadProviders(),
@@ -978,32 +978,32 @@
       }
       if (plazaState.provider === '__none' && !unassigned) plazaState.provider = 'all';
 
+      // 搜索 / 类型筛选 / 排序搬到顶栏第二行；提供商胶囊留在页面下方
+      filters.innerHTML = `
+        <div class="search" style="flex:0 1 220px;min-width:170px">
+          <span class="search__icon">${icon('search', 15)}</span>
+          <input class="input" id="plaza-search" placeholder="搜索模型…" value="${esc(plazaState.keyword)}">
+        </div>
+        <div class="pill-toggle" id="plaza-filter">
+          <button data-f="all" class="${plazaState.filter === 'all' ? 'is-on' : ''}">全部</button>
+          <button data-f="custom" class="${plazaState.filter === 'custom' ? 'is-on' : ''}">自定义模型</button>
+          <button data-f="channel" class="${plazaState.filter === 'channel' ? 'is-on' : ''}">渠道模型</button>
+        </div>
+        <select class="select" id="plaza-sort" style="width:auto;min-width:150px" title="按成功率排序">
+          <option value="">默认排序</option>
+          <option value="r24_desc">近 24h 成功率 降序</option>
+          <option value="r24_asc">近 24h 成功率 升序</option>
+          <option value="r200_desc">近 200 次成功率 降序</option>
+          <option value="r200_asc">近 200 次成功率 升序</option>
+        </select>`;
+
       root.innerHTML = `
         <div class="card mb-18">
-          <div class="toolbar">
-            <div class="search">
-              <span class="search__icon">${icon('search', 15)}</span>
-              <input class="input" id="plaza-search" placeholder="搜索模型…" value="${esc(plazaState.keyword)}">
-            </div>
-            <div class="pill-toggle" id="plaza-filter">
-              <button data-f="all" class="${plazaState.filter === 'all' ? 'is-on' : ''}">全部</button>
-              <button data-f="custom" class="${plazaState.filter === 'custom' ? 'is-on' : ''}">自定义模型</button>
-              <button data-f="channel" class="${plazaState.filter === 'channel' ? 'is-on' : ''}">渠道模型</button>
-            </div>
-            <select class="select" id="plaza-sort" style="width:auto;min-width:158px" title="按成功率排序">
-              <option value="">默认排序</option>
-              <option value="r24_desc">近 24h 成功率 降序</option>
-              <option value="r24_asc">近 24h 成功率 升序</option>
-              <option value="r200_desc">近 200 次成功率 降序</option>
-              <option value="r200_asc">近 200 次成功率 升序</option>
-            </select>
-            <div class="toolbar__spacer"></div>
-            <span class="muted fs-12" id="plaza-count"></span>
-          </div>
-          <div class="provider-filter" id="plaza-providers">
+          <div class="provider-filter" id="plaza-providers" style="padding:12px 16px">
             <button class="provider-chip${plazaState.provider === 'all' ? ' is-on' : ''}" data-p="all">全部提供商<span class="provider-chip__count">${availableItems.length}</span></button>
             ${plazaProviders.map((p) => `<button class="provider-chip${plazaState.provider === p.id ? ' is-on' : ''}" data-p="${esc(p.id)}">${providerIcon(p.icon, 15)}<span>${esc(p.name)}</span><span class="provider-chip__count">${providerCounts[p.id]}</span></button>`).join('')}
             ${unassigned ? `<button class="provider-chip${plazaState.provider === '__none' ? ' is-on' : ''}" data-p="__none">${providerIcon('', 15)}<span>未设置</span><span class="provider-chip__count">${unassigned}</span></button>` : ''}
+            <span class="muted fs-12" id="plaza-count" style="margin-left:auto"></span>
           </div>
         </div>
         <div id="plaza-grid"></div>`;
@@ -1121,19 +1121,19 @@
         });
       };
 
-      const searchEl = root.querySelector('#plaza-search');
+      const searchEl = filters.querySelector('#plaza-search');
       searchEl.addEventListener('input', debounce(() => {
         plazaState.keyword = searchEl.value;
         renderGrid();
       }, 180));
-      root.querySelectorAll('#plaza-filter button').forEach((b) => {
+      filters.querySelectorAll('#plaza-filter button').forEach((b) => {
         b.onclick = () => {
           plazaState.filter = b.dataset.f;
-          root.querySelectorAll('#plaza-filter button').forEach((x) => x.classList.toggle('is-on', x === b));
+          filters.querySelectorAll('#plaza-filter button').forEach((x) => x.classList.toggle('is-on', x === b));
           renderGrid();
         };
       });
-      const sortEl = root.querySelector('#plaza-sort');
+      const sortEl = filters.querySelector('#plaza-sort');
       sortEl.value = plazaState.sort;
       sortEl.onchange = () => {
         plazaState.sort = sortEl.value;
@@ -4584,7 +4584,7 @@
             </div>
           </div>
         </div>
-        <div class="card">
+        <div class="card tokens-card">
           <div class="card__head">
             <div class="card__title">密钥列表</div>
             <div class="card__sub">共 ${tokens.length} 个</div>
@@ -4608,7 +4608,7 @@
         return;
       }
 
-      listHost.innerHTML = `<div class="table-wrap" style="border:none;border-radius:0">
+      listHost.innerHTML = `<div class="table-wrap table-wrap--flush">
         <table class="tbl">
           <thead><tr>
             <th>名称</th><th style="min-width:250px">密钥</th><th>状态</th>
@@ -4891,14 +4891,14 @@
   window.LDM.registerPage('logs', {
     title: '调用日志',
     desc: '每一次经过网关的请求都会记录在这里',
-    async render(root, actions) {
+    async render(root, actions, filters) {
       const [models, channels, tokens] = await Promise.all([
         State.loadModels().catch(() => []),
         State.loadChannels().catch(() => []),
         State.loadTokens().catch(() => []),
       ]);
 
-      // 单位开关与刷新放在页头，和「清空日志」同排，筛选行只留筛选控件
+      // 单位开关与刷新放在页头，和「清空日志」同排；筛选控件全在顶栏木牌上
       actions.innerHTML = `
         ${switchEl(logUnit.on, '单位', 'id="log-unit" title="开启后 Token 数按 K / M / B 显示，悬停可查看精确值"')}
         <button class="btn btn--sm" id="btn-reload">${icon('refresh', 13)}刷新</button>
@@ -4918,51 +4918,54 @@
         } catch (e) { Toast.error(e.message); }
       };
 
+      // 筛选全部搬到顶栏木牌的第二行，页面上不再单独占一张筛选卡，
+      // 省下来的高度全给表格。字段和「查询」按钮都还在这里，行为不变。
+      filters.innerHTML = `
+        <select class="select" id="f-model" style="width:auto;min-width:150px;max-width:208px">
+          <option value="">全部模型</option>
+        </select>
+        <select class="select" id="f-channel" style="width:auto;min-width:118px;max-width:176px">
+          <option value="">全部渠道</option>
+        </select>
+        <select class="select" id="f-token" style="width:auto;min-width:118px;max-width:176px">
+          <option value="">全部密钥</option>
+        </select>
+        <select class="select" id="f-status" style="width:auto;min-width:104px">
+          <option value="">全部状态</option>
+          <option value="success">成功</option>
+          <option value="error">失败</option>
+          <option value="retry">有重试</option>
+        </select>
+        <span class="toolbar__sep"></span>
+        <select class="select" id="f-preset" aria-label="时间范围" style="width:auto;min-width:96px">
+          ${LOG_RANGES.map((r) => `<option value="${r.key}"${logState.preset === r.key ? ' selected' : ''}>${r.label}</option>`).join('')}
+        </select>
+        <input class="input log-time" id="f-start" type="datetime-local" aria-label="开始时间"
+               value="${toLocalInput(logState.start)}" style="width:auto;min-width:158px">
+        <span class="log-range-end">
+          <span class="muted fs-12">至</span>
+          <input class="input log-time" id="f-end" type="datetime-local" aria-label="结束时间"
+                 title="留空表示不限结束时间，始终显示到最新一条"
+                 value="${toLocalInput(logState.end)}" style="width:auto;min-width:158px">
+        </span>
+        <button class="btn btn--primary btn--sm" id="btn-query" title="按当前筛选条件查询">${icon('search', 13)}查询</button>`;
+
+      // 分页栏贴底：表格卡撑满内容区
+      root.classList.add('content__inner--fill');
       root.innerHTML = `
-        <div class="card mb-18">
-          <div class="toolbar">
-            <select class="select" id="f-model" style="width:auto;min-width:150px;max-width:208px">
-              <option value="">全部模型</option>
-            </select>
-            <select class="select" id="f-channel" style="width:auto;min-width:118px;max-width:176px">
-              <option value="">全部渠道</option>
-            </select>
-            <select class="select" id="f-token" style="width:auto;min-width:118px;max-width:176px">
-              <option value="">全部密钥</option>
-            </select>
-            <select class="select" id="f-status" style="width:auto;min-width:104px">
-              <option value="">全部状态</option>
-              <option value="success">成功</option>
-              <option value="error">失败</option>
-              <option value="retry">有重试</option>
-            </select>
-            <span class="toolbar__sep"></span>
-            <select class="select" id="f-preset" aria-label="时间范围" style="width:auto;min-width:96px">
-              ${LOG_RANGES.map((r) => `<option value="${r.key}"${logState.preset === r.key ? ' selected' : ''}>${r.label}</option>`).join('')}
-            </select>
-            <input class="input log-time" id="f-start" type="datetime-local" aria-label="开始时间"
-                   value="${toLocalInput(logState.start)}" style="width:auto;min-width:168px">
-            <span class="log-range-end">
-              <span class="muted fs-12">至</span>
-              <input class="input log-time" id="f-end" type="datetime-local" aria-label="结束时间"
-                     title="留空表示不限结束时间，始终显示到最新一条"
-                     value="${toLocalInput(logState.end)}" style="width:auto;min-width:168px">
-            </span>
-            <button class="btn btn--primary btn--sm" id="btn-query" title="按当前筛选条件查询">${icon('search', 13)}查询</button>
-          </div>
-        </div>
-        <div class="card">
-          <div id="log-table">${loadingBlock()}</div>
-          <div class="flex-center gap-12" style="padding:12px 16px;border-top:1px solid var(--border)">
-            <span class="muted fs-12" id="log-total"></span>
-            <div class="ml-auto flex gap-8">
+        <div class="logs-page">
+          <div class="card logs-card">
+            <div id="log-table">${loadingBlock()}</div>
+            <div class="table-foot" style="padding:10px 16px">
+              <span class="muted fs-12" id="log-total"></span>
               <button class="btn btn--sm" id="page-prev">上一页</button>
               <button class="btn btn--sm" id="page-next">下一页</button>
+              <span class="table-foot__spacer"></span>
             </div>
           </div>
         </div>`;
 
-      const q = (sel) => root.querySelector(sel) || actions.querySelector(sel);
+      const q = (sel) => root.querySelector(sel) || filters.querySelector(sel) || actions.querySelector(sel);
       const channelName = {};
       channels.forEach((c) => { channelName[c.id] = c.name; });
       const tokenName = {};
@@ -5313,7 +5316,10 @@
           const res = await API.get('/api/logs?' + params.toString());
           const items = res.items || [];
           lastItems = items;
-          q('#log-total').textContent = `共 ${fmtInt(res.total)} 条，当前显示第 ${logState.offset + 1} - ${logState.offset + items.length} 条`;
+          const total = res.total || 0;
+          q('#log-total').textContent = total
+            ? `共 ${fmtInt(total)} 条，当前显示第 ${logState.offset + 1} - ${logState.offset + items.length} 条`
+            : '共 0 条';
           q('#page-prev').disabled = logState.offset === 0;
           q('#page-next').disabled = logState.offset + items.length >= res.total;
           renderTable();

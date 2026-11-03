@@ -246,7 +246,7 @@
   window.LDM.registerPage('channels', {
     title: '渠道管理',
     desc: '配置上游服务商',
-    async render(root, actions) {
+    async render(root, actions, filters) {
       const channels = await State.loadChannels(true);
 
       actions.innerHTML = `
@@ -324,19 +324,20 @@
           ${opts.map(([v, text]) => `<option value="${esc(v)}"${channelListState[key] === v ? ' selected' : ''}>${esc(text)}</option>`).join('')}
         </select>`;
 
+      // 只把筛选下拉搬进顶栏第二行，搜索 / 多选 / 计数仍在卡片工具栏里
+      filters.innerHTML = `
+        ${filterSelect('ch-filter-type', '渠道类型', 'type', typeOptions, '160px')}
+        ${filterSelect('ch-filter-status', '启用状态', 'status', statusOptions, '140px')}
+        ${filterSelect('ch-filter-usage', '接入情况', 'usage', usageOptions, '166px')}`;
+
       root.innerHTML = `
-        <div class="card channels-card" style="overflow:visible">
-          <div class="toolbar" style="border-bottom:none;padding-bottom:5px">
-            ${filterSelect('ch-filter-type', '渠道类型', 'type', typeOptions, '170px')}
-            ${filterSelect('ch-filter-status', '启用状态', 'status', statusOptions, '145px')}
-            ${filterSelect('ch-filter-usage', '接入情况', 'usage', usageOptions, '175px')}
-          </div>
-          <div class="toolbar" style="padding-top:5px;gap:8px">
-            <div class="search" style="flex:0 1 220px;min-width:200px">
+        <div class="card channels-card">
+          <div class="toolbar" style="gap:8px">
+            <div class="search" style="flex:0 1 220px;min-width:170px">
               <span class="search__icon">${icon('search', 15)}</span>
               <input class="input" id="channel-search" placeholder="搜索渠道 ID、名称或地址…" value="${esc(channelListState.keyword)}">
             </div>
-            <div class="search" style="flex:0 1 170px;min-width:160px">
+            <div class="search" style="flex:0 1 170px;min-width:150px">
               <span class="search__icon">${icon('search', 15)}</span>
               <input class="input" id="channel-model-search" placeholder="搜索模型名…" value="${esc(channelListState.modelKeyword)}">
             </div>
@@ -475,21 +476,24 @@
         });
       };
 
+      // 筛选控件在顶栏、批量操作在卡片底部，查询时两边都找一下
+      const pick = (sel) => filters.querySelector(sel) || root.querySelector(sel);
+
       // 下拉筛选：原生 select 由 Select 组件自动增强，直接监听 change 即可
       [['ch-filter-type', 'type'], ['ch-filter-status', 'status'], ['ch-filter-usage', 'usage']]
         .forEach(([id, key]) => {
-          const el = root.querySelector('#' + id);
+          const el = pick('#' + id);
           el.addEventListener('change', () => {
             channelListState[key] = el.value;
             renderTable();
           });
         });
-      const searchEl = root.querySelector('#channel-search');
+      const searchEl = pick('#channel-search');
       searchEl.addEventListener('input', debounce(() => {
         channelListState.keyword = searchEl.value;
         renderTable();
       }, 180));
-      const modelSearchEl = root.querySelector('#channel-model-search');
+      const modelSearchEl = pick('#channel-model-search');
       modelSearchEl.addEventListener('input', debounce(() => {
         channelListState.modelKeyword = modelSearchEl.value;
         renderTable();
@@ -510,10 +514,10 @@
         };
       }
 
-      // ---------- 多选模式 ----------
+      // ---------- 多选模式（单条工具栏内切换按钮组） ----------
       const applyMulti = () => {
         const set = (id, show) => {
-          const el = root.querySelector('#' + id);
+          const el = pick('#' + id);
           if (el) el.style.display = show ? '' : 'none';
         };
         set('channel-filter-count', !channelListState.multi);
@@ -527,7 +531,7 @@
         set('ch-exit', channelListState.multi);
         renderTable();
       };
-      root.querySelector('#ch-multi').onclick = () => {
+      pick('#ch-multi').onclick = () => {
         channelListState.multi = true;
         applyMulti();
       };
@@ -2034,7 +2038,7 @@
   window.LDM.registerPage('models', {
     title: '模型管理',
     desc: '只有在这里添加过的模型才会对外开放调用',
-    async render(root, actions) {
+    async render(root, actions, filters) {
       const [models, channels, providers] = await Promise.all([
         State.loadModels(true),
         State.loadChannels(true),
@@ -2155,15 +2159,16 @@
           ${opts.map(([v, text]) => `<option value="${esc(v)}"${modelState[key] === v ? ' selected' : ''}>${esc(text)}</option>`).join('')}
         </select>`;
 
+      // 只把筛选下拉搬进顶栏第二行，搜索 / 多选 / 计数仍在卡片工具栏里
+      filters.innerHTML = `
+        ${filterSelect('f-type', '模型类型', 'type', typeOptions, '152px')}
+        ${filterSelect('f-channel', '渠道', 'channel', channelOptions, '184px')}
+        ${filterSelect('f-provider', '提供商', 'provider', providerOptions, '158px')}
+        ${filterSelect('f-status', '启用状态', 'status', statusOptions, '138px')}`;
+
       root.innerHTML = `
-        <div class="card models-card" style="overflow:visible">
-          <div class="toolbar" style="border-bottom:none;padding-bottom:5px">
-            ${filterSelect('f-type', '模型类型', 'type', typeOptions, '150px')}
-            ${filterSelect('f-channel', '渠道', 'channel', channelOptions, '210px')}
-            ${filterSelect('f-provider', '提供商', 'provider', providerOptions, '170px')}
-            ${filterSelect('f-status', '启用状态', 'status', statusOptions, '145px')}
-          </div>
-          <div class="toolbar" style="padding-top:5px">
+        <div class="card models-card">
+          <div class="toolbar">
             <div class="search" style="flex:0 1 320px">
               <span class="search__icon">${icon('search', 15)}</span>
               <input class="input" id="model-search" placeholder="搜索模型 ID…" value="${esc(modelState.keyword)}">
@@ -2322,13 +2327,16 @@
         });
       };
 
+      // 筛选控件在顶栏、批量操作在卡片底部，查询时两边都找一下
+      const pick = (sel) => filters.querySelector(sel) || root.querySelector(sel);
+
       // 下拉筛选：原生 select 由 Select 组件自动增强，直接监听 change 即可
-      const typeEl = root.querySelector('#f-type');
+      const typeEl = pick('#f-type');
       typeEl.addEventListener('change', () => {
         modelState.type = typeEl.value;
         channelOptions = channelOptionsFor(modelState.type);
         ensureValue('channel', channelOptions);
-        const channelEl = root.querySelector('#f-channel');
+        const channelEl = pick('#f-channel');
         channelEl.innerHTML = channelOptions.map(([v, text]) =>
           `<option value="${esc(v)}"${modelState.channel === v ? ' selected' : ''}>${esc(text)}</option>`).join('');
         window.LDM.Select.sync(channelEl);
@@ -2336,13 +2344,13 @@
       });
       [['f-channel', 'channel'], ['f-provider', 'provider'], ['f-status', 'status']]
         .forEach(([id, key]) => {
-          const el = root.querySelector('#' + id);
+          const el = pick('#' + id);
           el.addEventListener('change', () => {
             modelState[key] = el.value;
             renderTable();
           });
         });
-      const searchEl = root.querySelector('#model-search');
+      const searchEl = pick('#model-search');
       searchEl.addEventListener('input', debounce(() => {
         modelState.keyword = searchEl.value;
         renderTable();
@@ -2351,7 +2359,7 @@
       // ---------- 多选模式（单条工具栏内切换按钮组） ----------
       const applyMulti = () => {
         const set = (id, show) => {
-          const el = root.querySelector('#' + id);
+          const el = pick('#' + id);
           if (el) el.style.display = show ? '' : 'none';
         };
         set('filter-count', !modelState.multi);
@@ -2365,7 +2373,7 @@
         set('m-exit', modelState.multi);
         renderTable();
       };
-      root.querySelector('#btn-multi').onclick = () => {
+      pick('#btn-multi').onclick = () => {
         modelState.multi = true;
         applyMulti();
       };

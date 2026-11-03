@@ -1261,12 +1261,12 @@
         <div class="main">
           <header class="topbar">
             <button class="btn btn--ghost btn--icon mobile-toggle" id="btn-menu">${icon('list', 18)}</button>
-            <div>
+            <div class="topbar__titles">
               <div class="topbar__title" id="page-title">数据看板</div>
               <div class="topbar__desc" id="page-desc"></div>
             </div>
-            <div class="topbar__spacer"></div>
             <div id="topbar-actions" class="btn-row"></div>
+            <div id="topbar-filters" class="topbar__filters" hidden></div>
           </header>
           <main class="content" id="content"><div class="content__inner" id="content-inner"></div></main>
         </div>
@@ -1345,12 +1345,22 @@
     actions.innerHTML = '';
     // 页面可能把整组按钮收起来（is-empty），切页时复位，别把顶栏右侧留空
     actions.classList.remove('is-empty');
+    // 第二行筛选区：由页面通过 render 的第三个参数填充，填了才显示
+    const filters = document.getElementById('topbar-filters');
+    filters.innerHTML = '';
+    filters.hidden = true;
     const inner = document.getElementById('content-inner');
     // 对话页需要撑满内容区；切到其它页面时恢复默认高度
     inner.classList.remove('content__inner--fill');
+    const content = document.getElementById('content');
+    content.classList.remove('is-fill');
     inner.innerHTML = loadingBlock();
     try {
-      await def.render(inner, actions);
+      await def.render(inner, actions, filters);
+      // 页面撑满内容区时，内容区底部那道 padding 要收窄，
+      // 否则卡片下面会空出一条（28px）没用上的带子
+      content.classList.toggle('is-fill', inner.classList.contains('content__inner--fill'));
+      filters.hidden = !filters.children.length;
       if (window.LDMPet) window.LDMPet.layout(name);
     } catch (e) {
       if (e && e.status === 401) { showLogin(); return; }
@@ -1368,6 +1378,8 @@
   // ---------- 登录 ----------
   function showLogin() {
     if (window.LDMPet) window.LDMPet.hide();
+    // 登录页整屏都是背景，牛皮纸网点会糊得很明显，跟聊天页一样不画
+    document.body.classList.add('is-login-page');
     const app = document.getElementById('app');
     app.innerHTML = `
       <div class="login-page">
@@ -1432,6 +1444,8 @@
       document.title = s.site_name + ' · API 网关';
     }
     const hint = me.default_password || sessionStorage.getItem('ldmapi.defaultpwd');
+    // 进到管理端就把登录页的「无颗粒」开关摘掉
+    document.body.classList.remove('is-login-page');
     renderShell();
     if (s.site_name) document.getElementById('brand-name').textContent = s.site_name;
     document.getElementById('brand-sub').textContent = s.site_subtitle || '模型聚合网关';

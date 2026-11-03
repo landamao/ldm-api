@@ -231,8 +231,10 @@ body::after {
   background-size: 5px 5px;
   opacity: .7;
 }
-/* 聊天页整页都是背景，网点会糊在消息后面，直接不画 */
-body.is-chat-page::after { display: none; }
+/* 聊天页整页都是背景，网点会糊在消息后面，直接不画；
+   登录页同理（整屏都是背景，颗粒一眼就看见），进到管理端后恢复 */
+body.is-chat-page::after,
+body.is-login-page::after { display: none; }
 html[data-theme="dark"] body::after {
   background-image: radial-gradient(rgba(255, 240, 205, .05) 1px, transparent 1.3px);
   opacity: .45;
@@ -505,8 +507,9 @@ html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background-color: #6b8
   min-height: 54px;
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
+  gap: 9px 14px;
   padding: 8px 20px;
   margin: 14px 16px 2px;
   background-color: #e0af6f;
@@ -554,7 +557,25 @@ html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background-color: #6b8
 }
 html[data-theme="dark"] .topbar__title::before { filter: brightness(1.35) saturate(1.1); }
 .topbar__desc { font-size: 11.5px; font-weight: 600; color: #63401f; margin-top: -1px; }
-.topbar__spacer { flex: 1; }
+.topbar__titles { min-width: 0; }
+
+/* 筛选控件（页面通过 render 的第三个参数填进来）排在操作按钮后面：
+   一行放得下就并排，放不下时整组掉到下一行，标题和按钮留在上面。 */
+.topbar__filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* 放不下时在木牌内部折行（调用日志控件多），绝不允许戳出木牌 */
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+#topbar-filters[hidden] { display: none; }
+.topbar__filters .search { flex: 0 1 200px; min-width: 150px; }
+/* 计数这类文字不能被挤成竖排 */
+.topbar__filters > .muted { flex: 0 0 auto; white-space: nowrap; }
+/* 操作按钮永远贴右边；换行后单独一行时也靠右 */
+#topbar-actions { margin-left: auto; }
 
 /* 顶栏里的按钮在木头底色上要更醒目一点 */
 .topbar .btn--ghost { color: #4a3120; }
@@ -586,6 +607,9 @@ html[data-theme="dark"] .topbar .btn--ghost:hover { background: rgba(255, 236, 2
   padding: 18px 22px 28px;
 }
 .content__inner { max-width: 1400px; margin: 0 auto; }
+/* 列表页把内容区撑满时（模型 / 渠道 / 日志），底部那道 28px 留白会变成卡片
+   下面一条没用上的空带子，收窄成和左右差不多的一道窄边，高度全给卡片 */
+body:not(.is-chat-page) .content.is-fill { padding-bottom: 12px; }
 
 /* 在线聊天页：整块顶栏收掉，把高度让给对话区（DeepSeek 式布局）
    对话区不垫底板，消息直接铺在页面背景上（森林剪影照旧露出来）；
@@ -935,6 +959,13 @@ html[data-theme="dark"] .dash-dots i { background: var(--leaf-300); }
   background: var(--surface);
   box-shadow: 0 2px 0 rgba(122, 83, 48, .1);
 }
+/* 直接铺在卡片里的表格：卡片本身就是那圈木框，表格别再画第二层边框，
+   直角投影也别留——投影是方角的，会在卡片圆角处戳出一块深色直角 */
+.table-wrap--flush {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
 table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
 .tbl thead th {
   position: sticky;
@@ -1045,6 +1076,8 @@ table.tbl--logs thead th { color: var(--text); }
   z-index: 3;
   box-shadow: inset 0 -2px 0 var(--card-line);
 }
+.models-card #model-table > .empty,
+.models-card #model-table > .loading-block { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 
 .channels-card {
   height: 100%;
@@ -1068,6 +1101,62 @@ table.tbl--logs thead th { color: var(--text); }
   z-index: 3;
   box-shadow: inset 0 -2px 0 var(--card-line);
 }
+.channels-card #channel-table > .empty,
+.channels-card #channel-table > .loading-block { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+
+/* 列表卡片裁到圆角里：表格自己是直角（border-radius:0），不裁的话
+   白底会在卡片四角戳出一块直角，把木框的圆角盖掉。 */
+.models-card,
+.channels-card,
+.logs-card,
+.tokens-card { overflow: hidden; }
+
+/* 列表页底部状态栏：把「共 N 个」和批量操作钉在卡片最下面，
+   卡片撑满内容区时，表格下方的空白就被这条栏用掉了 */
+.table-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-top: 2px solid var(--card-line);
+}
+.table-foot__spacer { flex: 1; }
+.table-foot .btn--sm { height: 28px; }
+
+/* 调用日志：筛选全在顶栏木牌上，页面上只剩一张表格卡，撑满内容区、分页栏贴底 */
+.logs-page {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logs-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logs-card #log-table {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logs-card #log-table > .table-wrap {
+  flex: 1;
+  min-height: 200px;
+  max-height: none;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.logs-card #log-table > .table-wrap thead th {
+  z-index: 3;
+  box-shadow: inset 0 -2px 0 var(--card-line);
+}
+/* 空状态 / 加载态在多出来的高度里居中，不要贴在顶部 */
+.logs-card #log-table > .empty,
+.logs-card #log-table > .loading-block { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 
 .empty {
   padding: 48px 20px;
@@ -4094,18 +4183,28 @@ html[data-theme="dark"] .backup-result__head { color: var(--leaf-300); }
   }
   .mobile-toggle { display: inline-flex; flex-shrink: 0; }
   .content { padding: 14px; }
-  /* 窄屏顶栏：标题一行、操作另一行，避免互相挤压 */
+  /* 窄屏顶栏：标题、筛选、操作按顺序自动换行，挤不下就各占一行 */
   .topbar {
     margin: 10px 10px 2px;
     padding: 10px 14px;
     border-radius: 16px;
-    flex-wrap: wrap;
-    row-gap: 8px;
   }
+  /* 窄屏筛选控件改成一条可横滑的带子，顶栏不至于长成好几行 */
+  #topbar-filters {
+    flex: 0 1 auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    max-width: 100%;
+    padding-bottom: 1px;
+  }
+  #topbar-filters::-webkit-scrollbar { display: none; }
+  #topbar-filters > * { flex-shrink: 0; }
+  #topbar-filters .search { flex: 0 1 168px; min-width: 140px; }
   .topbar::before { left: 6px; }
   .topbar::after { right: 6px; }
   .topbar__desc { display: none; }
-  .topbar__spacer { display: none; }
   .topbar__title { font-size: 15px; }
   #topbar-actions {
     flex: 0 1 auto;
