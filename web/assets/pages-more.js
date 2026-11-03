@@ -1772,6 +1772,8 @@
                         ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
                         <option value="${TEST_MODEL_ID}"${initial === TEST_MODEL_ID ? ' selected' : ''}>临时测试（直连上游）</option>
                       </select>
+                      <!-- 自定义请求体模式下顶替模型下拉的提示芯片，点击打开右侧配置栏 -->
+                      <button class="chat-chip chat-chip--custom" id="chat-chip-custom" type="button" title="已开启自定义请求体模式：模型与流式由请求体 JSON 决定，点这里打开配置栏" hidden>已开启自定义请求体</button>
                       ${switchEl(true, '流式', 'id="chat-chip-stream" title="关闭后等完整回复再一次性显示"')}
                     </div>
                     <div class="chat-input__acts">
@@ -1847,6 +1849,9 @@
       const pickImage = root.querySelector('#chat-pick-image');
       const pickFile = root.querySelector('#chat-pick-file');
       const toBottomBtn = root.querySelector('#chat-to-bottom');
+      // 输入框芯片容器；自定义请求体模式下模型/流式芯片会换成模式提示
+      const chipsEl = root.querySelector('.chat-input__chips');
+      const chipCustomHint = root.querySelector('#chat-chip-custom');
 
       // ---------- 自动滚动（贴底跟随） ----------
       // 流式输出每来一段就强制滚到底部的话，用户一旦往上翻看历史就会被拽回去。
@@ -3090,6 +3095,13 @@
       };
 
       // 生成过程中发送按钮变成停止按钮，点击中断流式请求
+      // 下拉触发器是全局组件生成的另一个按钮，它的 disabled 只在给 select 赋值时
+      // 顺带同步（全局 sync）；setCustomMode / setBusy 改 disabled 后不会有赋值，
+      // 触发器会停在旧状态——「关掉自定义请求体后模型选择点不动」就是这条脱节
+      const syncChipModelTrigger = () => {
+        const trig = chipModelSel.__ldmTrigger;
+        if (trig) trig.disabled = chipModelSel.disabled;
+      };
       const setBusy = (busy) => {
         sending = busy;
         sendBtn.disabled = false;
@@ -3106,11 +3118,13 @@
         toolsSwitch.classList.toggle('is-disabled', busy || customMode);
         modelSel.disabled = busy || customMode;
         chipModelSel.disabled = busy || customMode;
+        syncChipModelTrigger();
         paramsReset.disabled = busy || customMode;
         syncAllParams();
         customSwitchInput.disabled = busy;
         customSwitch.classList.toggle('is-disabled', busy);
         customEditor.disabled = busy;
+        chipCustomHint.disabled = busy;
         pickImage.disabled = busy || customMode;
         pickFile.disabled = busy || customMode;
         [testUrlInput, testKeyInput, testModelInput, testModelSelect, testFetchBtn].forEach((el) => { el.disabled = busy; });
@@ -3498,6 +3512,7 @@
         }
         modelSel.disabled = on || sending;
         chipModelSel.disabled = on || sending;
+        syncChipModelTrigger();
         paramsReset.disabled = on || sending;
         syncAllParams();
         streamInput.disabled = on || sending;
@@ -3506,6 +3521,14 @@
         chipStream.classList.toggle('is-disabled', on || sending);
         toolsInput.disabled = on || sending;
         toolsSwitch.classList.toggle('is-disabled', on || sending);
+        // 输入框里的模型下拉和流式开关被 JSON 接管：换成「已开启自定义请求体」提示，
+        // 点一下打开右侧配置栏（自定义面板在那里），免得右栏收起时不知道去哪改
+        chipsEl.classList.toggle('is-custom', on);
+        chipCustomHint.hidden = !on;
+        chipCustomHint.disabled = sending;
+        chipStream.title = on
+          ? '已开启自定义请求体模式：流式由请求体 JSON 的 stream 字段决定'
+          : '关闭后等完整回复再一次性显示';
         customEditor.disabled = sending;
         pickImage.disabled = on || sending;
         pickFile.disabled = on || sending;
@@ -4371,6 +4394,13 @@
         refreshMeta();
         focusText();
       };
+      // 自定义请求体模式下点「已开启自定义请求体」提示芯片或流式开关，
+      // 打开右侧配置栏，让自定义面板露出来
+      chipsEl.addEventListener('click', (e) => {
+        if (!customMode || sending) return;
+        const hit = e.target.closest && (e.target.closest('#chat-chip-custom') || e.target.closest('#chat-chip-stream'));
+        if (hit) setSideOpen(true);
+      });
 
       // ---------- 临时测试 ----------
 

@@ -3046,12 +3046,6 @@ html[data-theme="dark"] .tool-call__code { background: rgba(255, 255, 255, .06);
 .msg__answer--md h4,
 .msg__answer--md h5,
 .msg__answer--md h6 { font-size: 13.5px; }
-.msg__answer--md h1,
-.msg__answer--md h2 {
-  padding-bottom: 4px;
-  border-bottom: 1.5px solid var(--border-line);
-}
-
 .msg__answer--md ul,
 .msg__answer--md ol { margin: 0 0 8px; padding-left: 22px; }
 .msg__answer--md li { margin: 2px 0; }
@@ -3161,7 +3155,7 @@ html[data-theme="dark"] .msg__answer--md a { color: var(--leaf-300); }
   margin: 11px 0;
   height: 0;
   border: 0;
-  border-top: 1.5px dashed var(--border-strong);
+  border-top: 1.5px solid var(--border-strong);
 }
 
 .msg__answer--md img {
@@ -3773,6 +3767,30 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
 .chat-chip .switch__track { width: 30px; height: 18px; }
 .chat-chip .switch__track::after { width: 12px; height: 12px; }
 .chat-chip .switch input:checked + .switch__track::after { transform: translateX(10px); }
+
+/* 自定义请求体模式：模型下拉和流式开关被请求体 JSON 接管，
+   模型下拉整个换成「已开启自定义请求体」提示胶囊，流式开关藏掉滑轨只留提示文字；
+   两个都点得动——点一下打开右侧配置栏（自定义面板在那里） */
+.chat-input__chips.is-custom .chat-chip--model { display: none; }
+.chat-input__chips.is-custom #chat-chip-stream .switch__track { display: none; }
+.chat-input__chips.is-custom #chat-chip-stream .switch__label { font-size: 0; }
+.chat-input__chips.is-custom #chat-chip-stream .switch__label::before {
+  content: '自定义请求体';
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--leaf-700);
+}
+.chat-input__chips.is-custom #chat-chip-stream { opacity: 1; cursor: pointer; }
+.chat-chip--custom {
+  border-color: var(--leaf-500);
+  background: var(--leaf-100);
+  color: var(--leaf-700);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.chat-chip--custom:hover { border-color: var(--leaf-600); color: var(--leaf-700); }
+.chat-chip--custom:disabled { opacity: .55; cursor: default; }
+.chat-chip--custom[hidden] { display: none; }
 
 /* 侧栏收起后，边缘留一个把手把面板再拉出来 */
 .chat-edge {
