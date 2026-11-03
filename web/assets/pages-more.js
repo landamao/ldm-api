@@ -1805,6 +1805,9 @@
       const BOTTOM_GAP = 32;   // 距底部 32px 以内仍视为「贴着底部」
       const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight <= BOTTOM_GAP;
       let followBottom = true;
+      // 批量重画消息（切会话）期间先别逐条拉到底：每拉一次都会强制同步布局，
+      // 几十条叠起来就是 O(n²)，最后统一拉一次就行
+      let bulkPainting = false;
       const syncToBottomBtn = () => {
         if (!toBottomBtn || toBottomBtn.hidden === followBottom) return;
         toBottomBtn.hidden = followBottom;
@@ -1818,6 +1821,8 @@
       log.addEventListener('scroll', () => {
         followBottom = nearBottom();
         syncToBottomBtn();
+        // 滑到顶附近就把更早的一批补上（补完会把 scrollTop 抬回去，画面不动）
+        if (log.scrollTop < 120) loadOlder();
       });
       if (toBottomBtn) {
         // 点「回到底部」：立刻贴底并恢复自动跟随
@@ -1910,7 +1915,7 @@
           el._mdAt = Date.now();
           el.innerHTML = window.LDMMD.render(el._raw);
           // 重画会让段落变高，贴底跟随时再拉一次底部，免得视图停在半截
-          if (followBottom) log.scrollTop = log.scrollHeight;
+          if (followBottom && !bulkPainting) log.scrollTop = log.scrollHeight;
         };
         if (force || Date.now() - (el._mdAt || 0) >= 80) {
           if (el._mdTimer) {
@@ -2672,10 +2677,14 @@
         return (model && model.provider_icon) || '';
       };
 
-      // 按存下来的数据结构重建一条消息（含思考折叠块）
-      const renderStored = (m) => {
+      // 按存下来的数据结构重建一条消息（含思考折叠块）。只建元素、不挂载：
+      // 首屏只接最后几条，更早的等往上滑时再插到前面。
+      const buildStored = (m) => {
         const el = document.createElement('div');
         el.className = 'msg msg--' + (m.role === 'user' ? 'user' : 'assistant') + (m.error ? ' msg--error' : '');
+        // 历史消息不播上浮动画（几十条一起播会闪），并记住自己对应哪条数据
+        el.classList.add('msg--bulk');
+        el._msg = m;
         el.innerHTML = avatarHtml(m.role, m.role === 'user' ? '' : storedProviderIcon(m))
           + '<div class="msg__body"><div class="msg__bubble"></div></div>';
         const bubble = el.querySelector('.msg__bubble');
@@ -2723,7 +2732,7 @@
         }
         // 用户消息和 AI 回复都挂同一排操作按钮
         if (m.role === 'user' || m.role === 'assistant') addMessageActions(el, m);
-        log.appendChild(el);
+        return el;
       };
 
       const reset = () => {
@@ -2753,11 +2762,78 @@
         refreshMeta();
       };
 
+      // ---------- 会话窗口渲染 ----------
+      // 长对话不再整段铺开：切会话时只画最后几条，更早的等用户往上滑再补。
+      // 补的时候把 scrollTop 按新增高度抬回去，画面不会跳。
+      const TAIL_COUNT = 8;   // 切会话先画几条
+      const OLDER_STEP = 8;   // 每次往上滑再补几条
+      let olderBusy = false;
+
+      // 当前窗口的第一条在 history 里的下标（按元素上挂的消息对象反查，
+      // 这样删/重试把 history 改短了也不会错位）
+      const renderedFrom = () => {
+        const first = log.querySelector('.msg');
+        if (!first) return history.length;
+        const at = first._msg ? history.indexOf(first._msg) : -1;
+        return at >= 0 ? at : 0;
+      };
+
+      // 首屏：只画最后几条并贴在底部
+      const paintTail = () => {
+        const total = history.length;
+        const from = Math.max(0, total - TAIL_COUNT);
+        const frag = document.createDocumentFragment();
+        for (let i = from; i < total; i += 1) frag.appendChild(buildStored(history[i]));
+        log.appendChild(frag);
+        log.scrollTop = log.scrollHeight;
+      };
+
+      // 往上补一批更早的：插在最前面，再把 scrollTop 抬回新增的高度
+      const loadOlder = () => {
+        if (olderBusy) return;
+        const to = renderedFrom();
+        if (to <= 0) return;
+        olderBusy = true;
+        bulkPainting = true;
+        try {
+          const from = Math.max(0, to - OLDER_STEP);
+          const prevHeight = log.scrollHeight;
+          const prevTop = log.scrollTop;
+          const frag = document.createDocumentFragment();
+          for (let i = from; i < to; i += 1) frag.appendChild(buildStored(history[i]));
+          log.insertBefore(frag, log.firstChild);
+          // 顶上多了几条，把滚动位置同步抬起来，用户看到的还是同一屏
+          log.scrollTop = prevTop + (log.scrollHeight - prevHeight);
+          followBottom = nearBottom();
+          syncToBottomBtn();
+        } finally {
+          bulkPainting = false;
+          olderBusy = false;
+        }
+      };
+
+      // 消息都很短时，最后几条撑不满一屏就滚不动 —— 自动再补，直到能滚或补完
+      const fillViewport = () => {
+        let guard = 0;
+        while (renderedFrom() > 0 && log.scrollHeight <= log.clientHeight + 8 && guard < 40) {
+          loadOlder();
+          guard += 1;
+        }
+      };
+
       // 进入页面时恢复上一次的对话（不生成任何占位消息）
       const restore = () => {
         log.innerHTML = '';
         refreshMeta();
-        history.forEach(renderStored);
+        // 先把消息区显示出来（空会话才会藏起来），否则消息没地方放
+        syncEmptyHint();
+        bulkPainting = true;
+        try {
+          paintTail();
+        } finally {
+          bulkPainting = false;
+        }
+        fillViewport();
         // 后台请求还在跑：重建一个气泡，把流重新接上来
         const run = chatStore.run;
         if (run) {

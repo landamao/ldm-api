@@ -2666,7 +2666,12 @@ html[data-theme="dark"] .model-card__type.is-custom { color: #e8bd83; }
 /* 还没开始聊天时给一句提示，别让对话区空成一块白板 */
 /* 空会话时的提示交给中间的居中问候语，这里不再重复画一块 */
 .chat-log:empty::after { content: none; }
-.msg { display: flex; gap: 10px; max-width: 88%; animation: riseIn .25s cubic-bezier(.2, .9, .3, 1); }
+.msg {
+  display: flex;
+  gap: 10px;
+  max-width: 88%;
+  animation: riseIn .25s cubic-bezier(.2, .9, .3, 1);
+}
 .msg--user { margin-left: auto; flex-direction: row-reverse; }
 .msg__avatar {
   width: 30px;
@@ -3240,7 +3245,11 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
   background: transparent;
   transition: margin-left .24s cubic-bezier(.4, 0, .2, 1);
 }
-.chat-layout.is-conv-collapsed .chat-conv { margin-left: -246px; }
+/* 只在桌面生效：窄屏是抽屉，用 transform 控制，绝不能再叠一个负 margin
+   （否则上次在桌面收起的偏好会把抽屉顶出屏幕，只剩一条十几像素的边） */
+@media (min-width: 901px) {
+  .chat-layout.is-conv-collapsed .chat-conv { margin-left: -246px; }
+}
 .chat-conv__head {
   display: flex;
   align-items: center;
@@ -3478,6 +3487,8 @@ html[data-theme="dark"] .chat-conv__item:hover { background: var(--surface-hover
 /* 对话区外面套一层，用来放「回到底部」的悬浮按钮 */
 .chat-log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
 .chat-log-wrap > .chat-log { flex: 1; min-width: 0; }
+/* 会话恢复出来的历史消息不播上浮动画：一次铺开好几条，逐条播放会整块闪一下 */
+.msg--bulk { animation: none; }
 .chat-to-bottom {
   position: absolute;
   right: 16px;
@@ -3680,6 +3691,7 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
        阴影也会透出来（手机上就是一条灰竖条） */
     transform: translateX(calc(-100% - 24px));
     visibility: hidden;
+    /* 抽屉不投影：手机上那块 8px/9px 的硬阴影会糊在对话区上，像一层脏边 */
     box-shadow: none;
     transition: transform .22s cubic-bezier(.4, 0, .2, 1), visibility 0s linear .22s;
     /* 抽屉是浮在对话区上面的，必须有实底，否则字叠在一起 */
@@ -3690,17 +3702,21 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
   .chat-layout.is-conv-open .chat-conv {
     transform: none;
     visibility: visible;
-    box-shadow: var(--shadow-lg);
     transition: transform .22s cubic-bezier(.4, 0, .2, 1), visibility 0s;
   }
-  .chat-layout.is-conv-open .chat-conv-scrim {
+  /* 遮罩用透明度淡入淡出：直接 display:none 会让关闭的第一帧突然变亮，
+     看着像抽屉先消失再滑走 */
+  .chat-conv-scrim {
     display: block;
     position: absolute;
     inset: 0;
     z-index: 5;
     background: var(--overlay);
-    animation: fadeIn .16s ease;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s ease;
   }
+  .chat-layout.is-conv-open .chat-conv-scrim { opacity: 1; pointer-events: auto; }
   .chat-side {
     position: absolute;
     top: 0;
@@ -3720,17 +3736,19 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
   .chat-layout.is-settings-open .chat-side {
     transform: none;
     visibility: visible;
-    box-shadow: var(--shadow-lg);
     transition: transform .22s cubic-bezier(.4, 0, .2, 1), visibility 0s;
   }
-  .chat-layout.is-settings-open .chat-side-scrim {
+  .chat-side-scrim {
     display: block;
     position: absolute;
     inset: 0;
     z-index: 5;
     background: var(--overlay);
-    animation: fadeIn .16s ease;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s ease;
   }
+  .chat-layout.is-settings-open .chat-side-scrim { opacity: 1; pointer-events: auto; }
   /* 窄屏顶栏横向可滚动，模型下拉别把整行撑爆 */
   .chat-top__model { min-width: 110px; max-width: 180px; }
   /* 手机左上 / 右上各有一个抽屉把手，第一条消息别被压在把手底下 */
