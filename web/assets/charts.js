@@ -133,6 +133,62 @@
   }
 
   /**
+   * 环形图顺时针扫出来：每段弧从自己起点开始由 0 长到该有的长度，按顺序错开起笔；
+   * 中心合计数字从 0 跳到合计。
+   * 和折线一致：系统开了「减少动态效果」或页面在后台时直接落在终态。
+   */
+  function animateDonut(svg, dur, stagger, countOpt) {
+    const arcs = Array.from(svg.querySelectorAll('circle.donut-arc'));
+    if (!arcs.length) return;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce || (typeof document !== 'undefined' && document.hidden)) return;
+
+    const circ = Number(arcs[0].getAttribute('data-circ')) || 0;
+    if (!(circ > 0)) return;
+    const gap = stagger || 0;
+    // 记下每段弧的终态长度，动画结束后清掉内联样式还原
+    const spans = arcs.map((a) => ({
+      el: a,
+      len: Number(a.getAttribute('data-len')) || 0,
+    }));
+    spans.forEach((s) => { s.el.style.strokeDasharray = `0 ${circ.toFixed(2)}`; });
+
+    // 最后一段收笔的时刻
+    const span = dur + gap * Math.max(0, spans.length - 1);
+    // 数字不跟着整段扫环慢慢数：环一段要 1s，数字一直往上蹦看着太急，
+    // 这里让它 0.2s 就落定，之后环继续扫、数字不再变。
+    const countDur = Math.min(200, span);
+    const finish = () => {
+      // 清掉内联样式，让属性上的原始 dasharray 生效
+      spans.forEach((s) => { s.el.style.strokeDasharray = ''; });
+      if (countOpt && countOpt.text) countOpt.text.textContent = countOpt.fmt(countOpt.total);
+    };
+    // 收尾兜底：后台标签页里 rAF 会被拖慢，这条保证环和数字一定会落到终态
+    setTimeout(finish, span + 600);
+
+    const start = performance.now();
+    const step = (now) => {
+      let done = true;
+      spans.forEach((s, i) => {
+        const t = Math.min(1, Math.max(0, (now - start - i * gap) / dur));
+        if (t < 1) done = false;
+        const e = 1 - Math.pow(1 - t, 3); // 缓出，起步快收尾稳
+        const len = s.len * e;
+        s.el.style.strokeDasharray = `${len.toFixed(2)} ${Math.max(0, circ - len).toFixed(2)}`;
+      });
+      if (countOpt && countOpt.text) {
+        // rAF 的时间戳可能早于 start（帧起点），这里要夹一下，否则数字会先跳到负数
+        const t = Math.min(1, Math.max(0, (now - start) / countDur));
+        const e = 1 - Math.pow(1 - t, 3);
+        countOpt.text.textContent = countOpt.fmt(Math.round(countOpt.total * e));
+      }
+      if (!done) requestAnimationFrame(step);
+      else finish();
+    };
+    requestAnimationFrame(step);
+  }
+
+  /**
    * 面积折线图
    * opts: { labels:[string], series:[{name,color,values:number[],unit}], height, spanMs, valueFmt }
    */
@@ -381,7 +437,9 @@
         const frac = it.value / total;
         const len = frac * circ;
         const color = it.color || PALETTE[i % PALETTE.length];
-        arcs.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${thickness}"
+        // data-len / data-circ 给扫环动画用：动画时把 dasharray 从 0 长到 len
+        arcs.push(`<circle class="donut-arc" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${thickness}"
+          data-len="${len.toFixed(2)}" data-circ="${circ.toFixed(2)}"
           stroke-dasharray="${len.toFixed(2)} ${(circ - len).toFixed(2)}"
           stroke-dashoffset="${(-offset).toFixed(2)}"
           transform="rotate(-90 ${cx} ${cy})" stroke-linecap="butt"/>`);
@@ -391,7 +449,7 @@
     container.innerHTML = `<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
       <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="flex-shrink:0">
         ${arcs.join('')}
-        <text x="${cx}" y="${cy - 4}" text-anchor="middle" style="font-size:20px;font-weight:700;fill:var(--text);font-family:var(--font)">${esc(totalFmt(total))}</text>
+        <text class="donut-total" x="${cx}" y="${cy - 4}" text-anchor="middle" style="font-size:20px;font-weight:700;fill:var(--text);font-family:var(--font)">${esc(totalFmt(total))}</text>
         <text x="${cx}" y="${cy + 15}" text-anchor="middle" style="font-size:10.5px;fill:var(--text-3);font-family:var(--font)">${esc(centerLabel)}</text>
       </svg>
       <div style="flex:1;min-width:150px;display:flex;flex-direction:column;gap:8px">
@@ -404,6 +462,18 @@
           </div>`).join('')}
       </div>
     </div>`;
+
+    // 环扫出来（节奏放慢到跟折线一个量级：每段 1s 长完，后面的依次晚 100ms 起笔；
+    // 模型多的时候缩短错开间隔，免得最后一段等太久）
+    const svg = container.querySelector('svg');
+    if (svg && total > 0) {
+      const n = items.length || 1;
+      animateDonut(svg, 1000, Math.min(110, 800 / n), {
+        text: svg.querySelector('.donut-total'),
+        total,
+        fmt: totalFmt,
+      });
+    }
   }
 
   /** 横向排行条 */
@@ -463,5 +533,5 @@
     };
   }
 
-  window.Charts = { areaChart, barChart, donutChart, rankList, PALETTE, timeLabel, hideTip, animateLines, niceScale, clearChart };
+  window.Charts = { areaChart, barChart, donutChart, rankList, PALETTE, timeLabel, hideTip, animateLines, animateDonut, niceScale, clearChart };
 })();

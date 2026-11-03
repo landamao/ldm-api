@@ -1053,6 +1053,20 @@ table.tbl--logs thead th { color: var(--text); }
   background-image: linear-gradient(var(--primary-soft), var(--primary-soft));
 }
 
+/* 看板「最近调用」是一张嵌在卡片里的全宽表：内边距比日志页再收一点，
+   窗口窄下来时先收起旁证信息（来源 IP / 速度），剩下的列能整表放下，
+   右侧固定的状态列不会压在耗时上。 */
+#recent-logs .tbl--logs th,
+#recent-logs .tbl--logs td { padding-left: 6px; padding-right: 6px; }
+@media (max-width: 1420px) {
+  #recent-logs .tbl--logs th:nth-child(10),
+  #recent-logs .tbl--logs td:nth-child(10) { display: none; }
+}
+@media (max-width: 1300px) {
+  #recent-logs .tbl--logs th:nth-child(7),
+  #recent-logs .tbl--logs td:nth-child(7) { display: none; }
+}
+
 /* 模型 / 渠道管理：卡片撑满内容区，筛选栏和表头固定，只滚动表格 */
 .models-card {
   height: 100%;

@@ -207,19 +207,26 @@
       </div>
       <div class="rank-item__bar"></div>
     </div>`).join('')}</div>`;
-  // 最近调用：表头先出来，行内容用占位条顶着，日志回来再替换
-  const dashLogsPh = () => `<div class="table-wrap" style="border:none;border-radius:0">
-    <table class="tbl tbl--flat">
+  // 最近调用：表头先出来，行内容用占位条顶着，日志回来再替换。
+  // 列跟调用日志页保持一致，数据没回来时宽度也不跳。
+  const dashLogsPh = () => `<div class="table-wrap table-wrap--flush">
+    <table class="tbl tbl--logs">
       <thead><tr>
-        <th>时间</th><th>模型</th><th>渠道</th><th class="right">耗时</th>
-        <th class="right">Token</th><th>状态</th>
+        <th>时间</th><th>请求模型</th><th>渠道</th><th>上游模型</th>
+        <th>输入</th><th>输出</th><th>速度</th><th>总计</th><th>耗时</th>
+        <th>来源 IP</th><th>状态</th>
       </tr></thead>
       <tbody>${[0, 1, 2, 3, 4, 5, 6, 7].map(() => `<tr>
         <td>${dashPh(112)}</td>
-        <td>${dashPh(74)}</td>
-        <td>${dashPh(46)}</td>
-        <td class="right">${dashPh(36)}</td>
-        <td class="right">${dashPh(42)}</td>
+        <td>${dashPh(96)}</td>
+        <td>${dashPh(84)}</td>
+        <td>${dashPh(88)}</td>
+        <td class="right">${dashPh(40)}</td>
+        <td class="right">${dashPh(40)}</td>
+        <td class="right">${dashPh(44)}</td>
+        <td class="right">${dashPh(40)}</td>
+        <td class="right">${dashPh(46)}</td>
+        <td>${dashPh(88)}</td>
         <td>${dashPh(46)}</td>
       </tr>`).join('')}</tbody>
     </table>
@@ -901,28 +908,69 @@
         rankList(dom.tokenRank, breakdown.tokens || [], { nameWidth: 200, fmt: fmtDash });
       }
 
+      // 渠道格里的写法跟调用日志页一致：渠道名在上，用到多 Key 时下面再补一行 #N 备注。
+      const dashChannelLabel = (l) => (l.channel_id || '') + (l.channel_name ? `（${l.channel_name}）` : '');
+      const dashKeyLabel = (l) => {
+        if (!l.key_masked) return '—';
+        const idx = `#${l.key_index || 1}`;
+        return l.key_note ? `${idx} ${l.key_note}` : `${idx}（无备注）`;
+      };
+
       function paintLogs() {
         if (!dashData.logs) return;
         const items = (dashData.logs && dashData.logs.items) || [];
+        // 次要指标（缓存读 / 思考 / 首字）在数值下面另起一行，小一号灰字
+        const sub = (html) => `<div class="log-sub">${html}</div>`;
         dom.recent.innerHTML = items.length
-          ? `<div class="table-wrap" style="border:none;border-radius:0">
-              <table class="tbl tbl--flat">
+          ? `<div class="table-wrap table-wrap--flush">
+              <table class="tbl tbl--logs">
                 <thead><tr>
-                  <th>时间</th><th>模型</th><th>渠道</th><th class="right">耗时</th>
-                  <th class="right">Token</th><th>状态</th>
+                  <th>时间</th><th>请求模型</th><th>渠道</th><th>上游模型</th>
+                  <th>输入</th><th>输出</th><th>速度</th><th>总计</th><th>耗时</th>
+                  <th>来源 IP</th><th>状态</th>
                 </tr></thead>
-                <tbody>${items.map((l, idx) => `<tr>
+                <tbody>${items.map((l, idx) => {
+                  // 亲和星标跟着实际走的那条路由（渠道 + 上游模型）走
+                  const modelStar = l.affinity
+                    ? `<span class="affinity-star" title="${affinityTitle(l)}">${AFFINITY_STAR}</span>`
+                    : '';
+                  const reasoning = l.reasoning_tokens
+                    ? `思考 ${fmtDash(l.reasoning_tokens)}`
+                    : (l.reasoning_chars ? `思考 ${fmtDash(l.reasoning_chars)} 字` : '');
+                  return `<tr>
                   <td class="nowrap fs-12">${esc(fmtTime(l.time))}</td>
-                  <td>${colorBadge(l.model_id)}</td>
-                  <td>${l.channel_id ? `<span class="code">${esc(l.channel_id)}</span>` : '<span class="muted">—</span>'}</td>
-                  <td class="right num">${esc(fmtDuration(l.latency_ms))}</td>
-                  <td class="right num" title="${fmtInt(l.total_tokens)}">${fmtDash(l.total_tokens)}${l.usage_estimate ? ' <span class="muted fs-12">(估算)</span>' : ''}</td>
+                  <td>
+                    <div class="flex-center gap-6">
+                      ${colorBadge(l.model_id)}
+                      ${l.stream ? '<span class="badge badge--blue" title="客户端请求了流式输出（请求体里 stream: true）">流式</span>' : ''}
+                      ${l.retries ? `<span class="badge badge--amber" title="本次请求发生过 ${l.retries} 次渠道重试，详细过程见调用日志">${icon('refresh', 11)}重试 ${l.retries}</span>` : ''}
+                    </div>
+                  </td>
+                  <td class="fs-12">
+                    ${l.channel_id
+                      ? `<div class="log-route">${colorBadge(dashChannelLabel(l))}${l.key_masked
+                        ? `<span class="log-star-wrap">${colorBadge(dashKeyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
+                        : ''}</div>`
+                      : '<span class="muted">未命中渠道</span>'}
+                  </td>
+                  <td class="fs-12">${l.upstream_model
+                    ? `<span class="log-star-wrap">${colorBadge(l.upstream_model)}${modelStar}</span>`
+                    : '<span class="muted">—</span>'}</td>
+                  <td class="num">${fmtDash(l.prompt_tokens)}${l.usage_estimate ? ' <span class="muted fs-12" title="上游未上报用量，Token 数为网关估算">(估算)</span>' : ''}${l.cached_tokens ? sub(`缓存读 ${fmtDash(l.cached_tokens)}`) : ''}</td>
+                  <td class="num">${fmtDash(l.completion_tokens)}${reasoning ? sub(reasoning) : ''}</td>
+                  <td class="num">${l.tokens_per_sec
+                    ? `<span title="输出 tokens / 生成耗时，按流式请求上游的记录计算（首块内容到末块内容）">${l.tokens_per_sec.toFixed(1)} t/s</span>`
+                    : '<span class="muted">—</span>'}</td>
+                  <td class="num">${fmtDash(l.total_tokens)}</td>
+                  <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
+                  <td class="text-strong fs-12 mono">${esc(l.ip || '—')}</td>
                   <td>${logSoft(l)
                     ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
                     : (logOK(l)
                       ? '<span class="badge badge--green">成功</span>'
                       : `<button type="button" class="badge badge--red badge--click" data-recent-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || '失败')}</button>`)}</td>
-                </tr>`).join('')}</tbody>
+                </tr>`;
+                }).join('')}</tbody>
               </table>
             </div>`
           : emptyState('还没有调用记录', '通过 API 调用任意模型后，这里会显示实时统计。', '', 'logs');
