@@ -36,7 +36,7 @@ chmod +x ldmapi-linux-amd64
 
 ```
   ╭──────────────────────────────────────────────────────────────╮
-  │  🐱 懒大猫 API   v1.23.19                                    │
+  │  🐱 懒大猫 API   v1.23.23                                    │
   │                                                              │
   │  控制台     http://127.0.0.1:6700                            │
   │  API 地址   http://127.0.0.1:6700/v1                         │
@@ -611,7 +611,7 @@ Windows 产物的图标和版本信息来自 `assets/ldmapi.ico`，由 `go-winre
 go install github.com/tc-hib/go-winres@latest
 go-winres simply --arch amd64,arm64 --icon assets/ldmapi.ico \
   --product-name "懒大猫 API" --file-description "懒大猫 API - 模型聚合网关" \
-  --product-version 1.23.19 --file-version 1.23.19 --original-filename ldmapi.exe
+  --product-version 1.23.23 --file-version 1.23.23 --original-filename ldmapi.exe
 ```
 
 修改前端时不必重新编译，让程序直接从磁盘读取前端资源即可：
@@ -684,3 +684,16 @@ python scripts/gen_demo_data.py --force
 本项目采用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）发布。
 
 你可以自由使用、修改和分发本软件。如果分发修改后的版本，或把它作为网络服务提供给他人使用，需要以同一许可证公开完整源代码。
+
+---
+
+## 第三方素材
+
+控制台右下角的看板娘挂件（**大肥鱼** / 蓝发鲸鱼娘）不属于本项目，也**不适用上面的 AGPL-3.0**：
+
+- 脚本来自 [`PC2005-cloud/dsh-pet`](https://github.com/PC2005-cloud/dsh-pet)，以 MIT 许可发布；
+- 角色形象是社区二创的 DeepSeek「大肥鱼」，原型「溟月」出自 B 站 [@上善无形](https://space.bilibili.com/4456176)，DeepSeek 版（女仆鲸鱼娘）设计出自 B 站 [@ZipZipPipe](https://space.bilibili.com/4168597)，以 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans)（署名 · 非商业 · 相同方式共享）授权，**原作者明确禁止任何形式的商业化使用**。
+
+自己用、公司内网用都没问题；如果要拿它做商业服务（含收费的 API 托管），或者不想让控制台依赖 `pet.alcy.cc`，删掉 `web/assets/pet.js` 与 `web/index.html` 里对它的那行引用即可，其余功能不受影响。
+
+挂件的脚本和动画默认从 `pet.alcy.cc` 按需外链加载，不进二进制；离线或内网环境下加载失败会自动跳过，只留一条控制台警告。

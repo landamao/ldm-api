@@ -1332,6 +1332,8 @@
   async function navigate() {
     const name = currentRoute();
     const def = PAGES[name];
+    // 看板娘全站常驻，登录页不显示；各页面的摆位在 render 完之后调 layout
+    if (window.LDMPet) window.LDMPet.show();
     renderNav();
     document.getElementById('page-title').textContent = def.title || '';
     document.getElementById('page-desc').textContent = def.desc || '';
@@ -1345,6 +1347,7 @@
     inner.innerHTML = loadingBlock();
     try {
       await def.render(inner, actions);
+      if (window.LDMPet) window.LDMPet.layout(name);
     } catch (e) {
       if (e && e.status === 401) { showLogin(); return; }
       inner.innerHTML = `<div class="card card--pad">
@@ -1360,6 +1363,7 @@
 
   // ---------- 登录 ----------
   function showLogin() {
+    if (window.LDMPet) window.LDMPet.hide();
     const app = document.getElementById('app');
     app.innerHTML = `
       <div class="login-page">
