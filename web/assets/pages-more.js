@@ -1767,6 +1767,7 @@
                   <textarea class="textarea chat-input__text" id="chat-text" rows="1" placeholder="快使用我吧♡"></textarea>
                   <div class="chat-input__bar">
                     <div class="chat-input__chips">
+                      <button class="chat-chip chat-chip--icon" id="chat-chip-clear" type="button" title="清空当前对话" aria-label="清空当前对话">${icon('trash', 13)}</button>
                       <select class="chat-chip chat-chip--model" id="chat-chip-model" aria-label="模型">
                         ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
                         <option value="${TEST_MODEL_ID}"${initial === TEST_MODEL_ID ? ' selected' : ''}>临时测试（直连上游）</option>
@@ -3169,7 +3170,7 @@
         }
       };
 
-      // 只删这一条消息，同一轮里的其它消息原样保留
+      // 只删这一条消息，同一轮里的其它消息原样保留（气泡当场消失就是反馈，不弹 Toast）
       const deleteOneMessage = (msgEl, entry) => {
         const idx = history.indexOf(entry);
         if (idx >= 0) {
@@ -3179,7 +3180,6 @@
           saveSessions();
         }
         msgEl.remove();
-        Toast.success('消息已删除');
       };
 
       // 重试用户消息：保留这条提问和它之前的历史，丢掉后面的回复再发一遍
@@ -4474,12 +4474,14 @@
       };
       // 左侧列表：新建对话
       convNew.onclick = () => createSession();
-      // 清空对话：点一下直接清，不再二次确认
-      root.querySelector('#chat-clear').onclick = () => {
+      // 清空对话：点一下直接清，不再二次确认（配置栏底部的按钮和输入框里的芯片按钮共用）
+      const clearChat = () => {
         const had = history.length;
         reset();
         if (had) Toast.success('已清空对话');
       };
+      root.querySelector('#chat-clear').onclick = clearChat;
+      root.querySelector('#chat-chip-clear').onclick = clearChat;
       text.addEventListener('keydown', (e) => {
         // 手机 / 平板上回车只是换行，必须点发送按钮才发出去
         if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;

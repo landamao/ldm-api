@@ -36,6 +36,8 @@
     + '</table></div>';
 
   // 公式：$...$ 行内、$$...$$ 独立成块，由 marked-katex-extension 识别并交给 KaTeX。
+  // \(...\) / \[...\] 括号定界符与独立公式块的空行，都在 render() 里先归一化
+  // （见 escapeBrackets / spaceMathFences）。
   // nonStandard 让 $ 紧贴中文也能认出来（模型输出普遍不带空格）。
   // trust 关掉，\href 这类命令不会被放行。KaTeX 没加载就不挂这个扩展，公式原样显示。
   if (katexExt && root.katex) {
@@ -77,11 +79,46 @@
     FORBID_TAGS: ['style', 'form', 'iframe', 'object', 'embed'],
   };
 
+  // 公式定界符归一化：模型常输出 ChatGPT 式的 \(...\) 行内、\[...\] 独立公式，
+  // KaTeX 扩展只认美元记法，渲染前先翻译成 $...$ / $$...$$。
+  // 代码块和行内代码原样跳过，避免误伤里面的反斜杠。
+  const escapeBrackets = (text) => text.replace(
+    /(```[\s\S]*?```|`.*?`)|\\\[([\s\S]*?[^\\])\\\]|\\\((.*?)\\\)/g,
+    (match, code, block, inline) => {
+      if (code) return code;
+      if (block !== undefined) return `$$${block}$$`;
+      if (inline !== undefined) return `$${inline}$`;
+      return match;
+    },
+  );
+
+  // 独立公式块得是独立的块 marked 才认：$$ 独占一行时，若上一行还是文字
+  // （段落没断开），块级规则轮不到、行内规则又不认换行，整块公式就原样露出。
+  // remark-math 允许公式块打断段落，marked 不行，这里给每个「$$ 独占一行」的
+  // 开栏前补一个空行来对齐效果（代码围栏里不动）。
+  const spaceMathFences = (text) => {
+    const lines = text.split('\n');
+    const out = [];
+    let inCode = false;
+    let inMath = false;
+    for (const line of lines) {
+      if (/^[ \t]*(?:```|~~~)/.test(line)) inCode = !inCode;
+      const fence = !inCode && /^[ \t]*\$\$[ \t]*$/.test(line);
+      if (fence && !inMath && out.length && out[out.length - 1].trim() !== '') {
+        out.push('');
+      }
+      if (fence) inMath = !inMath;
+      out.push(line);
+    }
+    return out.join('\n');
+  };
+
   // 解析失败时退化成纯文本，不能让气泡整个空掉
   const fallback = (src) => '<p class="md-p">' + esc(src).replace(/\n/g, '<br>') + '</p>';
 
   const render = (text) => {
-    const src = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+    const raw = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+    const src = spaceMathFences(escapeBrackets(raw));
     if (!src.trim()) return '';
     let html;
     try {

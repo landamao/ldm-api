@@ -3762,6 +3762,8 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
   transition: background .15s, border-color .15s, color .15s;
 }
 .chat-chip:hover { border-color: var(--leaf-400); color: var(--text); }
+/* 输入框里的清空按钮：和芯片同高的小胶囊，只放一个图标 */
+.chat-chip--icon { width: 28px; padding: 0; justify-content: center; }
 .chat-chip--model { max-width: 200px; }
 /* 箭头是绝对定位的，芯片的 padding 得给它留出位置，否则文字压到箭头上 */
 .chat-chip.ldm-select { padding: 0 28px 0 12px; }
