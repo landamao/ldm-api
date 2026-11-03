@@ -293,8 +293,12 @@ func TestClearCooldownsForModelClearsChannelKeys(t *testing.T) {
 		ID: "cc-model", Type: store.ModelTypeCustom,
 		Routes: []store.Route{{ChannelID: ch.ID, Upstream: "a"}},
 	}
-	if n := ClearCooldownsForModel(m); n != 3 {
-		t.Fatalf("应清掉 1 条路由冷却与 2 条 Key 冷却，实际 %d 条", n)
+	r := ClearCooldownsForModel(m)
+	if r.Cleared != 3 {
+		t.Fatalf("应清掉 1 条路由冷却与 2 条 Key 冷却，实际 %d 条", r.Cleared)
+	}
+	if r.Affinity != 0 {
+		t.Fatalf("没有成功记录时不应清掉亲和，实际 %d 条", r.Affinity)
 	}
 	if keys, reason := PlanKeys(ch); reason != "" || len(keys) != 2 {
 		t.Errorf("清除冷却后两个 Key 都应恢复可用，得到 %v（%s）", candidateIndexes(keys), reason)

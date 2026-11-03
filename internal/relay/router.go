@@ -78,28 +78,45 @@ func clearCooldowns(keys []string) {
 	}
 }
 
-// ClearAllCooldowns 清空内存中所有路由与 Key 的失败冷却及亲和记录，返回被清除的冷却条目数。
-func ClearAllCooldowns() int {
+// ClearResult 汇总一次清除操作的效果：冷却与亲和分开计数。
+// 亲和单独存在时前端也要给出「已清理」的反馈——此前只统计冷却条数，
+// 没有冷却但有亲和时按钮会提示「没有处于冷却中的路由」，看起来像没生效。
+type ClearResult struct {
+	Cleared  int `json:"cleared"`  // 清除的冷却条数（路由 + Key）
+	Affinity int `json:"affinity"` // 清除的亲和条数（路由 + Key）
+}
+
+// Add 累加另一个清除结果，批量清除时汇总用。
+func (r ClearResult) Add(o ClearResult) ClearResult {
+	r.Cleared += o.Cleared
+	r.Affinity += o.Affinity
+	return r
+}
+
+// ClearAllCooldowns 清空内存中所有路由与 Key 的失败冷却及亲和记录，返回清除条数。
+func ClearAllCooldowns() ClearResult {
 	routeStates.Lock()
-	n := len(routeStates.failedAt)
+	res := ClearResult{Cleared: len(routeStates.failedAt), Affinity: len(routeStates.lastRoute)}
 	clear(routeStates.failedAt)
 	clear(routeStates.lastRoute)
 	routeStates.Unlock()
 
 	keyStates.Lock()
-	n += len(keyStates.failedAt)
+	res.Cleared += len(keyStates.failedAt)
+	res.Affinity += len(keyStates.lastKey)
 	clear(keyStates.failedAt)
 	clear(keyStates.lastKey)
 	keyStates.Unlock()
-	return n
+	return res
 }
 
-// ClearCooldownsForModel 清掉该模型路由涉及的失败冷却，返回清除条数。
+// ClearCooldownsForModel 清掉该模型路由涉及的失败冷却与亲和，返回清除条数。
 // 冷却按「渠道ID/上游模型」全局共享，因此会同时解除其他引用同一条路由的模型的冷却。
 // 该模型的亲和记录也一并清掉：否则刚解除冷却的条目会因上次成功记录被优先命中。
-// 涉及的渠道 Key 冷却也一起清掉：Key 冷却按「渠道 + Key」记录、无法按模型精确拆分，
-// 只清路由冷却会让多 Key 渠道仍卡在「所有 Key 都在失败冷却中」，按钮等于没生效。
-func ClearCooldownsForModel(m store.Model) int {
+// 涉及渠道的 Key 冷却与 Key 亲和也一起清掉：Key 状态按「渠道 + Key」记录、无法按
+// 模型精确拆分，只清路由状态会让多 Key 渠道仍卡在「所有 Key 都在失败冷却中」，
+// 或继续优先命中上次成功的 Key，按钮等于没生效。
+func ClearCooldownsForModel(m store.Model) ClearResult {
 	var keys []string
 	channelIDs := make([]string, 0, len(m.Routes)+1)
 	seen := make(map[string]bool, len(m.Routes)+1)
@@ -120,43 +137,46 @@ func ClearCooldownsForModel(m store.Model) int {
 	}
 
 	routeStates.Lock()
-	n := 0
+	var res ClearResult
 	for _, k := range keys {
 		if _, ok := routeStates.failedAt[k]; ok {
 			delete(routeStates.failedAt, k)
-			n++
+			res.Cleared++
 		}
 	}
-	delete(routeStates.lastRoute, m.ID)
+	if _, ok := routeStates.lastRoute[m.ID]; ok {
+		delete(routeStates.lastRoute, m.ID)
+		res.Affinity++
+	}
 	routeStates.Unlock()
 
 	// Key 状态用另一把锁，必须在释放路由锁之后再清，避免锁顺序交叉。
-	// 只清冷却、保留 Key 亲和：模型要立刻恢复可用，而「上次成功的 Key」与冷却无关。
 	for _, id := range channelIDs {
-		n += clearKeyCooldownsOnly(id)
+		res = res.Add(clearKeyStateForChannel(id))
 	}
-	return n
+	return res
 }
 
-// ClearCooldownsForChannel 清掉某个渠道下所有上游模型与 Key 的冷却，返回清除条数。
+// ClearCooldownsForChannel 清掉某个渠道下所有上游模型与 Key 的冷却和亲和，返回清除条数。
 // 指向该渠道的模型亲和与 Key 亲和也一并清掉，避免下次请求又优先回到刚解除冷却的渠道。
-func ClearCooldownsForChannel(channelID string) int {
+func ClearCooldownsForChannel(channelID string) ClearResult {
 	prefix := channelID + "/"
 	routeStates.Lock()
-	n := 0
+	var res ClearResult
 	for k := range routeStates.failedAt {
 		if strings.HasPrefix(k, prefix) {
 			delete(routeStates.failedAt, k)
-			n++
+			res.Cleared++
 		}
 	}
 	for modelID, k := range routeStates.lastRoute {
 		if strings.HasPrefix(k, prefix) {
 			delete(routeStates.lastRoute, modelID)
+			res.Affinity++
 		}
 	}
 	routeStates.Unlock()
-	return n + clearKeyCooldownsForChannel(channelID)
+	return res.Add(clearKeyStateForChannel(channelID))
 }
 
 // ClearModelRoutes 删除/重命名模型时清理它的亲和记录。

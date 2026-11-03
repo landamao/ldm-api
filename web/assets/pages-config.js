@@ -15,6 +15,17 @@
     { value: 'gemini', label: 'Google Gemini', hint: 'Google AI Studio / Gemini API' },
   ];
 
+  // 「清除冷却」的结果提示：后端把冷却与亲和分开统计（cleared / affinity），
+  // 只有亲和被清时也要给出反馈，不能再提示「没有处于冷却中的路由」。
+  function toastCooldownResult(res, emptyMsg) {
+    const cleared = (res && res.cleared) || 0;
+    const affinity = (res && res.affinity) || 0;
+    if (cleared && affinity) Toast.success(`已清除 ${cleared} 条冷却、${affinity} 条亲和`);
+    else if (cleared) Toast.success(`已清除 ${cleared} 条冷却`);
+    else if (affinity) Toast.success(`已清除 ${affinity} 条亲和`);
+    else Toast.info(emptyMsg);
+  }
+
   // 状态码规则的默认值，与 internal/store/status.go 中的常量保持一致。
   const DEFAULT_KEY_COOLDOWN_STATUS = '401,403,408,429,500-599';
   const DEFAULT_NO_RETRY_STATUS = '400-428,430-499';
@@ -265,8 +276,7 @@
         if (!ok) return;
         try {
           const res = await API.post('/api/models/clear-cooldowns');
-          const n = res && res.cleared ? res.cleared : 0;
-          Toast.success(n ? `已清除 ${n} 条路由冷却` : '当前没有处于冷却中的路由');
+          toastCooldownResult(res, '当前没有冷却或亲和记录');
         } catch (e) { Toast.error(e.message); }
       };
 
@@ -605,13 +615,13 @@
         const sel = getSelectedChannels();
         if (!sel.length) { Toast.info('请先勾选渠道'); return; }
         try {
-          let cleared = 0;
+          const total = { cleared: 0, affinity: 0 };
           for (const c of sel) {
             const res = await API.post('/api/models/clear-cooldowns?channel_id=' + encodeURIComponent(c.id));
-            cleared += (res && res.cleared) || 0;
+            total.cleared += (res && res.cleared) || 0;
+            total.affinity += (res && res.affinity) || 0;
           }
-          if (cleared) Toast.success(`已清除 ${cleared} 条冷却`);
-          else Toast.info('选中的渠道没有处于冷却中的路由');
+          toastCooldownResult(total, '选中的渠道没有冷却或亲和记录');
         } catch (e) { Toast.error(e.message); }
       };
 
@@ -2071,8 +2081,7 @@
         if (!ok) return;
         try {
           const res = await API.post('/api/models/clear-cooldowns');
-          const n = res && res.cleared ? res.cleared : 0;
-          Toast.success(n ? `已清除 ${n} 条路由冷却` : '当前没有处于冷却中的路由');
+          toastCooldownResult(res, '当前没有冷却或亲和记录');
         } catch (e) { Toast.error(e.message); }
       };
 
@@ -2447,9 +2456,7 @@
         if (!sel.length) { Toast.info('请先勾选模型'); return; }
         try {
           const res = await API.post('/api/models/clear-cooldowns', { model_ids: sel.map((m) => m.id) });
-          const n = res && res.cleared ? res.cleared : 0;
-          if (n) Toast.success(`已清除 ${n} 条路由冷却`);
-          else Toast.info('选中的模型没有处于冷却中的路由');
+          toastCooldownResult(res, '选中的模型没有冷却或亲和记录');
         } catch (e) { Toast.error(e.message); }
       };
       root.querySelector('#m-del').onclick = async () => {

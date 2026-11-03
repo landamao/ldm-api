@@ -189,29 +189,23 @@ func MarkKeyFailure(channelID, key string) {
 	keyStates.Unlock()
 }
 
-// clearKeyCooldownsForChannel 清掉某个渠道所有 Key 的冷却与亲和，返回清除的冷却条数。
-func clearKeyCooldownsForChannel(channelID string) int {
-	n := clearKeyCooldownsOnly(channelID)
-	keyStates.Lock()
-	delete(keyStates.lastKey, channelID)
-	keyStates.Unlock()
-	return n
-}
-
-// clearKeyCooldownsOnly 只清某个渠道所有 Key 的冷却，保留 Key 亲和。
-// 按模型清除冷却时用它：模型不可用要立刻恢复，但「上次成功的 Key」与冷却无关。
-func clearKeyCooldownsOnly(channelID string) int {
+// clearKeyStateForChannel 清掉某个渠道所有 Key 的冷却与亲和，返回各自条数。
+func clearKeyStateForChannel(channelID string) ClearResult {
 	prefix := channelID + "\x00"
 	keyStates.Lock()
 	defer keyStates.Unlock()
-	n := 0
+	var res ClearResult
 	for k := range keyStates.failedAt {
 		if strings.HasPrefix(k, prefix) {
 			delete(keyStates.failedAt, k)
-			n++
+			res.Cleared++
 		}
 	}
-	return n
+	if _, ok := keyStates.lastKey[channelID]; ok {
+		delete(keyStates.lastKey, channelID)
+		res.Affinity++
+	}
+	return res
 }
 
 // ClearChannelKeyState 删除渠道时清掉它的全部 Key 状态（冷却与亲和）。

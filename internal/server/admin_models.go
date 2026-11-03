@@ -271,7 +271,7 @@ func (s *Server) clearModelCooldowns(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(req.ModelIDs) > 0 {
-		cleared := 0
+		var total relay.ClearResult
 		for _, raw := range req.ModelIDs {
 			id := strings.TrimSpace(raw)
 			if id == "" {
@@ -281,9 +281,9 @@ func (s *Server) clearModelCooldowns(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue // 选中的模型可能刚被删除，跳过
 			}
-			cleared += relay.ClearCooldownsForModel(m)
+			total = total.Add(relay.ClearCooldownsForModel(m))
 		}
-		writeOK(w, map[string]any{"cleared": cleared})
+		writeOK(w, total)
 		return
 	}
 	q := r.URL.Query()
@@ -296,11 +296,11 @@ func (s *Server) clearModelCooldowns(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "模型不存在")
 			return
 		}
-		writeOK(w, map[string]any{"cleared": relay.ClearCooldownsForModel(m)})
+		writeOK(w, relay.ClearCooldownsForModel(m))
 	case channelID != "":
-		writeOK(w, map[string]any{"cleared": relay.ClearCooldownsForChannel(channelID)})
+		writeOK(w, relay.ClearCooldownsForChannel(channelID))
 	default:
-		writeOK(w, map[string]any{"cleared": relay.ClearAllCooldowns()})
+		writeOK(w, relay.ClearAllCooldowns())
 	}
 }
 

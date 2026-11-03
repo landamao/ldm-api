@@ -576,8 +576,12 @@ func TestClearAllCooldowns(t *testing.T) {
 	MarkKeySuccess("CLR-K", "sk-clr")
 	MarkFailure("CLR-A", "a")
 	MarkFailure("CLR-B", "b")
-	if n := ClearAllCooldowns(); n < 2 {
-		t.Fatalf("应至少清除 2 条冷却，得到 %d", n)
+	r := ClearAllCooldowns()
+	if r.Cleared < 2 {
+		t.Fatalf("应至少清除 2 条冷却，得到 %d", r.Cleared)
+	}
+	if r.Affinity < 2 {
+		t.Fatalf("应至少清除 2 条亲和，得到 %d", r.Affinity)
 	}
 	// 亲和记录也应一并清掉，避免下次请求优先回到刚恢复的条目。
 	routeStates.Lock()
@@ -592,8 +596,9 @@ func TestClearAllCooldowns(t *testing.T) {
 	if hasKey {
 		t.Fatal("清空冷却后 Key 亲和应一并清空")
 	}
-	if n := ClearAllCooldowns(); n != 0 {
-		t.Fatalf("冷却应已清空，仍剩 %d 条", n)
+	r = ClearAllCooldowns()
+	if r.Cleared != 0 || r.Affinity != 0 {
+		t.Fatalf("冷却与亲和应已清空，仍剩 %d 条冷却、%d 条亲和", r.Cleared, r.Affinity)
 	}
 }
 
@@ -762,10 +767,14 @@ func TestClearCooldownsScoped(t *testing.T) {
 		{ChannelID: "SC-A", Upstream: "x"},
 		{ChannelID: "SC-B", Upstream: "z"},
 	}}
-	if n := ClearCooldownsForModel(m); n != 2 {
-		t.Fatalf("应按模型清掉 2 条冷却，得到 %d", n)
+	r := ClearCooldownsForModel(m)
+	if r.Cleared != 2 {
+		t.Fatalf("应按模型清掉 2 条冷却，得到 %d", r.Cleared)
 	}
-	// 按模型清除只影响该模型的亲和，Key 亲和留给渠道级清除。
+	if r.Affinity != 2 {
+		t.Fatalf("应按模型清掉 1 条模型亲和与 1 条 Key 亲和，得到 %d", r.Affinity)
+	}
+	// 按模型清除会把该模型的亲和与涉及渠道的 Key 亲和一起清掉。
 	routeStates.Lock()
 	_, hasRoute := routeStates.lastRoute["SC-M"]
 	routeStates.Unlock()
@@ -775,13 +784,17 @@ func TestClearCooldownsScoped(t *testing.T) {
 	keyStates.Lock()
 	_, hasKey := keyStates.lastKey["SC-A"]
 	keyStates.Unlock()
-	if !hasKey {
-		t.Fatal("按模型清冷却不应清掉 Key 亲和")
+	if hasKey {
+		t.Fatal("按模型清冷却后涉及渠道的 Key 亲和应清空")
 	}
 	// 另一个模型的亲和指向该渠道时，渠道级清除也要把它清掉。
 	MarkSuccess("SC-OTHER", "SC-A", "x")
-	if n := ClearCooldownsForChannel("SC-A"); n != 1 {
-		t.Fatalf("应按渠道清掉剩余的 1 条冷却，得到 %d", n)
+	r = ClearCooldownsForChannel("SC-A")
+	if r.Cleared != 1 {
+		t.Fatalf("应按渠道清掉剩余的 1 条冷却，得到 %d", r.Cleared)
+	}
+	if r.Affinity != 1 {
+		t.Fatalf("应按渠道清掉指向该渠道的 1 条模型亲和，得到 %d", r.Affinity)
 	}
 	routeStates.Lock()
 	_, hasOther := routeStates.lastRoute["SC-OTHER"]
@@ -798,11 +811,16 @@ func TestClearCooldownsScoped(t *testing.T) {
 	// 渠道模型：按自身渠道/上游清
 	MarkFailure("SC-B", "z")
 	cm := store.Model{ID: "SC-B/z", Type: store.ModelTypeChannel, ChannelID: "SC-B", Upstream: "z"}
-	if n := ClearCooldownsForModel(cm); n != 1 {
-		t.Fatalf("渠道模型应清掉自身路由的冷却，得到 %d", n)
+	r = ClearCooldownsForModel(cm)
+	if r.Cleared != 1 {
+		t.Fatalf("渠道模型应清掉自身路由的冷却，得到 %d", r.Cleared)
 	}
-	if n := ClearAllCooldowns(); n != 0 {
-		t.Fatalf("冷却应已清空，仍剩 %d", n)
+	if r.Affinity != 0 {
+		t.Fatalf("渠道模型没有成功记录时不应清掉亲和，得到 %d", r.Affinity)
+	}
+	r = ClearAllCooldowns()
+	if r.Cleared != 0 || r.Affinity != 0 {
+		t.Fatalf("冷却与亲和应已清空，仍剩 %d 条冷却、%d 条亲和", r.Cleared, r.Affinity)
 	}
 }
 
