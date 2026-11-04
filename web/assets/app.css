@@ -3149,11 +3149,37 @@ html[data-theme="dark"] .msg__answer--md a { color: var(--leaf-300); }
   border-top: 1.5px solid var(--border-strong);
 }
 
+/* 正文里的图片只做预览（跟附件图 .msg__image 同尺寸），点开有灯箱看原图 */
 .msg__answer--md img {
-  max-width: 100%;
+  max-width: min(320px, 100%);
+  max-height: 320px;
+  width: auto;
   height: auto;
   border-radius: 10px;
   border: 1.5px solid var(--border-line);
+  cursor: zoom-in;
+}
+
+/* 图片灯箱：点聊天气泡里的图全屏看原图，点任意处或 Esc 关闭 */
+.img-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(20, 26, 16, .78);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .18s ease, visibility .18s ease;
+  cursor: zoom-out;
+}
+.img-lightbox.is-open { opacity: 1; visibility: visible; }
+.img-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
 }
 
 /* 公式：排版交给 KaTeX 自带的样式，这里只管在气泡里的间距和横向溢出 */

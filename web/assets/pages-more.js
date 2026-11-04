@@ -2035,6 +2035,26 @@
         if (code) copyText(code.textContent, '代码');
       });
 
+      // 点气泡里的图片看大图：预览被缩到 320px，灯箱里再看原图。
+      // 渲染是整段 innerHTML 重画，所以事件得代理在 log 上，不能绑到 img 本身。
+      const lb = document.createElement('div');
+      lb.className = 'img-lightbox';
+      lb.innerHTML = '<img alt="">';
+      lb.addEventListener('click', () => lb.classList.remove('is-open'));
+      document.body.appendChild(lb);
+      const lbImg = lb.querySelector('img');
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') lb.classList.remove('is-open');
+      });
+      log.addEventListener('click', (e) => {
+        const img = e.target.closest && e.target.closest('.msg__answer--md img');
+        if (!img || !img.src) return;
+        // 图片可能包在链接里（[![图](src)](href)），点图看大图而不是跳链接
+        e.preventDefault();
+        lbImg.src = img.src;
+        lb.classList.add('is-open');
+      });
+
       const paramEls = paramDefs.map((p) => ({
         def: p,
         input: root.querySelector('#chat-param-' + p.key),
