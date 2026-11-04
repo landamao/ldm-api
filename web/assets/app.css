@@ -520,7 +520,7 @@ html[data-theme="dark"] .topbar__title::before { filter: brightness(1.35) satura
 /* 筛选控件（页面通过 render 的第三个参数填进来）排在操作按钮左边：
    一行放得下时筛选贴着右侧的操作按钮排（不粘标题），整组放不下时由
    app.js 量出来给顶栏加 .topbar--filters-row，整块掉到第二行独占一行
-   （控件贴最右），功能按钮永远留在第一行最右不掉行。 */
+   （控件贴最左，见下），功能按钮永远留在第一行最右不掉行。 */
 .topbar__filters {
   display: flex;
   align-items: center;
@@ -533,10 +533,11 @@ html[data-theme="dark"] .topbar__title::before { filter: brightness(1.35) satura
   flex-wrap: wrap;
 }
 /* 第一行放不下筛选时（app.js 在首帧绘制前量出来加的类）：
-   整块掉到最后一行独占一行铺满整块牌子，控件贴最右；
-   order 让它在排版顺序上排到操作按钮后面——按钮先占上面的行，
-   筛选永远在最下面一行，不会反过来压到按钮上面 */
-.topbar--filters-row .topbar__filters { flex: 1 1 100%; order: 3; }
+   整块掉到最后一行独占一行铺满整块牌子，控件贴最左——掉行后整行都
+   是筛选，从左往右排比孤零零吊在右边顺眼；order 让它在排版顺序上排到
+   操作按钮后面——按钮先占上面的行，筛选永远在最下面一行，不会反过来
+   压到按钮上面 */
+.topbar--filters-row .topbar__filters { flex: 1 1 100%; order: 3; justify-content: flex-start; }
 #topbar-filters[hidden] { display: none; }
 .topbar__filters .search { flex: 0 1 200px; min-width: 150px; }
 /* 计数这类文字不能被挤成竖排 */
