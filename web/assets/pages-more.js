@@ -244,8 +244,9 @@
   window.LDM.registerPage('dashboard', {
     title: '数据看板',
     desc: '网关调用量、Token 消耗与渠道健康度',
-    async render(root, actions) {
-      actions.innerHTML = `
+    async render(root, actions, filters) {
+      // 统计区间是筛选，放左边贴标题；单位和刷新是功能按钮，固定最右
+      filters.innerHTML = `
         <select class="select" id="dash-preset" aria-label="统计区间" style="width:auto;min-width:96px">
           ${DASH_PRESET_KEYS.map((k) => `<option value="${k}"${dashRange.key === k ? ' selected' : ''}>${DASH_RANGES[k].pick}</option>`).join('')}
         </select>
@@ -255,7 +256,8 @@
           <span class="muted fs-12">至</span>
           <input class="input log-time" id="dash-end" type="datetime-local" aria-label="结束时间"
                  title="留空表示到此刻" value="${toLocalInput(dashBounds().end)}" style="width:auto;min-width:168px">
-        </span>
+        </span>`;
+      actions.innerHTML = `
         <select class="select" id="dash-unit" aria-label="数字单位" style="width:auto;min-width:128px">
           <option value="en"${dashUnit.mode === 'en' ? ' selected' : ''}>英文单位 K/M</option>
           <option value="cn"${dashUnit.mode === 'cn' ? ' selected' : ''}>中文单位 万/亿</option>
@@ -271,9 +273,9 @@
       };
 
       // 时间区间：预设下拉和起止输入框是同一份状态，改哪个都能生效。
-      const presetEl = actions.querySelector('#dash-preset');
-      const startEl = actions.querySelector('#dash-start');
-      const endEl = actions.querySelector('#dash-end');
+      const presetEl = filters.querySelector('#dash-preset');
+      const startEl = filters.querySelector('#dash-start');
+      const endEl = filters.querySelector('#dash-end');
       // 预设切换后把区间换算成具体时间填进输入框，方便看清到底查的是哪一段
       const syncTimeInputs = () => {
         const b = dashBounds();
@@ -1027,12 +1029,8 @@
       }
       if (plazaState.provider === '__none' && !unassigned) plazaState.provider = 'all';
 
-      // 搜索 / 类型筛选 / 排序搬到顶栏第二行；提供商胶囊留在页面下方
+      // 类型筛选 / 排序 / 搜索搬到顶栏第二行（搜索框放排序后面）；提供商胶囊留在页面下方
       filters.innerHTML = `
-        <div class="search" style="flex:0 1 220px;min-width:170px">
-          <span class="search__icon">${icon('search', 15)}</span>
-          <input class="input" id="plaza-search" placeholder="搜索模型…" value="${esc(plazaState.keyword)}">
-        </div>
         <div class="pill-toggle" id="plaza-filter">
           <button data-f="all" class="${plazaState.filter === 'all' ? 'is-on' : ''}">全部</button>
           <button data-f="custom" class="${plazaState.filter === 'custom' ? 'is-on' : ''}">自定义模型</button>
@@ -1044,7 +1042,11 @@
           <option value="r24_asc">近 24h 成功率 升序</option>
           <option value="r200_desc">近 200 次成功率 降序</option>
           <option value="r200_asc">近 200 次成功率 升序</option>
-        </select>`;
+        </select>
+        <div class="search" style="flex:0 1 220px;min-width:170px">
+          <span class="search__icon">${icon('search', 15)}</span>
+          <input class="input" id="plaza-search" placeholder="搜索模型…" value="${esc(plazaState.keyword)}">
+        </div>`;
 
       root.innerHTML = `
         <div class="card mb-18">
