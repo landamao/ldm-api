@@ -106,9 +106,7 @@ html[data-theme="light"] {
   --primary-border: #a9d488;
   --primary-text:   #fffdf5;
 
-  --shadow-xs: 2px 2px 0 rgba(107, 69, 37, .14);
-  --shadow-sm: 4px 4px 0 rgba(107, 69, 37, .16), 0 16px 26px -20px rgba(74, 49, 32, .6);
-  --shadow-md: 6px 6px 0 rgba(107, 69, 37, .18), 0 22px 38px -22px rgba(74, 49, 32, .6);
+  /* 只剩拖拽浮影、抽屉、手机端侧边栏在用：都是浮层，影子帮它们和底下内容分层 */
   --shadow-lg: 8px 9px 0 rgba(74, 49, 32, .22), 0 38px 64px -26px rgba(74, 49, 32, .6);
   --code-bg:   #f7eeda;
 
@@ -158,9 +156,6 @@ html[data-theme="dark"] {
   --blossom-100: rgba(217, 85, 127, .16);
   --leaf-100:  rgba(124, 194, 67, .14);
 
-  --shadow-xs: 0 1px 0 rgba(0, 0, 0, .45);
-  --shadow-sm: 0 3px 0 rgba(0, 0, 0, .38), 0 12px 22px -18px rgba(0, 0, 0, .9);
-  --shadow-md: 0 5px 0 rgba(0, 0, 0, .38), 0 18px 32px -20px rgba(0, 0, 0, .9);
   --shadow-lg: 0 8px 0 rgba(0, 0, 0, .45), 0 34px 60px -26px rgba(0, 0, 0, .95);
   --code-bg:   #2a2419;
 
@@ -743,7 +738,6 @@ html[data-theme="dark"] .btn--ghost:hover { background: var(--surface-hover); bo
   background-color: var(--surface);
   border: 2px solid var(--card-line);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
 }
 .card--pad { padding: 20px; }
 .card__head {
@@ -814,8 +808,7 @@ html[data-theme="dark"] .card__head {
   border-radius: var(--radius-lg);
   padding: 15px 16px;
   overflow: hidden;
-  box-shadow: var(--shadow-xs);
-  transition: box-shadow .2s, transform .2s cubic-bezier(.3, 1.4, .5, 1), border-color .2s;
+  transition: transform .2s cubic-bezier(.3, 1.4, .5, 1), border-color .2s;
 }
 /* 顶部的彩色小横条：不同指标换个颜色，扫一眼就能区分 */
 .stat::before {
@@ -834,7 +827,6 @@ html[data-theme="dark"] .card__head {
 .stat:nth-child(4)::before { background: linear-gradient(90deg, #f5bfd2, var(--blossom-500)); }
 .stat:nth-child(5)::before { background: linear-gradient(90deg, #d6bdf5, var(--berry-500)); }
 .stat:hover {
-  box-shadow: var(--shadow-md);
   transform: translateY(-3px) rotate(-.35deg);
   border-color: var(--primary-border);
 }
@@ -946,7 +938,6 @@ html[data-theme="dark"] .dash-dots i { background: var(--leaf-300); }
   border-radius: 16px;
   border: 2px solid var(--card-line);
   background: var(--surface);
-  box-shadow: 0 2px 0 rgba(122, 83, 48, .1);
 }
 /* 直接铺在卡片里的表格：卡片本身就是那圈木框，表格别再画第二层边框，
    直角投影也别留——投影是方角的，会在卡片圆角处戳出一块深色直角 */
@@ -2676,8 +2667,7 @@ html[data-theme="dark"] .chart-tip { background: #33251a; border-color: #0d130c;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  transition: box-shadow .2s, transform .2s cubic-bezier(.3, 1.4, .5, 1), border-color .2s;
-  box-shadow: var(--shadow-xs);
+  transition: transform .2s cubic-bezier(.3, 1.4, .5, 1), border-color .2s;
   overflow: hidden;
 }
 /* 渠道模型用天空色顶边，和自己建的模型区分开 */
@@ -2685,7 +2675,6 @@ html[data-theme="dark"] .chart-tip { background: #33251a; border-color: #0d130c;
 html[data-theme="dark"] .model-card { border-top-color: var(--leaf-600); }
 html[data-theme="dark"] .model-card:has(.model-card__type.is-channel) { border-top-color: #4f8fb5; }
 .model-card:hover {
-  box-shadow: var(--shadow-md);
   transform: translateY(-3px) rotate(-.3deg);
   border-color: var(--primary-border);
 }
