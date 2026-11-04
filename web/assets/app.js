@@ -791,14 +791,15 @@
 
   function openModal(opts) {
     const {
-      title, desc, body, footer, size, onMount, closable = true, onClose, top = false,
+      title, desc, body, footer, size, onMount, closable = true, onClose, top = false, cls = '',
     } = opts;
 
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop' + (top ? ' modal-backdrop--top' : '');
     const sizeCls = size ? ' modal--' + size : '';
+    const extraCls = cls ? ' ' + cls : '';
     backdrop.innerHTML =
-      `<div class="modal${sizeCls}" role="dialog" aria-modal="true">
+      `<div class="modal${sizeCls}${extraCls}" role="dialog" aria-modal="true">
         <div class="modal__head">
           <div>
             <div class="modal__title">${esc(title || '')}</div>
@@ -965,6 +966,7 @@
       title: textareaExpandTitle(ta),
       desc: readOnly ? '只读内容，可放大查看和复制。' : '',
       size: 'xl',
+      cls: 'modal--expand',
       body: `<textarea class="textarea textarea-expand__editor" id="${EXPAND_EDITOR_ID}"
                 data-no-expand="1" spellcheck="false" placeholder="${esc(ta.placeholder || '')}"></textarea>`,
       footer: `<div class="spacer"></div>
