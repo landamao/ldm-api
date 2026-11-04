@@ -518,12 +518,13 @@ html[data-theme="dark"] .topbar__title::before { filter: brightness(1.35) satura
 .topbar__titles { min-width: 0; }
 
 /* 筛选控件（页面通过 render 的第三个参数填进来）排在操作按钮左边：
-   一行放得下时筛选贴着标题、按钮贴最右；整组放不下时由 app.js 量出来
-   给顶栏加 .topbar--filters-row，整块掉到第二行独占一行（从最左铺到最右），
-   功能按钮永远留在第一行最右不掉行。 */
+   一行放得下时筛选贴着右侧的操作按钮排（不粘标题），整组放不下时由
+   app.js 量出来给顶栏加 .topbar--filters-row，整块掉到第二行独占一行
+   （控件贴最右），功能按钮永远留在第一行最右不掉行。 */
 .topbar__filters {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
   /* 块宽按剩余空间算（basis 0），不会把操作按钮挤到第二行；
      控件在块内放不下时自然折行，要不要整块掉到第二行交给 app.js 判断 */
@@ -532,7 +533,7 @@ html[data-theme="dark"] .topbar__title::before { filter: brightness(1.35) satura
   flex-wrap: wrap;
 }
 /* 第一行放不下筛选时（app.js 在首帧绘制前量出来加的类）：
-   整块掉到最后一行独占一行，从牌子最左铺到最右；
+   整块掉到最后一行独占一行铺满整块牌子，控件贴最右；
    order 让它在排版顺序上排到操作按钮后面——按钮先占上面的行，
    筛选永远在最下面一行，不会反过来压到按钮上面 */
 .topbar--filters-row .topbar__filters { flex: 1 1 100%; order: 3; }
@@ -4266,11 +4267,14 @@ html[data-theme="dark"] .backup-result__head { color: var(--leaf-300); }
     border-radius: 16px;
   }
   /* 窄屏筛选控件改成一条可横滑的带子，顶栏不至于长成好几行；
-     order 排到操作按钮后面：标题、按钮在上，横滑带子垫底 */
+     order 排到操作按钮后面：标题、按钮在上，横滑带子垫底。
+     带子必须保持 flex-start：右对齐会让放不下的部分从左边溢出，
+     横滑条滚不到开头 */
   #topbar-filters {
     flex: 0 1 auto;
     min-width: 0;
     flex-wrap: nowrap;
+    justify-content: flex-start;
     overflow-x: auto;
     scrollbar-width: none;
     max-width: 100%;

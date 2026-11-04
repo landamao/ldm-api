@@ -1322,7 +1322,7 @@
 
   // ---------- 顶栏筛选整块折行 ----------
   // 筛选控件在「标题和按钮之间」一行放不下时，整块掉到第二行独占一行
-  // （从牌子最左铺到最右），不在标题旁边折出半行；放得下就贴着标题排。
+  // （控件贴牌子最右），不在标题旁边折出半行；放得下就贴着右边操作按钮排。
   // 放不放得下靠实测：临时禁掉子项收缩排成一行，内容总宽超过块宽即放不下。
   // 手机窄屏（≤900px）走横滑样式，不参与这套逻辑。
   function layoutTopbarFilters() {
@@ -1333,14 +1333,18 @@
       bar.classList.remove('topbar--filters-row');
       return;
     }
-    // 先回到「挤在第一行」的状态再量，量出来的才是真实可用宽度
+    // 先回到「挤在第一行」的状态再量，量出来的才是真实可用宽度。
+    // 量的时候还要临时改回 flex-start：顶栏筛选平时是靠右排的（贴操作按钮），
+    // 右对齐的块放不下时内容从左边溢出，scrollWidth 看不见这部分，会漏判掉行
     bar.classList.remove('topbar--filters-row');
     const kids = [...filters.children];
     const prevShrink = kids.map((el) => el.style.flexShrink);
     filters.style.flexWrap = 'nowrap';
+    filters.style.justifyContent = 'flex-start';
     kids.forEach((el) => { el.style.flexShrink = '0'; });
     const overflow = filters.scrollWidth > filters.clientWidth + 1;
     filters.style.flexWrap = '';
+    filters.style.justifyContent = '';
     kids.forEach((el, i) => { el.style.flexShrink = prevShrink[i]; });
     bar.classList.toggle('topbar--filters-row', overflow);
   }
