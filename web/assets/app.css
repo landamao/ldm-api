@@ -2539,6 +2539,12 @@ html[data-theme="dark"] .login-card { box-shadow: 9px 10px 0 rgba(0, 0, 0, .35),
 .login-github .icon { opacity: .85; }
 
 /* ---------- 看板图表 ---------- */
+/* 口径开关独立成一行摆在两张图表卡片上面，靠右；左边留空和下面两张卡的左缘对齐 */
+.dash-metric-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: -6px 0 10px;
+}
 .chart-grid {
   display: grid;
   grid-template-columns: 1.65fr 1fr;

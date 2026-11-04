@@ -125,10 +125,8 @@
     if (b.end) p.set('end', String(b.end));
     return p;
   }
+  // 图表口径开关（顶栏）：请求数 / Token，调用趋势和模型调用分布共用一份。
   const dashMetric = { m: 'requests' };
-  // 环形图（模型调用分布）自己的口径开关：请求数 / Token。
-  // 和调用趋势的维度开关各管各的，互不影响。
-  const dashDonutMetric = { m: 'requests' };
   // 调用趋势的视图选择：all = 每个模型一条线，total = 总计三条曲线，model = 单个模型三条曲线。
   // 三个视图都在图例里点，不额外占上面的维度切换位。
   const dashSel = { kind: 'all', id: '' };
@@ -504,18 +502,19 @@
             <div class="stat" id="card-speed"></div>
           </div>
 
+          <div class="dash-metric-row">
+            <div class="pill-toggle" id="metric-toggle" aria-label="图表口径">
+              <button data-m="requests" class="${dashMetric.m === 'requests' ? 'is-on' : ''}">请求数</button>
+              <button data-m="tokens" class="${dashMetric.m === 'tokens' ? 'is-on' : ''}">Token</button>
+            </div>
+          </div>
+
           <div class="chart-grid">
             <div class="card">
               <div class="card__head">
                 <div>
                   <div class="card__title">调用趋势</div>
                   <div class="card__sub" id="trend-sub"></div>
-                </div>
-                <div class="card__actions">
-                  <div class="pill-toggle" id="metric-toggle">
-                    <button data-m="requests" class="${dashMetric.m === 'requests' ? 'is-on' : ''}">请求数</button>
-                    <button data-m="tokens" class="${dashMetric.m === 'tokens' ? 'is-on' : ''}">Token</button>
-                  </div>
                 </div>
               </div>
               <div class="card__body">
@@ -530,12 +529,6 @@
                 <div>
                   <div class="card__title">模型调用分布</div>
                   <div class="card__sub" id="donut-sub"></div>
-                </div>
-                <div class="card__actions">
-                  <div class="pill-toggle" id="donut-metric-toggle">
-                    <button data-dm="requests" class="${dashDonutMetric.m === 'requests' ? 'is-on' : ''}">请求数</button>
-                    <button data-dm="tokens" class="${dashDonutMetric.m === 'tokens' ? 'is-on' : ''}">Token</button>
-                  </div>
                 </div>
               </div>
               <div class="card__body"><div id="model-donut"></div></div>
@@ -591,28 +584,23 @@
           tokenRank: body.querySelector('#token-rank'),
           recent: body.querySelector('#recent-logs'),
         };
+        // 口径开关：切请求数 / Token 时曲线、图例、环形图一起重画，
+        // 三处用的是同一份状态，只动其一就会和别处对不上。
         body.querySelectorAll('#metric-toggle button').forEach((b) => {
-          b.onclick = () => setTrendMetric(b.dataset.m);
-        });
-        // 环形图的口径开关：切请求数 / Token，只重画环形图，不动别的卡片。
-        body.querySelectorAll('#donut-metric-toggle button').forEach((b) => {
-          b.onclick = () => {
-            dashDonutMetric.m = b.dataset.dm;
-            body.querySelectorAll('#donut-metric-toggle button').forEach((x) => x.classList.toggle('is-on', x === b));
-            paintDonut();
-          };
+          b.onclick = () => setMetric(b.dataset.m);
         });
         body.querySelector('#go-logs').onclick = () => { location.hash = '#/logs'; };
       }
 
-      // 切换调用趋势的口径（请求数 / Token）。
-      // 曲线和图例必须一起重画：图例里的模型数字、模型清单都跟着这个口径走，
-      // 只重画曲线的话，下面的图例会停在旧口径上，两处对不上。
-      function setTrendMetric(m) {
+      // 切换图表口径（请求数 / Token），开关在两张图表卡片上面，趋势和分布共用。
+      // 曲线、图例、环形图必须一起重画：图例里的模型数字、模型清单、
+      // 环形的排序都跟着这个口径走，只动一处就会和别处对不上。
+      function setMetric(m) {
         dashMetric.m = m;
         body.querySelectorAll('#metric-toggle button').forEach((x) => x.classList.toggle('is-on', x.dataset.m === m));
         paintTrend();
         paintLegend();
+        paintDonut();
       }
 
       // 选中的模型没有 Token / 速度记录时（老数据只记了请求数和失败数），
@@ -871,8 +859,8 @@
         if (!dashData.breakdown) return;
         const { breakdown } = dashData;
         const scoped = dashSel.kind === 'model';
-        // 请求数口径看调用次数，Token 口径看 Token 消耗。
-        const isTok = dashDonutMetric.m === 'tokens';
+        // 请求数口径看调用次数，Token 口径看 Token 消耗（口径开关在顶栏，和趋势共用）。
+        const isTok = dashMetric.m === 'tokens';
         // Token 口径用后端另给的一份「按 Token 排」的模型列表，
         // 免得调用不多但特别耗 Token 的模型排在「调用次数前 12」之外被漏掉。
         const src = dashModelList(breakdown, isTok);
