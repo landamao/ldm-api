@@ -3394,6 +3394,13 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
 @media (min-width: 901px) {
   .chat-layout.is-conv-collapsed .chat-conv { margin-left: -246px; }
 }
+/* 第一行：新建对话 + 收起；多选时新建原位换成操作条 */
+.chat-conv__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 0;
+}
 .chat-conv__tools {
   display: flex;
   align-items: center;
@@ -3408,9 +3415,10 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
 .chat-conv__search .search__icon { left: 9px; width: 13px; height: 13px; }
 /* 多选操作条：多选模式下顶替「开启新对话」的位置，同一排同一套胶囊语言 */
 .chat-conv__mbar {
+  flex: 1;
   min-width: 0;
   height: 28px;
-  margin: 10px 10px 0;
+  margin: 0;
   padding: 0 3px 0 10px;
   display: flex;
   align-items: center;
@@ -3434,9 +3442,10 @@ html[data-theme="dark"] .chat-conv__mbar { box-shadow: 0 1px 0 rgba(0, 0, 0, .35
 /* 操作条里的两个图标键压小一档，才装得进 28px 的胶囊 */
 .chat-conv__mbar .btn--icon.btn--sm { width: 24px; height: 24px; flex-shrink: 0; }
 .chat-conv__new {
+  flex: 1;
   min-width: 0;
   height: 28px;
-  margin: 10px 10px 0;
+  margin: 0;
   padding: 0 10px;
   display: inline-flex;
   align-items: center;
