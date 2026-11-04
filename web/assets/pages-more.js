@@ -1646,13 +1646,24 @@
 
             <!-- 左侧：对话列表（往左收） -->
             <aside class="chat-conv" id="chat-conv">
-              <div class="chat-conv__head">
-                <button class="chat-conv__new" id="chat-conv-new" type="button">${icon('plus', 14)}开启新对话</button>
+              <div class="chat-conv__tools">
+                <div class="search chat-conv__search">
+                  <span class="search__icon">${icon('search', 13)}</span>
+                  <input class="input input--sm" id="chat-conv-search" placeholder="搜索对话…" autocomplete="off" spellcheck="false" aria-label="搜索对话">
+                </div>
+                <span class="chat-conv__mcount" id="chat-conv-mcount" hidden>已选 0 个</span>
+                <button class="btn btn--ghost btn--icon btn--sm chat-conv__mdel" id="chat-conv-del-sel" type="button" title="删除所选对话" aria-label="删除所选对话" hidden>${icon('trash', 14)}</button>
+                <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-multi-exit" type="button" title="退出多选" aria-label="退出多选" hidden>${icon('x', 14)}</button>
                 <button class="btn btn--ghost btn--icon btn--sm chat-conv__collapse" id="chat-conv-collapse" title="收起对话列表" aria-label="收起对话列表">${icon('chevronLeft', 15)}</button>
               </div>
               <div class="chat-conv__body">
-                <!-- 内层单独一层，会话少的时候靠 margin:auto 垂直居中，多了照常滚动 -->
-                <div class="chat-conv__inner" id="chat-conv-list"></div>
+                <!-- 多选、新建两个按钮跟着列表一起居中：会话少的时候整块从中间开始排，多了照常滚动；
+                     多选操作条（已选/删除/退出）留在顶上不跟着滚，列表长了也够得着 -->
+                <div class="chat-conv__center">
+                  <button class="chat-conv__multi" id="chat-conv-multi" type="button">${icon('check', 13)}多选</button>
+                  <button class="chat-conv__new" id="chat-conv-new" type="button">${icon('plus', 14)}开启新对话</button>
+                  <div class="chat-conv__inner" id="chat-conv-list"></div>
+                </div>
               </div>
             </aside>
 
@@ -1792,6 +1803,12 @@
       const convCollapse = root.querySelector('#chat-conv-collapse');
       const convOpen = root.querySelector('#chat-conv-open');
       const convScrim = root.querySelector('#chat-conv-scrim');
+      const convAside = root.querySelector('#chat-conv');
+      const convSearchInput = root.querySelector('#chat-conv-search');
+      const convMultiBtn = root.querySelector('#chat-conv-multi');
+      const convMCount = root.querySelector('#chat-conv-mcount');
+      const convDelSel = root.querySelector('#chat-conv-del-sel');
+      const convMultiExit = root.querySelector('#chat-conv-multi-exit');
       // 右侧模型配置
       const sideClose = root.querySelector('#chat-side-close');
       const sideOpen = root.querySelector('#chat-side-open');
@@ -2945,6 +2962,48 @@
 
       const activeSession = () => chatStore.sessions.find((x) => x.id === chatStore.activeId) || null;
 
+      // ---------- 搜索与多选 ----------
+
+      // 搜索只按标题过滤，大小写不敏感；清空输入框就恢复完整列表
+      let convSearchKw = '';
+      convSearchInput.addEventListener('input', () => {
+        convSearchKw = convSearchInput.value.trim().toLowerCase();
+        renderConvList();
+      });
+
+      // 多选状态：进入后列表项变成勾选框，点条目是选中/取消而不是切换会话
+      const convMulti = { on: false, picked: new Set() };
+      const syncMultiBar = () => {
+        const on = convMulti.on;
+        convAside.classList.toggle('is-multi', on);
+        convSearchInput.parentElement.hidden = on;
+        convMultiBtn.hidden = on;
+        convMCount.hidden = !on;
+        convDelSel.hidden = !on;
+        convMultiExit.hidden = !on;
+        convMCount.textContent = `已选 ${convMulti.picked.size} 个`;
+        convDelSel.disabled = !convMulti.picked.size;
+      };
+      const exitConvMulti = () => {
+        convMulti.on = false;
+        convMulti.picked.clear();
+        syncMultiBar();
+        renderConvList();
+      };
+      convMultiBtn.onclick = () => {
+        convMulti.on = true;
+        syncMultiBar();
+        renderConvList();
+      };
+      convMultiExit.onclick = exitConvMulti;
+      convDelSel.onclick = () => {
+        if (!convMulti.picked.size) return;
+        const ids = [...convMulti.picked];
+        ids.forEach(removeSession);
+        if (ids.length) Toast.success(`已删除 ${ids.length} 个对话`);
+        exitConvMulti();
+      };
+
       // 重画左侧列表：按时间分组，当前会话高亮
       const renderConvList = () => {
         if (!convList) return;
@@ -2952,7 +3011,11 @@
         const groups = [];
         const order = ['今天', '昨天', '近 7 天', '更早'];
         const sorted = chatStore.sessions.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        // 搜索命中才算数；分组里一条都没有就整组不出现
+        const hit = (s) => !convSearchKw
+          || (s.title || '新对话').toLowerCase().includes(convSearchKw);
         sorted.forEach((s) => {
+          if (!hit(s)) return;
           const g = convGroupOf(s.updatedAt || s.createdAt || Date.now());
           let bucket = groups.find((x) => x.name === g);
           if (!bucket) {
@@ -2975,29 +3038,47 @@
           g.items.forEach((s) => {
             const item = document.createElement('div');
             item.className = 'chat-conv__item' + (s.id === chatStore.activeId ? ' is-active' : '');
+            if (convMulti.on && convMulti.picked.has(s.id)) item.classList.add('is-picked');
+            // 多选模式下条目前面是勾选框，点条目是选中而不是切换；
+            // 单个删除键只在普通模式出现，多选的删除走顶上的批量键
+            if (convMulti.on) {
+              const pick = document.createElement('span');
+              pick.className = 'chat-conv__pick';
+              pick.innerHTML = icon('check', 10);
+              item.appendChild(pick);
+              item.onclick = () => {
+                if (convMulti.picked.has(s.id)) convMulti.picked.delete(s.id);
+                else convMulti.picked.add(s.id);
+                syncMultiBar();
+                renderConvList();
+              };
+            }
             const title = document.createElement('span');
             title.className = 'chat-conv__title';
             title.textContent = s.title || '新对话';
             title.title = s.title || '新对话';
-            const del = document.createElement('button');
-            del.className = 'chat-conv__del';
-            del.type = 'button';
-            del.title = '删除对话';
-            del.innerHTML = icon('trash', 12);
-            del.onclick = (e) => {
-              e.stopPropagation();
-              removeSession(s.id);
-            };
             item.appendChild(title);
-            item.appendChild(del);
-            item.onclick = () => switchSession(s.id);
+            if (!convMulti.on) {
+              const del = document.createElement('button');
+              del.className = 'chat-conv__del';
+              del.type = 'button';
+              del.title = '删除对话';
+              del.innerHTML = icon('trash', 12);
+              del.onclick = (e) => {
+                e.stopPropagation();
+                removeSession(s.id);
+              };
+              item.appendChild(del);
+              item.onclick = () => switchSession(s.id);
+            }
             convList.appendChild(item);
           });
         });
         if (!convList.children.length) {
           const empty = document.createElement('div');
           empty.className = 'chat-conv__empty';
-          empty.textContent = '还没有对话';
+          // 有会话但被搜索滤光，跟「一条会话都没有」文案区分开
+          empty.textContent = convSearchKw && chatStore.sessions.length ? '没有匹配的对话' : '还没有对话';
           convList.appendChild(empty);
         }
       };
@@ -4513,8 +4594,11 @@
         if (sending) stopStream();
         else doSend();
       };
-      // 左侧列表：新建对话
-      convNew.onclick = () => createSession();
+      // 左侧列表：新建对话（多选模式下先退出多选再建）
+      convNew.onclick = () => {
+        if (convMulti.on) exitConvMulti();
+        createSession();
+      };
       // 清空对话：点一下直接清，不再二次确认（配置栏底部的按钮和输入框里的芯片按钮共用）
       const clearChat = () => {
         const had = history.length;
