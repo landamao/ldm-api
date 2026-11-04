@@ -1244,7 +1244,6 @@
             <div class="brand__logo">🐱</div>
             <div class="brand__text">
               <div class="brand__name" id="brand-name">懒大猫 API</div>
-              <div class="brand__sub" id="brand-sub">模型聚合网关</div>
             </div>
             <a class="brand__github" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" title="GitHub 仓库" aria-label="GitHub 仓库">${githubIcon(16)}</a>
           </div>
@@ -1263,7 +1262,6 @@
             <button class="btn btn--ghost btn--icon mobile-toggle" id="btn-menu">${icon('list', 18)}</button>
             <div class="topbar__titles">
               <div class="topbar__title" id="page-title">数据看板</div>
-              <div class="topbar__desc" id="page-desc"></div>
             </div>
             <div id="topbar-actions" class="btn-row"></div>
             <div id="topbar-filters" class="topbar__filters" hidden></div>
@@ -1340,7 +1338,6 @@
     if (window.LDMPet) window.LDMPet.show();
     renderNav();
     document.getElementById('page-title').textContent = def.title || '';
-    document.getElementById('page-desc').textContent = def.desc || '';
     const actions = document.getElementById('topbar-actions');
     actions.innerHTML = '';
     // 页面可能把整组按钮收起来（is-empty），切页时复位，别把顶栏右侧留空
@@ -1448,7 +1445,6 @@
     document.body.classList.remove('is-login-page');
     renderShell();
     if (s.site_name) document.getElementById('brand-name').textContent = s.site_name;
-    document.getElementById('brand-sub').textContent = s.site_subtitle || '模型聚合网关';
     applyLogo(State.settings.logo);
     if (hint) {
       setTimeout(() => {

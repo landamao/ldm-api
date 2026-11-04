@@ -170,7 +170,7 @@ function legend(metric, breakdown) {
   ];
   data.breakdown.tokens_used = 4500;
   if (breakdown) Object.assign(data.breakdown, breakdown);
-  const dom = { legend: { innerHTML: '', querySelectorAll: () => [] } };
+  const dom = { legend: { innerHTML: '', querySelectorAll: () => [], querySelector: () => null } };
   const ctx = {
     console,
     dashData: data,
@@ -178,6 +178,7 @@ function legend(metric, breakdown) {
     dashMetric: { m: metric },
     dashUnit: { mode: 'none' },
     DASH_MODEL_COLORS: undefined,
+    legendShowAll: false,
     dom,
     esc: (s) => String(s),
     fmtDash: undefined,
@@ -248,4 +249,40 @@ test('图例 · 请求数维度仍用「按调用次数排」的模型清单', (
   });
   assert.doesNotMatch(html, /模型D/, '请求数口径不按 Token 清单显示');
   assert.match(html, /模型A/);
+});
+
+// ---------------------------------------------------------------------------
+// 图例收纳：模型太多时收进「其他 n 个」
+// ---------------------------------------------------------------------------
+
+test('图例 · 模型超过 9 个只露前 8 颗，其余收进「其他 n 个」', () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({ name: `模型${i + 1}`, value: 12 - i, errors: 0, tokens: 100 }));
+  const html = legend('requests', { models: many });
+  assert.match(html, /其他 4 个/, '12 个模型收进「其他 4 个」');
+  assert.match(html, /模型8/, '前 8 颗要露出来');
+  assert.doesNotMatch(html, /模型9</, '第 9 个起不直接显示');
+});
+
+test('图例 · 选中某个模型（model 视图）时自动全量展开', () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({ name: `模型${i + 1}`, value: 12 - i, errors: 0, tokens: 100 }));
+  const data = makeData();
+  data.breakdown.models = many;
+  const dom = { legend: { innerHTML: '', querySelectorAll: () => [], querySelector: () => null } };
+  const ctx = {
+    console,
+    dashData: data,
+    dashSel: { kind: 'model', id: '模型12' },
+    dashMetric: { m: 'requests' },
+    dashUnit: { mode: 'none' },
+    DASH_MODEL_COLORS: undefined,
+    legendShowAll: false,
+    dom,
+    esc: (s) => String(s),
+    fmtDash: undefined,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(`${COLORS}\n${FMT_DASH}\n${MODEL_LIST_FN}\n${MODEL_COLORS_FN}\n${PAINT_LEGEND}`, ctx);
+  ctx.paintLegend();
+  assert.match(dom.legend.innerHTML, /模型12/, '被选中的模型即使在第 9 位之后也要显示出来');
+  assert.doesNotMatch(dom.legend.innerHTML, /其他 \d+ 个/, 'model 视图下不折叠');
 });

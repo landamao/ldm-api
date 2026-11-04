@@ -132,6 +132,8 @@
   // 调用趋势的视图选择：all = 每个模型一条线，total = 总计三条曲线，model = 单个模型三条曲线。
   // 三个视图都在图例里点，不额外占上面的维度切换位。
   const dashSel = { kind: 'all', id: '' };
+  // 图例胶囊超过一排时收进「其他 n 个」，点了才展开；选中某个模型或点开后全量显示
+  let legendShowAll = false;
   // 各模型的固定配色，和模型调用分布的环形图保持一致。
   // 刻意避开失败数用的红色，免得图例里分不清哪个是失败线。
   const DASH_MODEL_COLORS = ['#4d9e2f', '#e9a316', '#3f8fbf', '#8a5ac2', '#d9557f', '#7cc243',
@@ -326,7 +328,6 @@
       // 以前是等四个接口全回来才建 DOM，统计慢一点整页就停在加载圈上。
       root.innerHTML = `<div id="dash-body"></div>`;
       const body = root.querySelector('#dash-body');
-
       // 各区块的数据分开存：谁先回来谁先填，不用等最慢的那个接口。
       // 初始为 null，paint* 遇到没数据的区块直接跳过，骨架继续留在页面上。
       const dashData = { overview: null, series: null, breakdown: null, logs: null };
@@ -444,25 +445,17 @@
           <div class="stat__label">${icon('clock', 13)}平均速度</div>
           <div class="stat__value">${dashPh(96, 'dash-ph--value')}</div>
           <div class="stat__foot">${dashPh(150, 'dash-ph--foot')}</div>`;
-        dom.chan.innerHTML = `
-          <div class="stat__label">${icon('channels', 13)}渠道</div>
-          <div class="stat__value">${dashPh(92, 'dash-ph--value')}</div>
-          <div class="stat__foot">${dashPh(76, 'dash-ph--foot')}</div>`;
-        dom.model.innerHTML = `
-          <div class="stat__label">${icon('models', 13)}模型</div>
-          <div class="stat__value">${dashPh(92, 'dash-ph--value')}</div>
-          <div class="stat__foot">${dashPh(76, 'dash-ph--foot')}</div>`;
 
         dom.trendSub.textContent = '';
         // 先把旧的曲线和尺寸观察器一起清掉，窗口缩放时旧数据不会画回占位上
         clearChart(dom.trend);
-        dom.trend.innerHTML = dashChartPh(216);
+        dom.trend.innerHTML = dashChartPh(256);
         dom.legend.innerHTML = [96, 82, 90, 76]
           .map((w) => `<span class="dash-ph dash-ph--pill" style="width:${w}px"></span>`).join('');
         dom.note.textContent = '';
         dom.donutSub.textContent = '';
         clearChart(dom.donut);
-        dom.donut.innerHTML = dashChartPh(168);
+        dom.donut.innerHTML = dashChartPh(196);
         dom.channelRank.innerHTML = dashRankPh();
         dom.tokenRank.innerHTML = dashRankPh();
       }
@@ -492,14 +485,21 @@
 
       // 骨架只建一次，之后所有操作都只重画局部
       function buildSkeleton() {
+        // 问候语：页面开头的视觉锚点，字号拉开和卡片的层级差
+        const now = new Date();
+        const h = now.getHours();
+        const hello = h < 5 ? '夜深了' : h < 9 ? '早上好' : h < 12 ? '上午好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
+        const week = '日一二三四五六'[now.getDay()];
         body.innerHTML = `
-          <div class="stat-grid">
+          <div class="dash-hello">
+            <div class="dash-hello__hi">${hello}</div>
+            <div class="dash-hello__sub">${now.getMonth() + 1} 月 ${now.getDate()} 日 星期${week} · 欢迎回来，站点概况都在这儿</div>
+          </div>
+          <div class="stat-grid stat-grid--4">
             <div class="stat" id="card-req"></div>
             <div class="stat" id="card-token"></div>
             <div class="stat" id="card-rate"></div>
             <div class="stat" id="card-speed"></div>
-            <div class="stat" id="card-chan"></div>
-            <div class="stat" id="card-model"></div>
           </div>
 
           <div class="chart-grid">
@@ -579,8 +579,6 @@
           token: body.querySelector('#card-token'),
           rate: body.querySelector('#card-rate'),
           speed: body.querySelector('#card-speed'),
-          chan: body.querySelector('#card-chan'),
-          model: body.querySelector('#card-model'),
           trendSub: body.querySelector('#trend-sub'),
           trend: body.querySelector('#trend-chart'),
           legend: body.querySelector('#model-legend'),
@@ -667,14 +665,6 @@
           <div class="stat__foot">${known.speed
             ? `首字 ${fmtDuration(t.avg_first_byte)} · 总耗时 ${fmtDuration(t.avg_speed_latency)}`
             : (scoped ? '历史数据未按模型记录速度' : '暂无速度样本')}</div>`;
-        dom.chan.innerHTML = `
-          <div class="stat__label">${icon('channels', 13)}渠道</div>
-          <div class="stat__value">${fmtDash(overview.channels.enabled)}<small>/ ${fmtDash(overview.channels.total)}</small></div>
-          <div class="stat__foot">已启用 / 总数</div>`;
-        dom.model.innerHTML = `
-          <div class="stat__label">${icon('models', 13)}模型</div>
-          <div class="stat__value">${fmtDash(overview.models.enabled)}<small>/ ${fmtDash(overview.models.total)}</small></div>
-          <div class="stat__foot">运行 ${fmtUptime(overview.uptime)}</div>`;
       }
 
       function paintTrend() {
@@ -774,7 +764,7 @@
         dom.trendSub.textContent = sub
           + (dashMetric.m === 'tokens' ? '（图例里的模型数字为 Token 消耗）' : '（图例里的模型数字为调用次数）');
         areaChart(dom.trend, {
-          labels, times, series: s, height: 216, spanMs: series.step_ms,
+          labels, times, series: s, height: 256, spanMs: series.step_ms,
           valueFmt: fmtDash,
           axisFmt: fmtDash,
           totalName: '总计',
@@ -831,7 +821,12 @@
             ${failTag(totalErr)}
           </button>`,
         ];
-        modelRows.forEach((m) => {
+        // 模型太多时只露前 8 颗，剩下的收进「其他 n 个」，免得胶囊拖出三行；
+        // 选中某个模型（视图切到 model）或点过「其他」后全量显示
+        const effShowAll = legendShowAll || kind === 'model';
+        const visibleRows = (!effShowAll && modelRows.length > 9) ? modelRows.slice(0, 8) : modelRows;
+        const hiddenCount = modelRows.length - visibleRows.length;
+        visibleRows.forEach((m) => {
           const color = colors.get(m.name) || DASH_MODEL_COLORS[0];
           const hasLine = !!ms[m.name];
           const on = kind === 'model' && dashSel.id === m.name;
@@ -843,7 +838,12 @@
             ${failTag(m.errors)}
           </button>`);
         });
+        if (hiddenCount > 0) {
+          items.push(`<button type="button" class="chart-legend__item chart-legend__more" data-more="1" title="展开其余 ${hiddenCount} 个模型">其他 ${hiddenCount} 个 ▾</button>`);
+        }
         dom.legend.innerHTML = items.join('');
+        const moreBtn = dom.legend.querySelector('[data-more]');
+        if (moreBtn) moreBtn.onclick = () => { legendShowAll = true; paintLegend(); };
         dom.legend.querySelectorAll('[data-sel]').forEach((btn) => {
           btn.onclick = () => {
             const sel = btn.dataset.sel;
@@ -889,6 +889,7 @@
         if (isTok) items.sort((a, b) => b.value - a.value);
         donutChart(dom.donut, {
           items,
+          size: 190,
           valueFmt: fmtDash,
           centerLabel: isTok ? '总 Token' : '总调用',
         });
@@ -5688,7 +5689,6 @@
           Toast.success('设置已保存');
           window.LDM.applyLogo(q('#s-logo').value.trim());
           document.getElementById('brand-name').textContent = q('#s-name').value.trim() || '懒大猫 API';
-          document.getElementById('brand-sub').textContent = q('#s-sub').value.trim() || '模型聚合网关';
           document.title = (q('#s-name').value.trim() || '懒大猫 API') + ' · API 网关';
         } catch (e) {
           Toast.error(e.message, '保存失败');
