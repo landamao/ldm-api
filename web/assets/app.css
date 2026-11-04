@@ -1942,7 +1942,11 @@ html[data-theme="dark"] .tab.is-active { color: var(--leaf-300); }
   height: 14px;
   color: var(--text-3);
   pointer-events: none;
+  /* svg 默认按文字基线排版，会坠到盒子下方几像素；用 grid 让它填满盒子才真正居中 */
+  display: grid;
+  place-items: center;
 }
+.search__icon svg { display: block; }
 
 /* ---------- 模态框：一块带木框的告示牌 ---------- */
 .modal-backdrop {
@@ -3394,7 +3398,7 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 10px 8px;
+  padding: 8px 10px 8px;
 }
 /* 搜索框压窄压矮一点：这一行还要装下多选、收起等按钮。
    外层改成 flex 容器装输入框，行内元素的基线空隙就没了对齐才稳，
@@ -3406,7 +3410,7 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
 .chat-conv__mbar {
   min-width: 0;
   height: 28px;
-  margin: 0 10px 8px;
+  margin: 10px 10px 0;
   padding: 0 3px 0 10px;
   display: flex;
   align-items: center;
@@ -3432,7 +3436,7 @@ html[data-theme="dark"] .chat-conv__mbar { box-shadow: 0 1px 0 rgba(0, 0, 0, .35
 .chat-conv__new {
   min-width: 0;
   height: 28px;
-  margin: 0 10px 8px;
+  margin: 10px 10px 0;
   padding: 0 10px;
   display: inline-flex;
   align-items: center;

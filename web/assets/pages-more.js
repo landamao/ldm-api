@@ -1646,6 +1646,13 @@
 
             <!-- 左侧：对话列表（往左收） -->
             <aside class="chat-conv" id="chat-conv">
+              <button class="chat-conv__new" id="chat-conv-new" type="button">${icon('plus', 14)}开启新对话</button>
+              <!-- 多选模式下顶替「开启新对话」的位置：已选计数 + 批量删除 + 退出 -->
+              <div class="chat-conv__mbar" id="chat-conv-mbar" hidden>
+                <span class="chat-conv__mcount" id="chat-conv-mcount">已选 0 个</span>
+                <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-del-sel" type="button" title="删除所选对话" aria-label="删除所选对话">${icon('trash', 13)}</button>
+                <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-multi-exit" type="button" title="退出多选" aria-label="退出多选">${icon('x', 13)}</button>
+              </div>
               <div class="chat-conv__tools">
                 <div class="search chat-conv__search">
                   <span class="search__icon">${icon('search', 13)}</span>
@@ -1653,13 +1660,6 @@
                 </div>
                 <button class="btn btn--ghost btn--icon btn--sm chat-conv__multi" id="chat-conv-multi" type="button" title="多选对话" aria-label="多选对话">${icon('check', 14)}</button>
                 <button class="btn btn--ghost btn--icon btn--sm chat-conv__collapse" id="chat-conv-collapse" title="收起对话列表" aria-label="收起对话列表">${icon('chevronLeft', 15)}</button>
-              </div>
-              <button class="chat-conv__new" id="chat-conv-new" type="button">${icon('plus', 14)}开启新对话</button>
-              <!-- 多选模式下顶替「开启新对话」的位置：已选计数 + 批量删除 + 退出 -->
-              <div class="chat-conv__mbar" id="chat-conv-mbar" hidden>
-                <span class="chat-conv__mcount" id="chat-conv-mcount">已选 0 个</span>
-                <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-del-sel" type="button" title="删除所选对话" aria-label="删除所选对话">${icon('trash', 13)}</button>
-                <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-multi-exit" type="button" title="退出多选" aria-label="退出多选">${icon('x', 13)}</button>
               </div>
               <div class="chat-conv__body">
                 <!-- 内层单独一层，会话少的时候靠 margin:auto 垂直居中，多了照常滚动 -->
