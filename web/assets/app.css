@@ -3564,8 +3564,9 @@ html[data-theme="dark"] .chat-conv__item:hover { background: var(--surface-hover
 .chat-side__head > .icon { color: var(--text-3); flex-shrink: 0; }
 .chat-side__title { font-size: 13px; font-weight: 780; }
 .chat-side__close { display: inline-flex; margin-left: auto; }
-/* 清空对话的垃圾桶从配置栏底部挪上来，贴在收起按钮正下方 */
+/* 清空对话的垃圾桶从输入框挪上来，贴在收起按钮正下方 */
 .chat-side__clearrow { display: flex; justify-content: flex-end; padding: 0 14px 6px; }
+.chat-side__foot { padding: 10px 14px; }
 .chat-side__body {
   flex: 1;
   min-height: 0;

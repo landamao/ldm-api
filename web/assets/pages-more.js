@@ -1674,7 +1674,7 @@
                 <span class="chat-side__title">模型配置</span>
                 <button class="btn btn--ghost btn--icon btn--sm chat-side__close" id="chat-side-close" title="收起设置" aria-label="收起设置">${icon('chevronRight', 15)}</button>
               </div>
-              <!-- 清空对话的垃圾桶从底部挪上来，贴在收起按钮正下方 -->
+              <!-- 输入框里的清空垃圾桶挪到这里，贴在收起按钮正下方 -->
               <div class="chat-side__clearrow">
                 <button class="btn btn--ghost btn--icon btn--sm" id="chat-side-clear" type="button" title="清空当前对话" aria-label="清空当前对话">${icon('trash', 14)}</button>
               </div>
@@ -1754,6 +1754,9 @@
                   <div class="chat-custom__hint muted fs-12" id="chat-custom-hint"></div>
                 </div>
               </div>
+              <div class="chat-side__foot">
+                <button class="btn btn--sm btn--block" id="chat-clear">${icon('trash', 13)}清空对话</button>
+              </div>
             </aside>
 
             <!-- 中间：对话区 -->
@@ -1770,7 +1773,6 @@
                   <textarea class="textarea chat-input__text" id="chat-text" rows="1" placeholder="快使用我吧♡"></textarea>
                   <div class="chat-input__bar">
                     <div class="chat-input__chips">
-                      <button class="chat-chip chat-chip--icon" id="chat-chip-clear" type="button" title="清空当前对话" aria-label="清空当前对话">${icon('trash', 13)}</button>
                       <select class="chat-chip chat-chip--model" id="chat-chip-model" aria-label="模型">
                         ${usable.map((m) => `<option value="${esc(m.id)}"${m.id === initial ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}
                         <option value="${TEST_MODEL_ID}"${initial === TEST_MODEL_ID ? ' selected' : ''}>临时测试（直连上游）</option>
@@ -4609,14 +4611,15 @@
         if (convMulti.on) exitConvMulti();
         createSession();
       };
-      // 清空对话：点一下直接清，不再二次确认（配置栏收起按钮下面的垃圾桶和输入框里的芯片按钮共用）
+      // 清空对话：点一下直接清，不再二次确认（配置栏收起按钮下面的垃圾桶、配置栏底部按钮共用；
+      // 输入框里原来的清空芯片已挪到收起按钮下面）
       const clearChat = () => {
         const had = history.length;
         reset();
         if (had) Toast.success('已清空对话');
       };
       root.querySelector('#chat-side-clear').onclick = clearChat;
-      root.querySelector('#chat-chip-clear').onclick = clearChat;
+      root.querySelector('#chat-clear').onclick = clearChat;
       text.addEventListener('keydown', (e) => {
         // 手机 / 平板上回车只是换行，必须点发送按钮才发出去
         if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
