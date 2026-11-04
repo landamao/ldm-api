@@ -1395,9 +1395,10 @@
       // 否则卡片下面会空出一条（28px）没用上的带子
       content.classList.toggle('is-fill', inner.classList.contains('content__inner--fill'));
       filters.hidden = !filters.children.length;
-      // 筛选块放不放得下要按本次页面的控件实宽重新量；
-      // 放到两帧后量，避开刚换页时布局还没稳定的瞬间
-      requestAnimationFrame(() => requestAnimationFrame(layoutTopbarFilters));
+      // 筛选块放不放得下要按本次页面的控件实宽重新量。
+      // 必须和这次 DOM 更新同一个任务里同步量完：拖到 rAF 之后再改类，
+      // 首帧会先按「贴标题」画一遍再跳成「整块掉行」，肉眼看得到闪动
+      layoutTopbarFilters();
       if (window.LDMPet) window.LDMPet.layout(name);
     } catch (e) {
       if (e && e.status === 401) { showLogin(); return; }
