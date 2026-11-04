@@ -3395,55 +3395,43 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
   gap: 6px;
   padding: 10px 10px 8px;
 }
-/* 搜索框压窄压矮一点：这一行还要装下多选和收起两个按钮 */
-.chat-conv__search { flex: 1; min-width: 0; }
-.chat-conv__search .input { height: 28px; font-size: 12px; padding-left: 28px; }
+/* 搜索框压窄压矮一点：这一行还要装下多选、收起等按钮。
+   外层改成 flex 容器装输入框，行内元素的基线空隙就没了对齐才稳，
+   搜索图标是 absolute + top:50%，容器高度必须正好是输入框的高度 */
+.chat-conv__search { flex: 1; min-width: 0; display: flex; }
+.chat-conv__search .input { flex: 1; min-width: 0; height: 28px; font-size: 12px; padding-left: 28px; }
 .chat-conv__search .search__icon { left: 9px; width: 13px; height: 13px; }
-/* 多选模式的「已选 N 个」占掉搜索框的位置 */
+/* 多选操作条：多选模式下顶替「开启新对话」的位置，同一排同一套胶囊语言 */
+.chat-conv__mbar {
+  min-width: 0;
+  height: 28px;
+  margin: 0 10px 8px;
+  padding: 0 3px 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border-line);
+  background-color: var(--surface-solid);
+  box-shadow: 0 1px 0 rgba(74, 49, 32, .1);
+}
+.chat-conv__mbar[hidden] { display: none; }
+html[data-theme="dark"] .chat-conv__mbar { box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
 .chat-conv__mcount {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-left: 2px;
   font-size: 12px;
   color: var(--text-3);
 }
-/* 多选按钮和新建按钮一起居中在列表上面，样式跟会话条目同一套胶囊语言，弱一档 */
-.chat-conv__multi {
-  min-width: 0;
-  height: 28px;
-  margin: 0 2px 8px;
-  padding: 0 10px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-size: 12.5px;
-  font-weight: 700;
-  border-radius: 999px;
-  border: 1.5px solid var(--border-line);
-  background-color: var(--surface-solid);
-  color: var(--text-2);
-  box-shadow: 0 1px 0 rgba(74, 49, 32, .1);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background .16s, color .16s, border-color .16s;
-}
-.chat-conv__multi:hover {
-  background: #fffdf5;
-  border-color: var(--leaf-400);
-  color: var(--text);
-}
-html[data-theme="dark"] .chat-conv__multi { box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
-html[data-theme="dark"] .chat-conv__multi:hover { background: var(--surface-hover); border-color: var(--leaf-500); }
-/* 多选模式下这个按钮要藏掉：display 得让位给 hidden 属性 */
-.chat-conv__multi[hidden] { display: none; }
+/* 操作条里的两个图标键压小一档，才装得进 28px 的胶囊 */
+.chat-conv__mbar .btn--icon.btn--sm { width: 24px; height: 24px; flex-shrink: 0; }
 .chat-conv__new {
   min-width: 0;
   height: 28px;
-  margin: 0 2px 10px;
+  margin: 0 10px 8px;
   padding: 0 10px;
   display: inline-flex;
   align-items: center;
@@ -3467,6 +3455,8 @@ html[data-theme="dark"] .chat-conv__multi:hover { background: var(--surface-hove
   color: var(--leaf-700);
 }
 html[data-theme="dark"] .chat-conv__new { color: var(--leaf-300); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+/* 多选模式下新建按钮要藏掉：display 得让位给 hidden 属性 */
+.chat-conv__new[hidden] { display: none; }
 .chat-conv__collapse { flex-shrink: 0; }
 .chat-conv__body {
   flex: 1;
@@ -3476,9 +3466,8 @@ html[data-theme="dark"] .chat-conv__new { color: var(--leaf-300); box-shadow: 0 
   display: flex;
   flex-direction: column;
 }
-/* 新建按钮 + 会话列表整体居中：会话少的时候从中间开始排，多到撑满就照常滚动 */
-.chat-conv__center { display: flex; flex-direction: column; margin: auto 0; }
-.chat-conv__inner { display: flex; flex-direction: column; }
+/* 会话没几条时整块从中间开始排；多到撑满就自动变成正常滚动 */
+.chat-conv__inner { display: flex; flex-direction: column; margin: auto 0; }
 .chat-conv__group {
   padding: 12px 6px 5px;
   font-size: 10.5px;
@@ -3575,6 +3564,8 @@ html[data-theme="dark"] .chat-conv__item:hover { background: var(--surface-hover
 .chat-side__head > .icon { color: var(--text-3); flex-shrink: 0; }
 .chat-side__title { font-size: 13px; font-weight: 780; }
 .chat-side__close { display: inline-flex; margin-left: auto; }
+/* 清空对话的垃圾桶从配置栏底部挪上来，贴在收起按钮正下方 */
+.chat-side__clearrow { display: flex; justify-content: flex-end; padding: 0 14px 6px; }
 .chat-side__body {
   flex: 1;
   min-height: 0;
@@ -3584,7 +3575,6 @@ html[data-theme="dark"] .chat-conv__item:hover { background: var(--surface-hover
   flex-direction: column;
   gap: 18px;
 }
-.chat-side__foot { padding: 10px 14px; }
 .chat-field { display: flex; flex-direction: column; gap: 8px; }
 .chat-field[hidden] { display: none; }
 .chat-fields { display: flex; flex-direction: column; gap: 18px; }
@@ -3904,6 +3894,8 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
 .chat-edge[hidden] { display: none; }
 .chat-edge:hover { color: var(--text); border-color: var(--leaf-500); }
 .chat-edge--left { left: 10px; }
+/* 列表收起时，新建按钮排在展开把手右边 */
+.chat-edge--new { left: 44px; }
 .chat-edge--right { right: 10px; }
 
 @media (min-width: 901px) {

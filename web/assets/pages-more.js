@@ -1651,19 +1651,19 @@
                   <span class="search__icon">${icon('search', 13)}</span>
                   <input class="input input--sm" id="chat-conv-search" placeholder="搜索对话…" autocomplete="off" spellcheck="false" aria-label="搜索对话">
                 </div>
-                <span class="chat-conv__mcount" id="chat-conv-mcount" hidden>已选 0 个</span>
-                <button class="btn btn--ghost btn--icon btn--sm chat-conv__mdel" id="chat-conv-del-sel" type="button" title="删除所选对话" aria-label="删除所选对话" hidden>${icon('trash', 14)}</button>
-                <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-multi-exit" type="button" title="退出多选" aria-label="退出多选" hidden>${icon('x', 14)}</button>
+                <button class="btn btn--ghost btn--icon btn--sm chat-conv__multi" id="chat-conv-multi" type="button" title="多选对话" aria-label="多选对话">${icon('check', 14)}</button>
                 <button class="btn btn--ghost btn--icon btn--sm chat-conv__collapse" id="chat-conv-collapse" title="收起对话列表" aria-label="收起对话列表">${icon('chevronLeft', 15)}</button>
               </div>
+              <button class="chat-conv__new" id="chat-conv-new" type="button">${icon('plus', 14)}开启新对话</button>
+              <!-- 多选模式下顶替「开启新对话」的位置：已选计数 + 批量删除 + 退出 -->
+              <div class="chat-conv__mbar" id="chat-conv-mbar" hidden>
+                <span class="chat-conv__mcount" id="chat-conv-mcount">已选 0 个</span>
+                <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-del-sel" type="button" title="删除所选对话" aria-label="删除所选对话">${icon('trash', 13)}</button>
+                <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-multi-exit" type="button" title="退出多选" aria-label="退出多选">${icon('x', 13)}</button>
+              </div>
               <div class="chat-conv__body">
-                <!-- 多选、新建两个按钮跟着列表一起居中：会话少的时候整块从中间开始排，多了照常滚动；
-                     多选操作条（已选/删除/退出）留在顶上不跟着滚，列表长了也够得着 -->
-                <div class="chat-conv__center">
-                  <button class="chat-conv__multi" id="chat-conv-multi" type="button">${icon('check', 13)}多选</button>
-                  <button class="chat-conv__new" id="chat-conv-new" type="button">${icon('plus', 14)}开启新对话</button>
-                  <div class="chat-conv__inner" id="chat-conv-list"></div>
-                </div>
+                <!-- 内层单独一层，会话少的时候靠 margin:auto 垂直居中，多了照常滚动 -->
+                <div class="chat-conv__inner" id="chat-conv-list"></div>
               </div>
             </aside>
 
@@ -1673,6 +1673,10 @@
                 ${icon('settings', 15)}
                 <span class="chat-side__title">模型配置</span>
                 <button class="btn btn--ghost btn--icon btn--sm chat-side__close" id="chat-side-close" title="收起设置" aria-label="收起设置">${icon('chevronRight', 15)}</button>
+              </div>
+              <!-- 清空对话的垃圾桶从底部挪上来，贴在收起按钮正下方 -->
+              <div class="chat-side__clearrow">
+                <button class="btn btn--ghost btn--icon btn--sm" id="chat-side-clear" type="button" title="清空当前对话" aria-label="清空当前对话">${icon('trash', 14)}</button>
               </div>
               <div class="chat-side__body">
                 <div class="chat-field chat-custom-toggle">
@@ -1750,9 +1754,6 @@
                   <div class="chat-custom__hint muted fs-12" id="chat-custom-hint"></div>
                 </div>
               </div>
-              <div class="chat-side__foot">
-                <button class="btn btn--sm btn--block" id="chat-clear">${icon('trash', 13)}清空对话</button>
-              </div>
             </aside>
 
             <!-- 中间：对话区 -->
@@ -1792,6 +1793,8 @@
           <input type="file" id="chat-file-input" multiple hidden>
           <!-- 侧栏收起后贴边留一个把手，方便再拉出来 -->
           <button class="chat-edge chat-edge--left" id="chat-conv-open" type="button" title="展开对话列表" aria-label="展开对话列表" hidden>${icon('chevronRight', 16)}</button>
+          <!-- 列表收起时陪在展开把手旁边的新建按钮，点一下直接开新对话 -->
+          <button class="chat-edge chat-edge--new" id="chat-conv-edge-new" type="button" title="新建对话" aria-label="新建对话" hidden>${icon('plus', 15)}</button>
           <button class="chat-edge chat-edge--right" id="chat-side-open" type="button" title="展开模型配置" aria-label="展开模型配置" hidden>${icon('chevronLeft', 16)}</button>
         </div>`;
 
@@ -1802,10 +1805,12 @@
       const convNew = root.querySelector('#chat-conv-new');
       const convCollapse = root.querySelector('#chat-conv-collapse');
       const convOpen = root.querySelector('#chat-conv-open');
+      const convEdgeNew = root.querySelector('#chat-conv-edge-new');
       const convScrim = root.querySelector('#chat-conv-scrim');
       const convAside = root.querySelector('#chat-conv');
       const convSearchInput = root.querySelector('#chat-conv-search');
       const convMultiBtn = root.querySelector('#chat-conv-multi');
+      const convMBar = root.querySelector('#chat-conv-mbar');
       const convMCount = root.querySelector('#chat-conv-mcount');
       const convDelSel = root.querySelector('#chat-conv-del-sel');
       const convMultiExit = root.querySelector('#chat-conv-multi-exit');
@@ -2976,11 +2981,10 @@
       const syncMultiBar = () => {
         const on = convMulti.on;
         convAside.classList.toggle('is-multi', on);
-        convSearchInput.parentElement.hidden = on;
+        // 顶行的多选键藏掉；「开启新对话」原位换成已选计数 + 删除 + 退出的操作条，搜索框不动
         convMultiBtn.hidden = on;
-        convMCount.hidden = !on;
-        convDelSel.hidden = !on;
-        convMultiExit.hidden = !on;
+        convNew.hidden = on;
+        convMBar.hidden = !on;
         convMCount.textContent = `已选 ${convMulti.picked.size} 个`;
         convDelSel.disabled = !convMulti.picked.size;
       };
@@ -4429,6 +4433,7 @@
           ? !layout.classList.contains('is-settings-open')
           : layout.classList.contains('is-settings-collapsed');
         convOpen.hidden = !convClosed;
+        convEdgeNew.hidden = !convClosed;
         sideOpen.hidden = !sideClosed;
       };
       sideClose.onclick = () => setSideOpen(false);
@@ -4436,6 +4441,11 @@
       sideScrim.onclick = () => setSideOpen(false);
       convCollapse.onclick = () => setConvOpen(false);
       convOpen.onclick = () => setConvOpen(true);
+      // 收起状态边缘的新建按钮：直接开新对话，不用先把列表拉出来
+      convEdgeNew.onclick = () => {
+        if (convMulti.on) exitConvMulti();
+        createSession();
+      };
       convScrim.onclick = () => setConvOpen(false);
       // 桌面 / 窄屏来回切换时，把手的显隐要跟着走
       window.addEventListener('resize', syncEdges);
@@ -4599,13 +4609,13 @@
         if (convMulti.on) exitConvMulti();
         createSession();
       };
-      // 清空对话：点一下直接清，不再二次确认（配置栏底部的按钮和输入框里的芯片按钮共用）
+      // 清空对话：点一下直接清，不再二次确认（配置栏收起按钮下面的垃圾桶和输入框里的芯片按钮共用）
       const clearChat = () => {
         const had = history.length;
         reset();
         if (had) Toast.success('已清空对话');
       };
-      root.querySelector('#chat-clear').onclick = clearChat;
+      root.querySelector('#chat-side-clear').onclick = clearChat;
       root.querySelector('#chat-chip-clear').onclick = clearChat;
       text.addEventListener('keydown', (e) => {
         // 手机 / 平板上回车只是换行，必须点发送按钮才发出去
