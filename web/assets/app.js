@@ -1307,7 +1307,42 @@
     };
 
     window.addEventListener('hashchange', navigate);
+    // 窗口宽度变化后重新量一次筛选块要不要整块掉行；
+    // 尺寸事件偶尔先于布局生效，防抖后紧跟两帧再校一次
+    let topbarResizeT = 0;
+    window.addEventListener('resize', () => {
+      clearTimeout(topbarResizeT);
+      topbarResizeT = setTimeout(() => {
+        layoutTopbarFilters();
+        requestAnimationFrame(() => requestAnimationFrame(layoutTopbarFilters));
+      }, 120);
+    });
     navigate();
+  }
+
+  // ---------- 顶栏筛选整块折行 ----------
+  // 筛选控件在「标题和按钮之间」一行放不下时，整块掉到第二行独占一行
+  // （从牌子最左铺到最右），不在标题旁边折出半行；放得下就贴着标题排。
+  // 放不放得下靠实测：临时禁掉子项收缩排成一行，内容总宽超过块宽即放不下。
+  // 手机窄屏（≤900px）走横滑样式，不参与这套逻辑。
+  function layoutTopbarFilters() {
+    const bar = document.querySelector('.topbar');
+    const filters = document.getElementById('topbar-filters');
+    if (!bar || !filters) return;
+    if (filters.hidden || !filters.children.length || window.innerWidth <= 900) {
+      bar.classList.remove('topbar--filters-row');
+      return;
+    }
+    // 先回到「挤在第一行」的状态再量，量出来的才是真实可用宽度
+    bar.classList.remove('topbar--filters-row');
+    const kids = [...filters.children];
+    const prevShrink = kids.map((el) => el.style.flexShrink);
+    filters.style.flexWrap = 'nowrap';
+    kids.forEach((el) => { el.style.flexShrink = '0'; });
+    const overflow = filters.scrollWidth > filters.clientWidth + 1;
+    filters.style.flexWrap = '';
+    kids.forEach((el, i) => { el.style.flexShrink = prevShrink[i]; });
+    bar.classList.toggle('topbar--filters-row', overflow);
   }
 
   function renderNav() {
@@ -1360,6 +1395,9 @@
       // 否则卡片下面会空出一条（28px）没用上的带子
       content.classList.toggle('is-fill', inner.classList.contains('content__inner--fill'));
       filters.hidden = !filters.children.length;
+      // 筛选块放不放得下要按本次页面的控件实宽重新量；
+      // 放到两帧后量，避开刚换页时布局还没稳定的瞬间
+      requestAnimationFrame(() => requestAnimationFrame(layoutTopbarFilters));
       if (window.LDMPet) window.LDMPet.layout(name);
     } catch (e) {
       if (e && e.status === 401) { showLogin(); return; }
