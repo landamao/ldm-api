@@ -963,7 +963,7 @@
     const readOnly = ta.readOnly;
     openModal({
       title: textareaExpandTitle(ta),
-      desc: readOnly ? '只读内容，可放大查看和复制。' : '在更大的窗口中编辑，点击「确定」写回原输入框（Ctrl + Enter 也可以确定）。',
+      desc: readOnly ? '只读内容，可放大查看和复制。' : '',
       size: 'xl',
       body: `<textarea class="textarea textarea-expand__editor" id="${EXPAND_EDITOR_ID}"
                 data-no-expand="1" spellcheck="false" placeholder="${esc(ta.placeholder || '')}"></textarea>`,
