@@ -1648,11 +1648,10 @@
             <aside class="chat-conv" id="chat-conv">
               <div class="chat-conv__head">
                 <button class="chat-conv__new" id="chat-conv-new" type="button">${icon('plus', 14)}开启新对话</button>
-                <!-- 多选模式下顶替「开启新对话」的位置：已选计数 + 批量删除 + 退出 -->
+                <!-- 多选模式下顶替「开启新对话」的位置：已选计数 + 批量删除；退出走第二行多选键的原位 ✕ -->
                 <div class="chat-conv__mbar" id="chat-conv-mbar" hidden>
                   <span class="chat-conv__mcount" id="chat-conv-mcount">已选 0 个</span>
                   <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-del-sel" type="button" title="删除所选对话" aria-label="删除所选对话">${icon('trash', 13)}</button>
-                  <button class="btn btn--ghost btn--icon btn--sm" id="chat-conv-multi-exit" type="button" title="退出多选" aria-label="退出多选">${icon('x', 13)}</button>
                 </div>
                 <button class="btn btn--ghost btn--icon btn--sm chat-conv__collapse" id="chat-conv-collapse" title="收起对话列表" aria-label="收起对话列表">${icon('chevronLeft', 15)}</button>
               </div>
@@ -1815,7 +1814,6 @@
       const convMBar = root.querySelector('#chat-conv-mbar');
       const convMCount = root.querySelector('#chat-conv-mcount');
       const convDelSel = root.querySelector('#chat-conv-del-sel');
-      const convMultiExit = root.querySelector('#chat-conv-multi-exit');
       // 右侧模型配置
       const sideClose = root.querySelector('#chat-side-close');
       const sideOpen = root.querySelector('#chat-side-open');
@@ -2984,10 +2982,13 @@
       const syncMultiBar = () => {
         const on = convMulti.on;
         convAside.classList.toggle('is-multi', on);
-        // 顶行的多选键藏掉；「开启新对话」原位换成已选计数 + 删除 + 退出的操作条，搜索框不动
-        convMultiBtn.hidden = on;
+        // 「开启新对话」原位换成已选计数 + 删除的操作条，搜索框不动；
+        // 多选键不挪窝：进多选后原地图标变 ✕，再点就是退出
         convNew.hidden = on;
         convMBar.hidden = !on;
+        convMultiBtn.innerHTML = icon(on ? 'x' : 'check', 14);
+        convMultiBtn.title = on ? '退出多选' : '多选对话';
+        convMultiBtn.setAttribute('aria-label', on ? '退出多选' : '多选对话');
         convMCount.textContent = `已选 ${convMulti.picked.size} 个`;
       };
       const exitConvMulti = () => {
@@ -2997,11 +2998,14 @@
         renderConvList();
       };
       convMultiBtn.onclick = () => {
+        if (convMulti.on) {
+          exitConvMulti();
+          return;
+        }
         convMulti.on = true;
         syncMultiBar();
         renderConvList();
       };
-      convMultiExit.onclick = exitConvMulti;
       convDelSel.onclick = () => {
         // 一个都没勾也允许点：弹提示比按钮死在那儿更好懂
         if (!convMulti.picked.size) {
