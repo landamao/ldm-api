@@ -2987,7 +2987,6 @@
         convNew.hidden = on;
         convMBar.hidden = !on;
         convMCount.textContent = `已选 ${convMulti.picked.size} 个`;
-        convDelSel.disabled = !convMulti.picked.size;
       };
       const exitConvMulti = () => {
         convMulti.on = false;
@@ -3002,7 +3001,11 @@
       };
       convMultiExit.onclick = exitConvMulti;
       convDelSel.onclick = () => {
-        if (!convMulti.picked.size) return;
+        // 一个都没勾也允许点：弹提示比按钮死在那儿更好懂
+        if (!convMulti.picked.size) {
+          Toast.info('先勾选要删除的对话');
+          return;
+        }
         const ids = [...convMulti.picked];
         ids.forEach(removeSession);
         if (ids.length) Toast.success(`已删除 ${ids.length} 个对话`);

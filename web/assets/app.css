@@ -661,7 +661,8 @@ body.is-chat-page .chat-card {
   opacity: .55;
   cursor: not-allowed;
   transform: none;
-  box-shadow: 0 2px 0 var(--outline);
+  /* 禁用只靠变淡表达，不再保留那圈硬阴影：圆按钮下面会露出月牙形的脏边 */
+  box-shadow: none;
 }
 .btn .icon { width: 14px; height: 14px; }
 
