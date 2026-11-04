@@ -1342,9 +1342,11 @@
     actions.innerHTML = '';
     // 页面可能把整组按钮收起来（is-empty），切页时复位，别把顶栏右侧留空
     actions.classList.remove('is-empty');
-    // 第二行筛选区：由页面通过 render 的第三个参数填充，填了才显示
+    // 第二行筛选区：由页面通过 render 的第三个参数填充，填了才显示；
+    // 页面可能改过筛选块的布局内联样式（如广场的 nowrap），切页时一并复位
     const filters = document.getElementById('topbar-filters');
     filters.innerHTML = '';
+    filters.removeAttribute('style');
     filters.hidden = true;
     const inner = document.getElementById('content-inner');
     // 对话页需要撑满内容区；切到其它页面时恢复默认高度

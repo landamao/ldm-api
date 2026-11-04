@@ -1045,6 +1045,10 @@
           <option value="r200_desc">近 200 次成功率 降序</option>
           <option value="r200_asc">近 200 次成功率 升序</option>
         </select>`;
+      // 广场的筛选控件少，强制一行排完：筛选块自身宽度被浏览器按内容估死
+      // （自绘下拉触发器的固有宽度按文字算，比实际渲染窄 20 来 px），
+      // 默认的 wrap 会因此提前把排序下拉折到第二行，nowrap 让搜索框让出这点余量
+      filters.style.flexWrap = 'nowrap';
 
       root.innerHTML = `
         <div class="card mb-18">
@@ -4641,6 +4645,9 @@
   // ======================================================================
   // 令牌管理
   // ======================================================================
+  // 多选状态跨导航保留（与渠道 / 模型管理一致）
+  const tokenListState = { multi: false, selected: new Set() };
+
   window.LDM.registerPage('tokens', {
     title: '令牌管理',
     desc: '管理 API 密钥',
@@ -4672,10 +4679,17 @@
           </div>
         </div>
         <div class="card tokens-card">
-          <div class="card__head">
-            <div class="card__title">密钥列表</div>
-            <div class="card__sub">共 ${tokens.length} 个</div>
-          </div>
+          ${tokens.length ? `
+          <div class="toolbar" style="gap:8px">
+            <span class="muted fs-12" id="token-count"></span>
+            <div class="toolbar__spacer"></div>
+            <button class="btn btn--sm" id="tk-multi" style="${tokenListState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
+            <span class="muted fs-12" id="token-multi-count" style="${tokenListState.multi ? '' : 'display:none'}">已选 ${tokenListState.selected.size} 个</span>
+            <button class="btn btn--sm" id="tk-enable" style="${tokenListState.multi ? '' : 'display:none'}">${icon('play', 13)}启用</button>
+            <button class="btn btn--sm" id="tk-disable" style="${tokenListState.multi ? '' : 'display:none'}">${icon('pause', 13)}禁用</button>
+            <button class="btn btn--sm btn--danger" id="tk-del" style="${tokenListState.multi ? '' : 'display:none'}">${icon('trash', 13)}删除</button>
+            <button class="btn btn--sm btn--ghost" id="tk-exit" style="${tokenListState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
+          </div>` : ''}
           <div id="token-list"></div>
         </div>`;
 
@@ -4688,22 +4702,31 @@
       root.querySelector('#copy-base').onclick = () => copyText(baseUrl + '/v1', 'Base URL ');
 
       const listHost = root.querySelector('#token-list');
-      if (!tokens.length) {
-        listHost.innerHTML = emptyState('还没有创建密钥', '创建一个密钥，就能用它调用所有已启用的模型。',
-          `<button class="btn btn--primary" id="e-token">${icon('plus', 15)}创建密钥</button>`, 'tokens');
-        listHost.querySelector('#e-token').onclick = () => openTokenEditor(null);
-        return;
-      }
+      const countEl = root.querySelector('#token-count');
 
-      listHost.innerHTML = `<div class="table-wrap table-wrap--flush">
+      const renderList = () => {
+        if (!tokens.length) {
+          if (countEl) countEl.textContent = '';
+          listHost.innerHTML = emptyState('还没有创建密钥', '创建一个密钥，就能用它调用所有已启用的模型。',
+            `<button class="btn btn--primary" id="e-token">${icon('plus', 15)}创建密钥</button>`, 'tokens');
+          listHost.querySelector('#e-token').onclick = () => openTokenEditor(null);
+          return;
+        }
+        const multi = tokenListState.multi;
+        if (countEl) countEl.textContent = `共 ${tokens.length} 个`;
+
+        listHost.innerHTML = `<div class="table-wrap table-wrap--flush">
         <table class="tbl">
           <thead><tr>
+            ${multi ? '<th style="width:34px"><input type="checkbox" id="tk-checkall" aria-label="全选"></th>' : ''}
             <th>名称</th><th style="min-width:250px">密钥</th><th>状态</th>
-            <th style="min-width:140px">用量</th><th>模型权限</th><th>IP 限制</th><th>最后使用</th><th style="width:150px">操作</th>
+            <th style="min-width:140px">用量</th><th>模型权限</th><th>IP 限制</th><th>最后使用</th>
+            ${multi ? '' : '<th style="width:150px">操作</th>'}
           </tr></thead>
           <tbody>${tokens.map((t) => {
             const pct = t.used_pct || 0;
-            return `<tr>
+            return `<tr class="${multi ? 'is-selectable' : ''}" data-trowid="${esc(t.id)}">
+              ${multi ? `<td><input type="checkbox" data-tksel data-tid="${esc(t.id)}" aria-label="选择 ${esc(t.name)}"></td>` : ''}
               <td>
                 <div class="strong">${esc(t.name)}</div>
                 ${t.remark ? `<div class="muted fs-12">${esc(t.remark)}</div>` : ''}
@@ -4727,17 +4750,66 @@
                 ? '<span class="muted fs-12">全部 IP</span>'
                 : `<div class="badge-group">${t.allowed_ips.slice(0, 2).map((v) => badge(v, 'gray')).join('')}${t.allowed_ips.length > 2 ? badge('+' + (t.allowed_ips.length - 2), 'gray') : ''}</div>`}</td>
               <td class="muted fs-12 nowrap">${esc(relTime(t.last_used_at))}</td>
-              <td>
+              ${multi ? '' : `<td>
                 <div class="row-actions">
                   <button class="btn btn--sm btn--icon" data-tact="toggle" data-tid="${esc(t.id)}" title="${t.enabled ? '禁用' : '启用'}">${icon(t.enabled ? 'pause' : 'play', 13)}</button>
                   <button class="btn btn--sm btn--icon" data-tact="edit" data-tid="${esc(t.id)}" title="编辑">${icon('edit', 13)}</button>
                   <button class="btn btn--sm btn--icon btn--danger" data-tact="del" data-tid="${esc(t.id)}" title="删除">${icon('trash', 13)}</button>
                 </div>
-              </td>
+              </td>`}
             </tr>`;
           }).join('')}</tbody>
         </table>
       </div>`;
+
+        // 多选模式：行勾选 / 表头全选 / 点击整行切换选中
+        if (multi) {
+          const syncBar = () => {
+            const mc = root.querySelector('#token-multi-count');
+            if (mc) mc.textContent = `已选 ${tokenListState.selected.size} 个`;
+            const boxes = listHost.querySelectorAll('input[data-tksel]');
+            const checked = [...boxes].filter((i) => i.checked);
+            const checkall = listHost.querySelector('#tk-checkall');
+            if (checkall) {
+              checkall.checked = boxes.length > 0 && checked.length === boxes.length;
+              checkall.indeterminate = checked.length > 0 && checked.length < boxes.length;
+            }
+          };
+          listHost.querySelectorAll('input[data-tksel]').forEach((cb) => {
+            cb.checked = tokenListState.selected.has(cb.dataset.tid);
+            cb.closest('tr').classList.toggle('is-selected', cb.checked);
+            cb.addEventListener('change', () => {
+              if (cb.checked) tokenListState.selected.add(cb.dataset.tid);
+              else tokenListState.selected.delete(cb.dataset.tid);
+              cb.closest('tr').classList.toggle('is-selected', cb.checked);
+              syncBar();
+            });
+          });
+          // 点击整行切换选中；行内按钮和复选框自身不触发（避免双切）
+          listHost.querySelector('tbody').addEventListener('click', (e) => {
+            if (e.target.closest('button, a, input, .badge')) return;
+            const tr = e.target.closest('tr[data-trowid]');
+            if (!tr) return;
+            const tid = tr.dataset.trowid;
+            if (tokenListState.selected.has(tid)) tokenListState.selected.delete(tid);
+            else tokenListState.selected.add(tid);
+            const cb = tr.querySelector('input[data-tksel]');
+            if (cb) cb.checked = tokenListState.selected.has(tid);
+            tr.classList.toggle('is-selected', tokenListState.selected.has(tid));
+            syncBar();
+          });
+          const checkall = listHost.querySelector('#tk-checkall');
+          if (checkall) checkall.addEventListener('change', () => {
+            listHost.querySelectorAll('input[data-tksel]').forEach((cb) => {
+              cb.checked = checkall.checked;
+              cb.closest('tr').classList.toggle('is-selected', checkall.checked);
+              if (checkall.checked) tokenListState.selected.add(cb.dataset.tid);
+              else tokenListState.selected.delete(cb.dataset.tid);
+            });
+            syncBar();
+          });
+          syncBar();
+        }
 
       listHost.querySelectorAll('[data-tact]').forEach((btn) => {
         btn.onclick = async () => {
@@ -4775,6 +4847,83 @@
           }
         };
       });
+      };
+
+      renderList();
+
+      // ---------- 多选模式（工具栏内切换按钮组，与渠道管理一致） ----------
+      const applyMulti = () => {
+        const set = (id, show) => {
+          const el = root.querySelector('#' + id);
+          if (el) el.style.display = show ? '' : 'none';
+        };
+        set('token-count', !tokenListState.multi);
+        set('tk-multi', !tokenListState.multi);
+        set('token-multi-count', tokenListState.multi);
+        set('tk-enable', tokenListState.multi);
+        set('tk-disable', tokenListState.multi);
+        set('tk-del', tokenListState.multi);
+        set('tk-exit', tokenListState.multi);
+        renderList();
+      };
+      const multiBtn = root.querySelector('#tk-multi');
+      if (multiBtn) multiBtn.onclick = () => { tokenListState.multi = true; applyMulti(); };
+      const exitBtn = root.querySelector('#tk-exit');
+      if (exitBtn) exitBtn.onclick = () => {
+        tokenListState.multi = false;
+        tokenListState.selected.clear();
+        applyMulti();
+      };
+
+      const getSelectedTokens = () => tokens.filter((t) => tokenListState.selected.has(t.id));
+      // 批量操作后刷新数据，已删除密钥的选择会被清掉；多选模式保持
+      const refreshAfterBatch = async () => {
+        State.invalidate('tokens');
+        await State.loadTokens(true);
+        const live = new Set(State.tokens.map((t) => t.id));
+        [...tokenListState.selected]
+          .filter((id) => !live.has(id))
+          .forEach((id) => tokenListState.selected.delete(id));
+        window.LDM.navigate();
+      };
+
+      const batchToggle = async (enabled) => {
+        const sel = getSelectedTokens().filter((t) => t.enabled !== enabled);
+        if (!sel.length) {
+          Toast.info(enabled ? '选中的密钥都已启用' : '选中的密钥都已禁用');
+          return;
+        }
+        try {
+          for (const t of sel) {
+            await API.put('/api/tokens/' + t.id, { id: t.id, name: t.name, enabled });
+          }
+          Toast.success(`已${enabled ? '启用' : '禁用'} ${sel.length} 个密钥`);
+          await refreshAfterBatch();
+        } catch (e) { Toast.error(e.message); }
+      };
+      const enableBtn = root.querySelector('#tk-enable');
+      if (enableBtn) enableBtn.onclick = () => batchToggle(true);
+      const disableBtn = root.querySelector('#tk-disable');
+      if (disableBtn) disableBtn.onclick = () => batchToggle(false);
+
+      const delBtn = root.querySelector('#tk-del');
+      if (delBtn) delBtn.onclick = async () => {
+        const sel = getSelectedTokens();
+        if (!sel.length) { Toast.info('请先勾选密钥'); return; }
+        const ok = await confirmDialog({
+          title: '删除密钥',
+          message: `确定删除选中的 <b>${sel.length}</b> 个密钥吗？使用这些密钥的调用会立即失效。<br><br>该操作不可撤销。`,
+          confirmText: `删除（${sel.length}）`, danger: true,
+        });
+        if (!ok) return;
+        try {
+          for (const t of sel) {
+            await API.del('/api/tokens/' + t.id);
+          }
+          Toast.success(`已删除 ${sel.length} 个密钥`);
+          await refreshAfterBatch();
+        } catch (e) { Toast.error(e.message); }
+      };
     },
   });
 

@@ -4094,7 +4094,6 @@ html[data-theme="dark"] .provider-avatar { background: rgba(255, 255, 255, .92);
   background: var(--primary-soft);
   border-color: var(--primary-border);
   font-weight: 750;
-  box-shadow: 0 1px 0 rgba(122, 83, 48, .16);
 }
 html[data-theme="dark"] .provider-chip.is-on { color: var(--leaf-300); }
 .provider-chip__count {
