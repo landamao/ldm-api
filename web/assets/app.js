@@ -1121,10 +1121,13 @@
       if (caps.vision === true) out.push(badge('图片', 'pink'));
       else if (caps.vision === false && o.showNeg) out.push(badge('不支持图片', 'gray'));
     }
-    // 能力全部没填时显示「未设置」，和模型编辑弹窗里的三态文案保持一致。
+    // 能力全部没填时不显示占位徽章；只填了不展示的字段（如最大输出）时提示参数透传。
     const blank = !caps || ['context_length', 'max_output', 'tool_calling', 'thinking', 'vision']
       .every((k) => caps[k] == null);
-    if (!out.length) out.push(badge(blank ? '未设置' : '参数透传', 'gray'));
+    if (!out.length) {
+      if (blank) return '';
+      out.push(badge('参数透传', 'gray'));
+    }
     return `<div class="badge-group">${out.join('')}</div>`;
   }
 
