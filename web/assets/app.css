@@ -2029,6 +2029,9 @@ html[data-theme="dark"] .modal__head { background-color: #33251a; }
   margin-left: auto;
   width: 30px;
   height: 30px;
+  /* 按钮自带 UA 的 1px 6px padding，26px 的小圆钮里会把内容盒压到 12px，
+     比 17px 的图标还窄，grid 轨道只能往右溢出，X 就看着偏右 2.5px。 */
+  padding: 0;
   display: grid;
   place-items: center;
   border: 1.5px solid rgba(255, 235, 200, .35);
@@ -3187,26 +3190,41 @@ html[data-theme="dark"] .msg__answer--md a { color: var(--leaf-300); }
   cursor: zoom-in;
 }
 
-/* 图片灯箱：点聊天气泡里的图全屏看原图，点任意处或 Esc 关闭 */
+/* 图片灯箱：点聊天气泡里的图全屏看原图，点任意处或 Esc 关闭。
+   用 flex 而不是 grid：grid 的隐式行是 auto 高度，会被原图撑高，
+   img 的 max-height:100% 就按被撑高的轨道算，等于没限制，桌面/竖图上直接溢出屏幕。 */
 .img-lightbox {
   position: fixed;
   inset: 0;
   z-index: 260;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 24px;
+  overflow: hidden;
   background: rgba(20, 26, 16, .78);
   opacity: 0;
   visibility: hidden;
   transition: opacity .18s ease, visibility .18s ease;
   cursor: zoom-out;
+  overscroll-behavior: contain;
+  /* 灯箱盖住整屏，手势不该再把下面的消息列表带着滑 */
+  touch-action: none;
 }
 .img-lightbox.is-open { opacity: 1; visibility: visible; }
 .img-lightbox img {
-  max-width: 100%;
-  max-height: 100%;
+  /* 再兜一层视口单位：手机上 100% 遇到动态工具栏也可能算错 */
+  max-width: min(100%, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
   border-radius: 10px;
   box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+}
+@media (max-width: 600px) {
+  .img-lightbox { padding: 12px; }
 }
 
 /* 公式：排版交给 KaTeX 自带的样式，这里只管在气泡里的间距和横向溢出 */
@@ -3279,13 +3297,13 @@ html[data-theme="dark"] .msg__answer--md a { color: var(--leaf-300); }
 .msg--user .msg__answer--md td { border-bottom-color: rgba(255, 255, 255, .28); }
 .msg--user .msg__answer--md .md-table-wrap { border-color: rgba(255, 255, 255, .34); }
 
-.msg__image-link { display: block; line-height: 0; }
 .msg__image {
   max-width: min(320px, 100%);
   max-height: 320px;
   border-radius: 12px;
   display: block;
   object-fit: contain;
+  cursor: zoom-in;
   background: rgba(122, 83, 48, .06);
   border: 1.5px solid var(--border-line);
 }

@@ -2049,16 +2049,26 @@
       const lb = document.createElement('div');
       lb.className = 'img-lightbox';
       lb.innerHTML = '<img alt="">';
-      lb.addEventListener('click', () => lb.classList.remove('is-open'));
+      // 页面来回切会重复创建，先清掉上一次的，避免灯箱叠在 body 上
+      document.querySelectorAll('.img-lightbox').forEach((el) => el.remove());
+      const closeLb = () => {
+        lb.classList.remove('is-open');
+      };
+      lb.addEventListener('click', closeLb);
+      // body 本身就是 overflow:hidden，真正滚的是消息列表；滚轮落在灯箱上时别穿透过去
+      lb.addEventListener('wheel', (e) => {
+        if (lb.classList.contains('is-open')) e.preventDefault();
+      }, { passive: false });
       document.body.appendChild(lb);
       const lbImg = lb.querySelector('img');
       document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') lb.classList.remove('is-open');
+        if (e.key === 'Escape') closeLb();
       });
       log.addEventListener('click', (e) => {
-        const img = e.target.closest && e.target.closest('.msg__answer--md img');
+        // 正文里的图（含包在链接里的 [![](src)](href)）和自己消息的附件图都走灯箱，
+        // 点图看大图而不是跳走 / 开新标签页。
+        const img = e.target.closest && e.target.closest('.msg__answer--md img, .msg__image');
         if (!img || !img.src) return;
-        // 图片可能包在链接里（[![图](src)](href)），点图看大图而不是跳链接
         e.preventDefault();
         lbImg.src = img.src;
         lb.classList.add('is-open');
@@ -2260,18 +2270,15 @@
           }
           return;
         }
-        const link = document.createElement('a');
-        link.className = 'msg__image-link';
-        link.href = src;
-        link.target = '_blank';
-        link.rel = 'noopener';
+        // 不再包 <a target="_blank">：data: 协议的整张原图塞进新标签页，
+        // 手机上直接把浏览器拖崩。统一交给灯箱看大图。
         const img = document.createElement('img');
         img.className = 'msg__image';
         img.src = src;
         img.alt = '图片';
+        img.title = '点击查看大图';
         img.loading = 'lazy';
-        link.appendChild(img);
-        box.appendChild(link);
+        box.appendChild(img);
       };
 
       // 精确判断文本 MIME。不能用 contains('xml')：docx 的
