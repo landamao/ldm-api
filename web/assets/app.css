@@ -522,23 +522,31 @@ html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background-color: #6b8
 html[data-theme="dark"] .topbar__title::before { filter: brightness(1.35) saturate(1.1); }
 .topbar__titles { min-width: 0; }
 
-/* 筛选控件（页面通过 render 的第三个参数填进来）排在操作按钮后面：
-   一行放得下就并排，放不下时整组掉到下一行，标题和按钮留在上面。 */
+/* 筛选控件（页面通过 render 的第三个参数填进来）排在操作按钮左边：
+   一行放得下时筛选贴着标题、按钮贴最右；放不下时筛选在自己块内折行，
+   功能按钮永远留在最右不掉行。 */
 .topbar__filters {
   display: flex;
   align-items: center;
   gap: 10px;
-  /* 放不下时在木牌内部折行（调用日志控件多），绝不允许戳出木牌 */
+  /* 占据标题和按钮之间的剩余宽度：宽度按剩余空间算（basis 0），
+     不会把操作按钮挤到第二行；控件放不下时在块内折行 */
+  flex: 1 1 0;
+  min-width: 0;
   flex-wrap: wrap;
-  flex: 0 0 auto;
-  max-width: 100%;
 }
 #topbar-filters[hidden] { display: none; }
 .topbar__filters .search { flex: 0 1 200px; min-width: 150px; }
 /* 计数这类文字不能被挤成竖排 */
 .topbar__filters > .muted { flex: 0 0 auto; white-space: nowrap; }
 /* 操作按钮永远贴右边；换行后单独一行时也靠右 */
-#topbar-actions { margin-left: auto; }
+#topbar-actions { margin-left: auto; flex-shrink: 0; }
+
+/* 中窄屏：剩余宽度不够筛选控件舒展，筛选整块掉到按钮下面独占一行，
+   标题和按钮留在第一行（手机窄屏另有横滑样式，见文末媒体查询） */
+@media (max-width: 1180px) {
+  .topbar__filters { flex: 0 1 100%; order: 3; }
+}
 
 /* 顶栏里的按钮和筛选控件统一压小一号：木牌是导航条不是看板，
    控件占了半块牌子内容区就没了 */

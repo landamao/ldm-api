@@ -1263,8 +1263,8 @@
             <div class="topbar__titles">
               <div class="topbar__title" id="page-title">数据看板</div>
             </div>
-            <div id="topbar-actions" class="btn-row"></div>
             <div id="topbar-filters" class="topbar__filters" hidden></div>
+            <div id="topbar-actions" class="btn-row"></div>
           </header>
           <main class="content" id="content"><div class="content__inner" id="content-inner"></div></main>
         </div>
@@ -1342,8 +1342,8 @@
     actions.innerHTML = '';
     // 页面可能把整组按钮收起来（is-empty），切页时复位，别把顶栏右侧留空
     actions.classList.remove('is-empty');
-    // 第二行筛选区：由页面通过 render 的第三个参数填充，填了才显示；
-    // 页面可能改过筛选块的布局内联样式（如广场的 nowrap），切页时一并复位
+    // 顶栏筛选区：由页面通过 render 的第三个参数填充，填了才显示；
+    // 页面可能改过筛选块的内联样式，切页时一并复位
     const filters = document.getElementById('topbar-filters');
     filters.innerHTML = '';
     filters.removeAttribute('style');

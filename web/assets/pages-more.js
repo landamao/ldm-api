@@ -1045,10 +1045,6 @@
           <option value="r200_desc">近 200 次成功率 降序</option>
           <option value="r200_asc">近 200 次成功率 升序</option>
         </select>`;
-      // 广场的筛选控件少，强制一行排完：筛选块自身宽度被浏览器按内容估死
-      // （自绘下拉触发器的固有宽度按文字算，比实际渲染窄 20 来 px），
-      // 默认的 wrap 会因此提前把排序下拉折到第二行，nowrap 让搜索框让出这点余量
-      filters.style.flexWrap = 'nowrap';
 
       root.innerHTML = `
         <div class="card mb-18">
