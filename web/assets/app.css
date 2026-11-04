@@ -3564,8 +3564,6 @@ html[data-theme="dark"] .chat-conv__item:hover { background: var(--surface-hover
 .chat-side__head > .icon { color: var(--text-3); flex-shrink: 0; }
 .chat-side__title { font-size: 13px; font-weight: 780; }
 .chat-side__close { display: inline-flex; margin-left: auto; }
-/* 清空对话的垃圾桶从输入框挪上来，贴在收起按钮正下方 */
-.chat-side__clearrow { display: flex; justify-content: flex-end; padding: 0 14px 6px; }
 .chat-side__foot { padding: 10px 14px; }
 .chat-side__body {
   flex: 1;
@@ -3898,6 +3896,8 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; text-shadow: none; }
 /* 列表收起时，新建按钮排在展开把手右边 */
 .chat-edge--new { left: 44px; }
 .chat-edge--right { right: 10px; }
+/* 配置栏收起时，清空垃圾桶排在展开把手正下方 */
+.chat-edge--sideclear { right: 10px; top: 44px; }
 
 @media (min-width: 901px) {
   .chat-layout.is-settings-collapsed .chat-side { margin-right: -302px; }

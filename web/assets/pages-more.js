@@ -1674,10 +1674,6 @@
                 <span class="chat-side__title">模型配置</span>
                 <button class="btn btn--ghost btn--icon btn--sm chat-side__close" id="chat-side-close" title="收起设置" aria-label="收起设置">${icon('chevronRight', 15)}</button>
               </div>
-              <!-- 输入框里的清空垃圾桶挪到这里，贴在收起按钮正下方 -->
-              <div class="chat-side__clearrow">
-                <button class="btn btn--ghost btn--icon btn--sm" id="chat-side-clear" type="button" title="清空当前对话" aria-label="清空当前对话">${icon('trash', 14)}</button>
-              </div>
               <div class="chat-side__body">
                 <div class="chat-field chat-custom-toggle">
                   <div class="chat-switch-row">
@@ -1798,6 +1794,8 @@
           <!-- 列表收起时陪在展开把手旁边的新建按钮，点一下直接开新对话 -->
           <button class="chat-edge chat-edge--new" id="chat-conv-edge-new" type="button" title="新建对话" aria-label="新建对话" hidden>${icon('plus', 15)}</button>
           <button class="chat-edge chat-edge--right" id="chat-side-open" type="button" title="展开模型配置" aria-label="展开模型配置" hidden>${icon('chevronLeft', 16)}</button>
+          <!-- 配置栏收起时，垃圾桶陪在展开把手下面：面板展开时底部本来就有清空按钮 -->
+          <button class="chat-edge chat-edge--sideclear" id="chat-side-edge-clear" type="button" title="清空当前对话" aria-label="清空当前对话" hidden>${icon('trash', 14)}</button>
         </div>`;
 
       const card = root.querySelector('#chat-card');
@@ -1819,6 +1817,7 @@
       // 右侧模型配置
       const sideClose = root.querySelector('#chat-side-close');
       const sideOpen = root.querySelector('#chat-side-open');
+      const sideEdgeClear = root.querySelector('#chat-side-edge-clear');
       const sideScrim = root.querySelector('#chat-side-scrim');
       // 模型下拉和流式开关在输入框里有一份，配置栏里也有一份，两边同步
       const chipModelSel = root.querySelector('#chat-chip-model');
@@ -4437,6 +4436,8 @@
         convOpen.hidden = !convClosed;
         convEdgeNew.hidden = !convClosed;
         sideOpen.hidden = !sideClosed;
+        // 配置栏收起时才在右边缘显示垃圾桶；展开时底部有清空按钮
+        sideEdgeClear.hidden = !sideClosed;
       };
       sideClose.onclick = () => setSideOpen(false);
       sideOpen.onclick = () => setSideOpen(true);
@@ -4611,14 +4612,14 @@
         if (convMulti.on) exitConvMulti();
         createSession();
       };
-      // 清空对话：点一下直接清，不再二次确认（配置栏收起按钮下面的垃圾桶、配置栏底部按钮共用；
-      // 输入框里原来的清空芯片已挪到收起按钮下面）
+      // 清空对话：点一下直接清，不再二次确认（配置栏底部按钮共用；
+      // 配置栏收起时右边缘的垃圾桶也是这个动作，输入框里原来的清空芯片已移除）
       const clearChat = () => {
         const had = history.length;
         reset();
         if (had) Toast.success('已清空对话');
       };
-      root.querySelector('#chat-side-clear').onclick = clearChat;
+      root.querySelector('#chat-side-edge-clear').onclick = clearChat;
       root.querySelector('#chat-clear').onclick = clearChat;
       text.addEventListener('keydown', (e) => {
         // 手机 / 平板上回车只是换行，必须点发送按钮才发出去
