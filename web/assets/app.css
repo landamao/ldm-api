@@ -1998,6 +1998,7 @@ html[data-theme="dark"] .modal { box-shadow: 0 9px 0 rgba(0, 0, 0, .45), 0 40px 
    正文四边统一 12px。编辑器改成块级并铺满正文，底部不会再被 inline 行盒
    多撑出 6px；正文不滚动（滚动条会占掉右侧那块 padding，看起来右边窄一截），
    内容长了由编辑器自己滚，高度也封顶，拖大 resize 不会顶破弹窗。 */
+.modal--expand { max-width: 760px; }
 .modal--expand .modal__head { padding: 8px 14px; align-items: center; }
 .modal--expand .modal__title { font-size: 14px; }
 .modal--expand .modal__close { width: 26px; height: 26px; }

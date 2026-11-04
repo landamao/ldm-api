@@ -965,7 +965,6 @@
     openModal({
       title: textareaExpandTitle(ta),
       desc: readOnly ? '只读内容，可放大查看和复制。' : '',
-      size: 'xl',
       cls: 'modal--expand',
       body: `<textarea class="textarea textarea-expand__editor" id="${EXPAND_EDITOR_ID}"
                 data-no-expand="1" spellcheck="false" placeholder="${esc(ta.placeholder || '')}"></textarea>`,
