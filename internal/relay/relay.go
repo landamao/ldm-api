@@ -205,6 +205,10 @@ type Result struct {
 	ChannelID     string
 	ChannelName   string
 	UpstreamModel string
+	// ResponseModel 是上游响应里回显的模型名。多数上游会原样回显请求的模型，
+	// 少数会做别名解析 / 日期版本 / 自动降级，这时它和 UpstreamModel 不同，
+	// 日志里会额外标出来（上游完全没回显模型时为空）。
+	ResponseModel string
 	// KeyIndex/KeyMasked/KeyNote 是最终尝试使用的上游 Key；单 Key 渠道为空。
 	KeyIndex    int
 	KeyMasked   string
@@ -968,6 +972,10 @@ outer:
 			attemptStarted := time.Now()
 			outcome := r.attempt(ctx, w, req, resolved, route.withKey(kc.key), isLast, hasMoreKeys)
 			lastRaw, lastRawHdr = outcome.upstreamRaw, outcome.upstreamHdr
+			// 上游回显的模型名：后续尝试会覆盖，成功那一次就是最终生效的响应模型。
+			if outcome.respModel != "" {
+				res.ResponseModel = outcome.respModel
+			}
 			entry := store.LogAttempt{
 				ChannelID:     route.Channel.ID,
 				ChannelName:   route.Channel.Name,
@@ -1140,6 +1148,8 @@ type attemptOutcome struct {
 	// 用于「失败时重写错误」：原本会直接透传、不写响应体的错误状态码
 	// 现在交给 Do 统一重写，不能因为改写了写出时机就改变冷却行为。
 	skipRouteCooldown bool
+	// respModel 是上游响应里回显的模型名，用于日志对照请求的渠道模型。
+	respModel string
 }
 
 // retryHistory 只在真的发生过重试时保留尝试明细，单次请求不增加日志体积。
@@ -1329,6 +1339,9 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		if derr != nil && decoded == nil {
 			decoded = raw
 		}
+		// 响应模型从上游原始响应体里取：Anthropic / Gemini 的 Decode 会把
+		// model 改写成调用方请求的名字，拿改写后的看就不出差异了。
+		respModel := upstream.ResponseModel(raw)
 		// 思考覆写：把上游返回的思考内容替换为配置文本，留空时直接隐藏。
 		if override, ok := reasoningOverrideOf(resolved.Model); ok {
 			decoded = rewriteReasoningJSON(decoded, override.text)
@@ -1344,7 +1357,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 			usage.CompletionTokens = outTokens
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 			return attemptOutcome{status: resp.StatusCode, usage: usage,
-				estimated: true, wrote: true, reasoning: reasoning}
+				estimated: true, wrote: true, reasoning: reasoning, respModel: respModel}
 		}
 		// 上游报了输入、输出却是 0：多半是只上报了一半用量。此时只补输出，
 		// 输入保持上游的真值，并单独标记成「仅输出估算」——整份标记会让前端
@@ -1353,10 +1366,10 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 			usage.CompletionTokens = outTokens
 			usage.TotalTokens = usage.PromptTokens + outTokens
 			return attemptOutcome{status: resp.StatusCode, usage: usage,
-				estimatedOutput: true, wrote: true, reasoning: reasoning}
+				estimatedOutput: true, wrote: true, reasoning: reasoning, respModel: respModel}
 		}
 		return attemptOutcome{status: resp.StatusCode, usage: usage,
-			wrote: true, reasoning: reasoning}
+			wrote: true, reasoning: reasoning, respModel: respModel}
 	}
 
 	var st upstream.Stream = prov.NewStream(modelOf(req))
@@ -1468,24 +1481,25 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 				if done && st.Err() == nil {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						wrote: true, estimated: est, reasoning: st.ReasoningChars(),
-						streamGen: true, genMs: genWindow()}
+						streamGen: true, genMs: genWindow(), respModel: st.Model()}
 				}
 				// 客户端断开和上游断开要分开记账：前者黄色 200 记成功，后者红色 200 记错误
 				if ctx.Err() != nil {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						err: errors.New("客户端已断开连接"), canceled: true, wrote: true, estimated: est,
-						reasoning: st.ReasoningChars(), streamGen: true, genMs: genWindow()}
+						reasoning: st.ReasoningChars(), streamGen: true, genMs: genWindow(),
+						respModel: st.Model()}
 				}
 				if reason := clock.reason(); reason != "" {
 					return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 						err: errors.New(reason), retryable: false, wrote: true, estimated: est,
 						reasoning: st.ReasoningChars(), upstreamBroken: true,
-						streamGen: true, genMs: genWindow()}
+						streamGen: true, genMs: genWindow(), respModel: st.Model()}
 				}
 				return attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 					err: errors.New(cleanNetErr(rerr)), retryable: false, wrote: true, estimated: est,
 					reasoning: st.ReasoningChars(), upstreamBroken: true,
-					streamGen: true, genMs: genWindow()}
+					streamGen: true, genMs: genWindow(), respModel: st.Model()}
 			}
 			break
 		}
@@ -1500,7 +1514,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	usage, estimated := streamUsage(st, req)
 	outcome := attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
 		wrote: true, estimated: estimated, reasoning: st.ReasoningChars(),
-		streamGen: true, genMs: genWindow()}
+		streamGen: true, genMs: genWindow(), respModel: st.Model()}
 	if err := st.Err(); err != nil {
 		outcome.err = err
 	}

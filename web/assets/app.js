@@ -1229,7 +1229,7 @@
     esc, fmtNum, fmtInt, fmtUnit, fmtTime, fmtTimeShort, relTime, fmtDuration, fmtUptime,
     copyText, debounce, icon, providerIcon, providerAvatar, Toast, API, Select, openModal, confirmDialog, promptDialog,
     isCoarsePointer: COARSE_POINTER, REPO_URL,
-    badge, statusBadge, emptyState, loadingBlock, switchEl, capBadges, fmtContext, colorBadge, copyBadge,
+    badge, statusBadge, emptyState, loadingBlock, switchEl, capBadges, fmtContext, colorBadge, copyBadge, tagHue,
     Theme, State, routeParam, applyLogo,
     registerPage(name, def) { PAGES[name] = def; },
     PAGES: null,

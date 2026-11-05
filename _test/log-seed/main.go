@@ -15,6 +15,8 @@ import (
 func main() {
 	dbPath := flag.String("db", "_test/tmp-ui2/ldmapi.db", "BoltDB 路径")
 	n := flag.Int("n", 180, "生成条数")
+	// -rmodel：每隔三条记一个和请求不同的响应模型，用来看日志页的「响应模型」标记。
+	rmodel := flag.Bool("rmodel", false, "给部分日志写入不同的响应模型")
 	flag.Parse()
 
 	st, err := store.Open(*dbPath)
@@ -65,6 +67,10 @@ func main() {
 		}
 		pt := 400 + rand.Intn(3000)
 		ct := 60 + rand.Intn(900)
+		respModel := ""
+		if *rmodel && i%3 == 0 {
+			respModel = mid + "-2025-01-01"
+		}
 		l := store.Log{
 			ID:               fmt.Sprintf("seed-%03d", i),
 			Time:             ts,
@@ -74,6 +80,7 @@ func main() {
 			ChannelID:        cid,
 			ChannelName:      cid,
 			UpstreamModel:    mid,
+			ResponseModel:    respModel,
 			Endpoint:         "/v1/chat/completions",
 			PromptTokens:     pt,
 			CompletionTokens: ct,

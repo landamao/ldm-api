@@ -7,8 +7,8 @@
   const {
     esc, API, State, Toast, openModal, confirmDialog, promptDialog, icon, providerIcon, providerAvatar,
     badge, statusBadge, emptyState, loadingBlock, fmtTime, fmtInt, fmtUnit, fmtNum, fmtDuration,
-    fmtUptime, relTime, copyText, debounce, fmtContext, Theme, switchEl, colorBadge, copyBadge, isCoarsePointer,
-    REPO_URL,
+    fmtUptime, relTime, copyText, debounce, fmtContext, Theme, switchEl, colorBadge, copyBadge, tagHue,
+    isCoarsePointer, REPO_URL,
   } = window.LDM;
 
   const { areaChart, barChart, donutChart, rankList, timeLabel, hideTip, clearChart } = window.Charts;
@@ -38,6 +38,154 @@
     ? '模型亲和命中：优先尝试上次成功的路由，失败后已切换'
     : '模型亲和命中：本次直接复用了上次成功的路由';
   const KEY_AFFINITY_TITLE = 'Key 亲和命中：优先使用了上次成功的 Key';
+
+  // 上游模型徽章：上游回显的模型和请求的渠道模型不一致时（别名解析、日期版本、
+  // 自动降级等），徽章右侧带一枚路由图标，整枚徽章就是气泡触发器——和 NewAPI
+  // 的做法一致，不另起一个小按钮。桌面鼠标移上去弹气泡、点徽章复制模型名；
+  // 手机没有悬停，点徽章直接展开气泡。上游原样回显时不加图标，点击还是复制。
+  // plain 传对应列表用的普通徽章（日志页可复制版 / 看板只读版）。
+  const upstreamModelBadge = (l, plain) => {
+    const asked = (l.upstream_model || '').trim();
+    const got = (l.response_model || '').trim();
+    if (!got || got === asked) return plain(asked);
+    const tip = `请求模型：${asked || '—'} / 响应模型：${got}`;
+    return `<button type="button" class="badge badge--tag badge--click log-model-map"`
+      + ` style="--tag-h:${tagHue(asked)}"`
+      + ` data-asked="${esc(asked)}" data-got="${esc(got)}"`
+      + ` aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(tip)}">`
+      + `${esc(asked)}${icon('route', 12)}</button>`;
+  };
+
+  // 气泡卡片：一次只开一个，挂在 body 上 fixed 定位——日志表格是横向滚动的
+  // 容器，气泡放在单元格里会被裁掉。移上去 / 手机上点徽章打开，点空白、Esc 关闭。
+  // 滚动时跟着标记走而不是直接收起：手机上点完常有惯性滚动，直接关会「点了没反应」。
+  let modelMapPop = null; // { el, anchor, pinned }
+  let modelMapTimer = 0;
+  let modelMapRaf = 0;
+  const canHover = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+
+  function closeModelMapPop() {
+    if (modelMapTimer) { clearTimeout(modelMapTimer); modelMapTimer = 0; }
+    if (!modelMapPop) return;
+    modelMapPop.el.remove();
+    modelMapPop.anchor.setAttribute('aria-expanded', 'false');
+    modelMapPop = null;
+  }
+
+  // byHover 打开的气泡在鼠标移开后自动收起；点开的（pinned）要等点空白处才关，
+  // 免得手机上刚点开就被别的事件收走、桌面上点开后又跟着鼠标消失。
+  function openModelMapPop(anchor, byHover) {
+    if (modelMapPop && modelMapPop.anchor === anchor) {
+      if (!byHover) modelMapPop.pinned = true;
+      return;
+    }
+    closeModelMapPop();
+    const asked = (anchor.dataset.asked || '').trim();
+    const got = (anchor.dataset.got || '').trim();
+    if (!got) return;
+
+    const el = document.createElement('div');
+    el.className = 'log-pop';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', '请求模型与响应模型');
+    el.innerHTML = `
+      <div class="log-pop__row">
+        <span class="log-pop__label">请求模型</span>
+        ${copyBadge(asked || '—', { label: '请求模型' })}
+      </div>
+      <div class="log-pop__row">
+        <span class="log-pop__label">响应模型</span>
+        ${copyBadge(got, { label: '响应模型' })}
+      </div>`;
+    el.style.visibility = 'hidden';
+    document.body.appendChild(el);
+
+    modelMapPop = { el, anchor, pinned: !byHover };
+    placeModelMapPop();
+    el.style.visibility = '';
+
+    anchor.setAttribute('aria-expanded', 'true');
+  }
+
+  // 优先贴在标记下方，下面放不下就翻到上方；水平方向夹在视口里。
+  // 滚动 / 缩放后重新算一次，气泡跟着标记移动；标记被重绘掉或滚出屏幕就收起。
+  function placeModelMapPop() {
+    if (!modelMapPop) return;
+    const { el, anchor } = modelMapPop;
+    if (!anchor.isConnected) { closeModelMapPop(); return; }
+    const r = anchor.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (r.bottom < 0 || r.top > vh) { closeModelMapPop(); return; }
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const left = Math.min(Math.max(8, r.left), Math.max(8, vw - w - 8));
+    let top = r.bottom + 8;
+    if (top + h > vh - 8 && r.top - h - 8 >= 8) top = r.top - h - 8;
+    el.style.left = `${Math.round(left)}px`;
+    el.style.top = `${Math.round(top)}px`;
+  }
+
+  // 滚动事件很密（含表格内部横向滚动），合并到下一帧再算位置。
+  function queuePlaceModelMapPop() {
+    if (!modelMapPop || modelMapRaf) return;
+    modelMapRaf = requestAnimationFrame(() => {
+      modelMapRaf = 0;
+      placeModelMapPop();
+    });
+  }
+
+  // 徽章是日志表里动态重建的，事件统一委托在 document 上。
+  // 桌面（有鼠标）：点徽章复制模型名，详情看悬停气泡——和 NewAPI 的模型 tag 一致；
+  // 手机（没有悬停）：点徽章展开气泡，再去点里面的徽章复制。
+  document.addEventListener('click', (e) => {
+    const mark = e.target && e.target.closest ? e.target.closest('.log-model-map') : null;
+    if (mark) {
+      e.preventDefault();
+      if (canHover) {
+        copyText(mark.dataset.asked || '', '上游模型');
+        openModelMapPop(mark, false);
+      } else if (modelMapPop && modelMapPop.anchor === mark && modelMapPop.pinned) {
+        closeModelMapPop();
+      } else {
+        openModelMapPop(mark, false);
+      }
+      return;
+    }
+    if (modelMapPop && !(e.target.closest && e.target.closest('.log-pop'))) closeModelMapPop();
+  });
+
+  document.addEventListener('pointerover', (e) => {
+    if (!canHover || !e.target.closest) return;
+    if (e.target.closest('.log-model-map')) {
+      if (modelMapTimer) { clearTimeout(modelMapTimer); modelMapTimer = 0; }
+      openModelMapPop(e.target.closest('.log-model-map'), true);
+      return;
+    }
+    // 从标记挪到气泡里不算离开，取消待关闭。
+    if (e.target.closest('.log-pop') && modelMapTimer) {
+      clearTimeout(modelMapTimer);
+      modelMapTimer = 0;
+    }
+  });
+
+  document.addEventListener('pointerout', (e) => {
+    if (!canHover || !modelMapPop || modelMapPop.pinned) return;
+    const from = e.target.closest && e.target.closest('.log-model-map, .log-pop');
+    if (!from) return;
+    const to = e.relatedTarget;
+    if (to && to.closest && to.closest('.log-model-map, .log-pop')) return;
+    if (modelMapTimer) clearTimeout(modelMapTimer);
+    modelMapTimer = setTimeout(closeModelMapPop, 180);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModelMapPop();
+  });
+  // 滚动（含表格内部滚动）、窗口缩放后重新贴到标记旁边。
+  window.addEventListener('scroll', queuePlaceModelMapPop, true);
+  window.addEventListener('resize', queuePlaceModelMapPop);
+  window.addEventListener('hashchange', closeModelMapPop);
 
   // 错误详情弹窗：顶部概要只放请求模型、渠道模型、渠道和状态码，
   // 下面分成「错误详情」和「内部原因」两个独立块。错误详情是调用方实际
@@ -906,6 +1054,8 @@
       };
 
       function paintLogs() {
+        // 重绘会换掉标记节点，气泡跟着收掉，别让它悬在旧位置上
+        closeModelMapPop();
         if (!dashData.logs) return;
         const items = (dashData.logs && dashData.logs.items) || [];
         // 次要指标（缓存读 / 思考 / 首字）在数值下面另起一行，小一号灰字
@@ -943,7 +1093,7 @@
                       : '<span class="muted">未命中渠道</span>'}
                   </td>
                   <td class="fs-12">${l.upstream_model
-                    ? `<span class="log-star-wrap">${colorBadge(l.upstream_model)}${modelStar}</span>`
+                    ? `<span class="log-star-wrap">${upstreamModelBadge(l, (t) => colorBadge(t))}${modelStar}</span>`
                     : '<span class="muted">—</span>'}</td>
                   <td class="num">${fmtDash(l.prompt_tokens)}${l.usage_estimate ? ' <span class="muted fs-12" title="上游未上报用量，Token 数为网关估算">(估算)</span>' : ''}${l.cached_tokens ? sub(`缓存读 ${fmtDash(l.cached_tokens)}`) : ''}</td>
                   <td class="num">${fmtDash(l.completion_tokens)}${l.output_estimate ? ' <span class="muted fs-12" title="上游未上报输出用量，按响应正文长度估算">(估算)</span>' : ''}${reasoning ? sub(reasoning) : ''}</td>
@@ -5575,6 +5725,8 @@
         : '');
 
       function renderTable() {
+        // 重绘会换掉标记节点，气泡跟着收掉，别让它悬在旧位置上
+        closeModelMapPop();
         if (lastItems == null) return;
         const host = q('#log-table');
         const items = lastItems;
@@ -5629,7 +5781,7 @@
                   : '<span>未命中渠道</span>'}
               </td>
               <td class="fs-12">${l.upstream_model
-                ? `<span class="log-star-wrap">${copyBadge(l.upstream_model, { label: '上游模型' })}${modelStar}</span>`
+                ? `<span class="log-star-wrap">${upstreamModelBadge(l, (t) => copyBadge(t, { label: '上游模型' }))}${modelStar}</span>`
                 : '<span class="muted">—</span>'}</td>
               <td class="fs-12">${copyBadge(l.token_name, { label: '令牌' })}</td>
               <td class="num">${tok(l.prompt_tokens)}${estMark(l)}${l.cached_tokens ? sub(`缓存读 ${tok(l.cached_tokens)}`) : ''}</td>

@@ -149,7 +149,8 @@ func collectStream(ctx context.Context, w http.ResponseWriter, req *Request, res
 	w.Write(mustJSON(collectedResponse(req.Path, modelOf(req), col, usage)))
 
 	return streamOut(attemptOutcome{status: resp.StatusCode, usage: usage, firstByte: firstByte,
-		wrote: true, estimated: estimated, reasoning: st.ReasoningChars()})
+		wrote: true, estimated: estimated, reasoning: st.ReasoningChars(),
+		respModel: st.Model()})
 }
 
 // collectedResponse 把聚合结果写成对应端点的非流式响应体。

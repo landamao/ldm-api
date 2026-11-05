@@ -54,6 +54,7 @@ func (s *reasoningOverrideStream) OutputChars() int      { return s.inner.Output
 func (s *reasoningOverrideStream) ReasoningChars() int   { return s.outChars }
 func (s *reasoningOverrideStream) Err() error            { return s.inner.Err() }
 func (s *reasoningOverrideStream) Done() bool            { return s.inner.Done() }
+func (s *reasoningOverrideStream) Model() string         { return s.inner.Model() }
 
 // rewriteSSE 按事件切分上游翻译结果，逐条改写带思考内容的事件。
 func (s *reasoningOverrideStream) rewriteSSE(out []byte) []byte {

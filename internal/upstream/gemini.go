@@ -371,7 +371,9 @@ func geminiDocument(p map[string]any) map[string]any {
 // ---------- 响应转换 ----------
 
 type geminiResponse struct {
-	Candidates []struct {
+	// ModelVersion 是 Gemini 在响应里回显的模型（如 gemini-2.5-flash-001）。
+	ModelVersion string `json:"modelVersion"`
+	Candidates   []struct {
 		Content struct {
 			Role  string `json:"role"`
 			Parts []struct {
@@ -505,6 +507,8 @@ type geminiStream struct {
 	finished  bool
 	toolIndex int
 	err       error
+	// respModel 是上游数据块里回显的模型（modelVersion），可能和请求的上游模型不同。
+	respModel string
 }
 
 func (s *geminiStream) chunk(delta map[string]any, finish any) []byte {
@@ -542,6 +546,9 @@ func (s *geminiStream) Translate(line []byte) []byte {
 	if r.Error != nil {
 		s.err = fmt.Errorf("%s: %s", r.Error.Status, r.Error.Message)
 		return nil
+	}
+	if s.respModel == "" {
+		s.respModel = strings.TrimSpace(r.ModelVersion)
 	}
 	if r.UsageMetadata.TotalTokenCount > 0 {
 		s.usage.PromptTokens = r.UsageMetadata.PromptTokenCount
@@ -613,3 +620,4 @@ func (s *geminiStream) OutputChars() int    { return s.chars }
 func (s *geminiStream) ReasoningChars() int { return s.reasonCh }
 func (s *geminiStream) Err() error          { return s.err }
 func (s *geminiStream) Done() bool          { return s.finished }
+func (s *geminiStream) Model() string       { return s.respModel }

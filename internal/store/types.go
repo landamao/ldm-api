@@ -429,6 +429,9 @@ type Log struct {
 	ChannelID     string `json:"channel_id"`
 	ChannelName   string `json:"channel_name,omitempty"`
 	UpstreamModel string `json:"upstream_model"`
+	// ResponseModel 是上游响应里回显的模型名。和 UpstreamModel 不同时前端会额外
+	// 标出来（别名解析、日期版本、自动降级等情况），为空表示上游没回显模型名。
+	ResponseModel string `json:"response_model,omitempty"`
 	Endpoint      string `json:"endpoint"`
 	// KeyIndex/KeyMasked/KeyNote 是最终尝试使用的上游 Key；单 Key 渠道为空。
 	KeyIndex  int    `json:"key_index,omitempty"`

@@ -163,6 +163,7 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		ChannelID:        res.ChannelID,
 		ChannelName:      res.ChannelName,
 		UpstreamModel:    res.UpstreamModel,
+		ResponseModel:    res.ResponseModel,
 		KeyIndex:         res.KeyIndex,
 		KeyMasked:        res.KeyMasked,
 		KeyNote:          res.KeyNote,

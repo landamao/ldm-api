@@ -59,6 +59,39 @@ type Stream interface {
 	// Anthropic 的 stop_reason、Gemini 的 finishReason）。客户端在这之后
 	// 关闭连接说明响应已经收全，不应算作中途断开。
 	Done() bool
+	// Model 返回上游响应里回显的模型名。有些上游会按自己的规则改写模型名
+	// （别名解析、日期版本、自动降级），日志要能和请求的渠道模型对照。
+	// 上游没回显模型名时返回空字符串。
+	Model() string
+}
+
+// ResponseModel 从上游非流式响应体里读出它实际使用的模型名。
+// 各家字段不同：OpenAI 用 model（Responses API 也可能包在 response 里），
+// Anthropic 顶层的 model 就是模型名，Gemini 用 modelVersion。
+// 取不到时返回空字符串，不影响用量等其它字段。
+func ResponseModel(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var probe struct {
+		Model        string `json:"model"`
+		ModelVersion string `json:"modelVersion"`
+		Response     *struct {
+			Model string `json:"model"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return ""
+	}
+	if v := strings.TrimSpace(probe.Model); v != "" {
+		return v
+	}
+	if probe.Response != nil {
+		if v := strings.TrimSpace(probe.Response.Model); v != "" {
+			return v
+		}
+	}
+	return strings.TrimSpace(probe.ModelVersion)
 }
 
 // Provider 描述一种上游协议。

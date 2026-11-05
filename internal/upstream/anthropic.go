@@ -569,6 +569,8 @@ type anthropicStream struct {
 	blockKind   map[int]string // content block index -> kind
 	blockToolIX map[int]int    // content block index -> OpenAI tool_calls 下标
 	err         error
+	// respModel 是上游 message_start 里回显的模型名，可能和请求的上游模型不同。
+	respModel string
 }
 
 func newAnthropicStream(model string) *anthropicStream {
@@ -608,6 +610,7 @@ func (s *anthropicStream) Translate(line []byte) []byte {
 		Index   int    `json:"index"`
 		Message *struct {
 			ID    string `json:"id"`
+			Model string `json:"model"`
 			Usage struct {
 				InputTokens              int `json:"input_tokens"`
 				OutputTokens             int `json:"output_tokens"`
@@ -644,6 +647,9 @@ func (s *anthropicStream) Translate(line []byte) []byte {
 	case "message_start":
 		if ev.Message != nil {
 			s.id = nonEmpty(ev.Message.ID, "chatcmpl-anthropic")
+			if s.respModel == "" {
+				s.respModel = strings.TrimSpace(ev.Message.Model)
+			}
 			s.usage.PromptTokens = ev.Message.Usage.InputTokens +
 				ev.Message.Usage.CacheReadInputTokens + ev.Message.Usage.CacheCreationInputTokens
 			s.usage.CachedTokens = ev.Message.Usage.CacheReadInputTokens
@@ -722,6 +728,7 @@ func (s *anthropicStream) OutputChars() int    { return s.chars }
 func (s *anthropicStream) ReasoningChars() int { return s.reasonCh }
 func (s *anthropicStream) Err() error          { return s.err }
 func (s *anthropicStream) Done() bool          { return s.finished }
+func (s *anthropicStream) Model() string       { return s.respModel }
 
 func nonEmpty(v, def string) string {
 	if strings.TrimSpace(v) == "" {

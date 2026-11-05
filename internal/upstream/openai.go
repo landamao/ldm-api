@@ -179,6 +179,8 @@ type openAIStream struct {
 	chars    int
 	reasonCh int
 	done     bool
+	// respModel 是上游响应块里回显的模型名，用于和请求的渠道模型对照。
+	respModel string
 }
 
 func (s *openAIStream) Translate(line []byte) []byte {
@@ -193,8 +195,10 @@ func (s *openAIStream) Translate(line []byte) []byte {
 		} else {
 			var probe struct {
 				Usage    *openAIUsage `json:"usage"`
+				Model    string       `json:"model"`
 				Response *struct {
 					Usage *openAIUsage `json:"usage"`
+					Model string       `json:"model"`
 				} `json:"response"`
 				// Responses API 的事件类型，例如 response.output_text.delta。
 				Type    string          `json:"type"`
@@ -208,6 +212,15 @@ func (s *openAIStream) Translate(line []byte) []byte {
 				} `json:"choices"`
 			}
 			if err := json.Unmarshal(payload, &probe); err == nil {
+				// 上游第一个数据块里就能拿到模型名；后面若被改写以首个为准，
+				// 避免某些上游在收尾块里把 model 换成空值或别名。
+				if s.respModel == "" {
+					if m := strings.TrimSpace(probe.Model); m != "" {
+						s.respModel = m
+					} else if probe.Response != nil {
+						s.respModel = strings.TrimSpace(probe.Response.Model)
+					}
+				}
 				usage := probe.Usage
 				if usage == nil && probe.Response != nil {
 					usage = probe.Response.Usage
@@ -251,6 +264,7 @@ func (s *openAIStream) OutputChars() int    { return s.chars }
 func (s *openAIStream) ReasoningChars() int { return s.reasonCh }
 func (s *openAIStream) Err() error          { return nil }
 func (s *openAIStream) Done() bool          { return s.done }
+func (s *openAIStream) Model() string       { return s.respModel }
 
 // NormalizeBase 清理渠道地址：去掉尾部斜杠，缺少协议头时补上 https://。
 // 地址为空时返回空字符串——网关不会替用户猜一个默认上游，由调用方报错。

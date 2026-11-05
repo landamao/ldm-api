@@ -999,6 +999,42 @@ table.tbl--logs td { padding-left: 8px; padding-right: 8px; }
 table.tbl--logs thead th { color: var(--text); }
 /* 徽章右上角橙色亲和星需要这层相对定位包装 */
 .log-star-wrap { position: relative; display: inline-block; }
+/* 上游模型徽章：响应模型和请求的渠道模型不一致时，徽章右侧多一枚路由图标，
+   整枚徽章就是气泡触发器（和 NewAPI 一样，不另起小按钮）；图标比文字淡一档。 */
+.log-model-map svg { opacity: .7; }
+.log-model-map:hover svg { opacity: 1; }
+
+/* 上游模型 / 响应模型气泡卡片：点标记打开，手机上同样可用。
+   固定挂在 body 上，避免被日志卡片的横向滚动裁掉。 */
+.log-pop {
+  position: fixed;
+  z-index: 95;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1.5px solid var(--card-line);
+  border-radius: 12px;
+}
+/* 一行一个模型：标签在左、可复制的徽章在右 */
+.log-pop__row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.log-pop__label { font-size: 11px; font-weight: 750; color: var(--text-3); white-space: nowrap; }
+/* 模型名可能很长：气泡里允许折行，徽章不再强制单行 */
+.log-pop .badge {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 21px;
+  padding: 4px 9px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
 /* 渠道格：渠道名在上、密钥（#N 备注）在下，竖排而不是并排——
    并排时两者一长就把这一格撑得很宽，整表要多滚一段。 */
 .log-route { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
