@@ -63,6 +63,21 @@ func (l *loginLimiter) allow(key string, now time.Time) (bool, time.Duration) {
 }
 
 // loginRateKey 取限流用的客户端标识。
+// proxyIP 解析反向代理报上来的客户端地址，非法时返回空串。
+// 除了裸 IP，也接受 "1.2.3.4:5678" 这种带端口的写法（个别代理会这么写）。
+// 返回 ip.String() 是为了归一化：同一个 IPv6 地址的展开 / 压缩写法不会分裂成两个限流桶。
+func proxyIP(s string) string {
+	if ip := net.ParseIP(s); ip != nil {
+		return ip.String()
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		if ip := net.ParseIP(h); ip != nil {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
 // 只有请求来自本机（常见于 Nginx/Caddy 反向代理）时才信任 X-Forwarded-For，
 // 并且取最后一跳，避免外部客户端直接伪造该头绕过限流。
 func loginRateKey(r *http.Request) string {
@@ -73,7 +88,10 @@ func loginRateKey(r *http.Request) string {
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
-			if v := strings.TrimSpace(parts[len(parts)-1]); v != "" {
+			// 取最后一跳：前面的部分客户端自己就能填，只有反代追加的那段可信。
+			// 必须校验它确实是 IP —— 否则随便填个字符串就换到一个新桶，
+			// 10 分钟 10 次的限制等于没有。
+			if v := proxyIP(strings.TrimSpace(parts[len(parts)-1])); v != "" {
 				return v
 			}
 		}

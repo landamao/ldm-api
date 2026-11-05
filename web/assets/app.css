@@ -161,7 +161,9 @@ html[data-theme="dark"] {
 }
 
 /* ---------- 基础 ---------- */
-* { box-sizing: border-box; }
+/* 伪元素必须一起写：`*` 不匹配 ::before/::after，它们的默认值仍是 content-box，
+   凡是「固定宽高 + border」的装饰就会比声明的尺寸大一圈（开关圆点曾因此变成 19px 而不是 16px）。 */
+*, *::before, *::after { box-sizing: border-box; }
 
 html, body {
   margin: 0;
@@ -221,7 +223,10 @@ h1, h2, h3, h4 {
   color: var(--text);
 }
 /* 线宽统一加粗一点，更像手绘描边 */
-.icon { stroke-width: 2.15; }
+/* 图标统一按块级盒参与布局：inline 的 svg 会按文字基线排，盒子底部凭空多出
+   descender 那几像素，任何没写 align-items:center 的地方都会「看着偏下」。
+   flex:0 0 auto 是防止被 flex 容器压缩成椭圆。 */
+.icon { stroke-width: 2.15; display: block; flex: 0 0 auto; }
 a { color: var(--leaf-600); text-decoration: none; }
 html[data-theme="dark"] a { color: var(--leaf-300); }
 a:hover { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
@@ -279,8 +284,9 @@ html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background-color: #6b8
 /* 牌匾左边探出的一片叶子 */
 .sidebar__brand::before {
   content: "";
-  width: 7px;
-  height: 21px;
+  /* 尺寸已含 1.5px 描边（border-box），7+3 / 21+3 保持原来的视觉大小 */
+  width: 10px;
+  height: 24px;
   flex-shrink: 0;
   border-radius: 70% 0 70% 0;
   background: linear-gradient(180deg, var(--leaf-300), var(--leaf-600));
@@ -419,10 +425,14 @@ html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background-color: #6b8
   content: "";
   position: absolute;
   left: -5px;
-  top: 50%;
-  width: 9px;
-  height: 13px;
-  transform: translateY(-50%) rotate(-38deg);
+  /* 上下都钉 0 再 margin:auto 居中：跟导航项的实际高度脱钩，
+     之前用 top:50% + translateY(-50%)，行高一变叶子就偏 */
+  top: 0;
+  bottom: 0;
+  margin: auto 0;
+  width: 12px;
+  height: 16px;
+  transform: rotate(-38deg);
   border-radius: 50% 0 50% 50%;
   background: var(--leaf-300);
   border: 1.5px solid var(--leaf-700);
@@ -483,10 +493,13 @@ html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background-color: #6b8
 .topbar::after {
   content: "";
   position: absolute;
-  top: 50%;
+  /* 原来是 top:50% + margin-top:-3.5px，-3.5 是 7px 直径的一半，手算的魔法数；
+     上下钉 0 交给 margin:auto，改钉子大小不用再跟着改偏移 */
+  top: 0;
+  bottom: 0;
+  margin: auto 0;
   width: 7px;
   height: 7px;
-  margin-top: -3.5px;
   border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, #ffe9c0, #8a6136 68%, #4a3120 100%);
   opacity: .85;
@@ -748,8 +761,8 @@ html[data-theme="dark"] .card__head {
 /* 标题前的小叶子 */
 .card__title::before {
   content: "";
-  width: 9px;
-  height: 9px;
+  width: 12px;
+  height: 12px;
   flex-shrink: 0;
   border-radius: 50% 0 50% 50%;
   transform: rotate(45deg);
@@ -1407,8 +1420,8 @@ html[data-theme="dark"] .log-time::-webkit-calendar-picker-indicator { filter: i
   position: absolute;
   top: -4px;
   right: -4px;
-  width: 8px;
-  height: 8px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   background: var(--sun-500);
   border: 1.5px solid var(--surface-solid);
@@ -1547,13 +1560,15 @@ html[data-theme="dark"] .ldm-select[aria-expanded="true"] { background-color: #2
 .ldm-select__chev {
   position: absolute;
   right: 10px;
-  top: 50%;
-  display: flex;
+  /* 上下钉 0 + grid 居中，不再依赖 select 的固定高度 */
+  top: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
   color: var(--bark-600);
-  transform: translateY(-50%);
   transition: transform .18s;
 }
-.ldm-select[aria-expanded="true"] .ldm-select__chev { transform: translateY(-50%) rotate(180deg); }
+.ldm-select[aria-expanded="true"] .ldm-select__chev { transform: rotate(180deg); }
 
 .ldm-pop {
   position: fixed;
@@ -1650,8 +1665,11 @@ html[data-theme="dark"] .ldm-opt__check { color: var(--leaf-300); }
 .key-row__index {
   position: absolute;
   left: 10px;
-  top: 50%;
-  transform: translateY(-50%);
+  /* 与输入框等高再用 flex 居中：不再靠 top:50% 猜输入框高度 */
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
   z-index: 1;
   pointer-events: none;
   font-family: var(--mono);
@@ -1853,14 +1871,20 @@ html[data-theme="dark"] .ct-run-btn.is-stopping {
 .switch__track::after {
   content: "";
   position: absolute;
-  top: 1px;
-  left: 1px;
+  /* 上下钉 0 + margin:auto：圆点自己找轨道 padding box 的垂直中心，
+     不再靠 top:1px 手算（那个 1px 是按「16px 圆点」算的，实际渲染却是 19px）。
+     border-box 之后 16px 就是真 16px，内高 19 → 上下各 1.5，水平 left/right 各 2。 */
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  margin: auto 0;
   width: 16px;
   height: 16px;
   border-radius: 50%;
   background: #fffaf0;
   border: 1.5px solid var(--outline);
-  transition: transform .22s cubic-bezier(.3, 1.5, .5, 1);
+  /* 原来的 (.3,1.5,.5,1) 过冲到 1.5，圆点滑动时会冲出轨道再弹回来 */
+  transition: transform .22s cubic-bezier(.25, 1, .35, 1);
 }
 .switch input:checked + .switch__track {
   background-image: linear-gradient(180deg, var(--leaf-400), var(--leaf-600));
@@ -1986,10 +2010,12 @@ html[data-theme="dark"] .tab.is-active { color: var(--leaf-300); }
 .search__icon {
   position: absolute;
   left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
+  /* 上下钉 0：图标盒高度 = 输入框高度，grid 居中就是真中心。
+     原来用 top:50% + translateY(-50%)，等于要求「容器高度永远等于输入框高度」，
+     谁给容器加了 padding 或换了高度就歪，而且只有肉眼能发现。 */
+  top: 0;
+  bottom: 0;
   width: 14px;
-  height: 14px;
   color: var(--text-3);
   pointer-events: none;
   /* svg 默认按文字基线排版，会坠到盒子下方几像素；用 grid 让它填满盒子才真正居中 */
@@ -2890,8 +2916,8 @@ html[data-theme="dark"] .msg__bubble { background-color: #26331f; border-color: 
   position: absolute;
   left: -7px;
   top: 12px;
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
   background: inherit;
   border-left: 2px solid var(--card-line);
   border-bottom: 2px solid var(--card-line);
@@ -2908,8 +2934,8 @@ html[data-theme="dark"] .msg__bubble { background-color: #26331f; border-color: 
   position: absolute;
   right: -7px;
   top: 12px;
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
   background: var(--leaf-500);
   border-right: 2px solid var(--leaf-700);
   border-bottom: 2px solid var(--leaf-700);
@@ -3475,10 +3501,10 @@ html[data-theme="dark"] .chat-card.is-dragover::after { color: var(--leaf-300); 
 }
 /* 搜索框压窄压矮一点：这一行还要装下多选、收起等按钮。
    外层改成 flex 容器装输入框，行内元素的基线空隙就没了对齐才稳，
-   搜索图标是 absolute + top:50%，容器高度必须正好是输入框的高度 */
+   搜索图标是 absolute + 上下钉 0，跟容器高度无关了 */
 .chat-conv__search { flex: 1; min-width: 0; display: flex; }
 .chat-conv__search .input { flex: 1; min-width: 0; height: 28px; font-size: 12px; padding-left: 28px; }
-.chat-conv__search .search__icon { left: 9px; width: 13px; height: 13px; }
+.chat-conv__search .search__icon { left: 9px; width: 13px; }
 /* 多选操作条：多选模式下顶替「开启新对话」的位置，同一排同一套胶囊语言 */
 .chat-conv__mbar {
   flex: 1;
@@ -4161,8 +4187,8 @@ html[data-theme="dark"] .alert--info { border-color: rgba(63, 143, 191, .4); }
 }
 .section-title::before {
   content: "";
-  width: 7px;
-  height: 7px;
+  width: 10px;
+  height: 10px;
   border-radius: 50% 0 50% 50%;
   transform: rotate(45deg);
   background: var(--leaf-400);
@@ -4322,7 +4348,9 @@ html[data-theme="dark"] .provider-chip.is-on .provider-chip__count { color: var(
   background-color: var(--surface);
   border-color: var(--primary-border);
 }
-.filter-bar .search__icon { left: 13px; width: 13px; height: 13px; }
+/* 不要写 height：写死高度会让 top:0/bottom:0 失效，图标盒变成固定 13px，
+   15px 的 svg 溢出来就偏 1px（这条以前是 height:13px，列表页搜索图标就是这么歪的） */
+.filter-bar .search__icon { left: 13px; width: 13px; }
 html[data-theme="dark"] .filter-bar .search .input { background-color: var(--surface-2); }
 html[data-theme="dark"] .filter-bar .search .input:focus { background-color: var(--surface); }
 .filter-chip {
