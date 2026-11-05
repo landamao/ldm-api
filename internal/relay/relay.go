@@ -801,17 +801,15 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 
 	resolved, err := r.resolve(modelID, req.AllowDisabled)
 	if err != nil {
-		code := http.StatusNotFound
+		// 对外一律按「模型不存在」返回：被禁用的模型不能让调用方探测出
+		// 「它存在、只是停用了」，对调用方来说就是没有这个模型。
+		// 内部原因（model is disabled）仍留在 res.Err 里，仅单测断言可见：
+		// 这类请求整条不进调用日志（SkipRecord），运行时的日志与响应里都没有它。
+		const typ = "invalid_request_error"
 		msg := "模型「" + modelID + "」不存在"
-		typ := "invalid_request_error"
 		res.SkipRecord = true
-		if errors.Is(err, ErrModelDisabled) {
-			code = http.StatusForbidden
-			msg = "模型「" + modelID + "」不可用"
-			res.SkipRecord = true
-		}
-		writeAPIError(w, code, typ, msg)
-		res.StatusCode = code
+		writeAPIError(w, http.StatusNotFound, typ, msg)
+		res.StatusCode = http.StatusNotFound
 		res.ClientErr = msg
 		res.Err = err.Error()
 		res.LatencyMs = time.Since(start).Milliseconds()

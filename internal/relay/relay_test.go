@@ -1923,9 +1923,19 @@ func TestClientErrorsHideInternals(t *testing.T) {
 		}
 
 		rec := httptest.NewRecorder()
-		New(st).Do(context.Background(), rec, reqFor("smart"))
-		if !strings.Contains(rec.Body.String(), "模型「smart」不可用") {
+		res := New(st).Do(context.Background(), rec, reqFor("smart"))
+		// 被禁用对外等同于不存在：不能通过调用探测出「它存在、只是停用了」。
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("状态码应为 404，得到 %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "模型「smart」不存在") {
 			t.Errorf("对外文案不正确: %s", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "不可用") {
+			t.Errorf("不应暴露禁用状态: %s", rec.Body.String())
+		}
+		if res.Err != "model is disabled" {
+			t.Errorf("内部原因应保留禁用信息，得到 %q", res.Err)
 		}
 	})
 
@@ -1978,7 +1988,8 @@ func TestAllowDisabledBypassesDisabledState(t *testing.T) {
 	}
 
 	for _, id := range []string{"off/m", "smart"} {
-		if res := do(id, false); res.StatusCode != http.StatusForbidden {
+		// 禁用对外等同于不存在，普通请求统一 404。
+		if res := do(id, false); res.StatusCode != http.StatusNotFound {
 			t.Errorf("%s 普通请求应被拒绝，得到 %d", id, res.StatusCode)
 		}
 		if res := do(id, true); res.StatusCode != http.StatusOK {

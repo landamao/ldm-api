@@ -36,7 +36,7 @@ chmod +x ldmapi-linux-amd64
 
 ```
   ╭──────────────────────────────────────────────────────────────╮
-  │  🐱 懒大猫 API   v1.26.27                                    │
+  │  🐱 懒大猫 API   v1.26.29                                    │
   │                                                              │
   │  控制台     http://127.0.0.1:6700                            │
   │  API 地址   http://127.0.0.1:6700/v1                         │
@@ -335,6 +335,9 @@ API 密钥只能调用模型相关端点。完整白名单：`chat/completions`�
 密钥不存在、已禁用或已过期时统一返回 `401 invalid_api_key`（对外不区分具体原因）；只有额度用尽才返回
 `403 insufficient_quota`，并在错误信息里带上已用 / 总额度。
 
+模型在模型管理里被禁用、或者根本没有这个模型 ID 时，调用一律返回 `404` 和「模型「xxx」不存在」——
+对外不区分「不存在」和「已禁用」，调用方无法通过调用探测出某个模型只是被停用了。
+
 令牌可以设置来源 IP 白名单（令牌管理 → 编辑密钥 → IP 限制）。留空表示不限制；支持单个 IPv4 / IPv6 地址、
 CIDR 网段（如 `10.0.0.0/8`）和 IPv4 尾部通配（如 `192.168.1.*`）。不在白名单内的请求返回
 `403 ip_not_allowed`。只有直连方是本机或内网（同机反向代理、Docker 网关）时才会读取
@@ -612,7 +615,7 @@ Windows 产物的图标和版本信息来自 `assets/ldmapi.ico`，由 `go-winre
 go install github.com/tc-hib/go-winres@latest
 go-winres simply --arch amd64,arm64 --icon assets/ldmapi.ico \
   --product-name "懒大猫 API" --file-description "懒大猫 API - 模型聚合网关" \
-  --product-version 1.26.27 --file-version 1.26.27 --original-filename ldmapi.exe
+  --product-version 1.26.29 --file-version 1.26.29 --original-filename ldmapi.exe
 ```
 
 修改前端时不必重新编译，让程序直接从磁盘读取前端资源即可：

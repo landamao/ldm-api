@@ -56,82 +56,33 @@
       + `${esc(asked)}${icon('route', 12)}</button>`;
   };
 
-  // 气泡卡片：一次只开一个，挂在 body 上 fixed 定位——日志表格是横向滚动的
-  // 容器，气泡放在单元格里会被裁掉。移上去 / 手机上点徽章打开，点空白、Esc 关闭。
-  // 滚动时跟着标记走而不是直接收起：手机上点完常有惯性滚动，直接关会「点了没反应」。
-  let modelMapPop = null; // { el, anchor, pinned }
-  let modelMapTimer = 0;
-  let modelMapRaf = 0;
-  const canHover = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+  // 气泡卡片：一次只开一个，定位、跟随滚动、点空白 / Esc 收起都交给统一的
+  // 气泡引擎（LDM.tip）——日志表格是横向滚动的容器，气泡必须挂 body fixed，
+  // 否则会被单元格裁掉。桌面悬停打开、手机上点徽章打开，行为与看板里
+  // 被截断的模型名完全一致。
+  const canHover = window.LDM.tip.canHover;
 
-  function closeModelMapPop() {
-    if (modelMapTimer) { clearTimeout(modelMapTimer); modelMapTimer = 0; }
-    if (!modelMapPop) return;
-    modelMapPop.el.remove();
-    modelMapPop.anchor.setAttribute('aria-expanded', 'false');
-    modelMapPop = null;
-  }
-
-  // byHover 打开的气泡在鼠标移开后自动收起；点开的（pinned）要等点空白处才关，
-  // 免得手机上刚点开就被别的事件收走、桌面上点开后又跟着鼠标消失。
   function openModelMapPop(anchor, byHover) {
-    if (modelMapPop && modelMapPop.anchor === anchor) {
-      if (!byHover) modelMapPop.pinned = true;
-      return;
-    }
-    closeModelMapPop();
     const asked = (anchor.dataset.asked || '').trim();
     const got = (anchor.dataset.got || '').trim();
     if (!got) return;
-
-    const el = document.createElement('div');
-    el.className = 'log-pop';
-    el.setAttribute('role', 'dialog');
-    el.setAttribute('aria-label', '请求模型与响应模型');
-    el.innerHTML = `
-      <div class="log-pop__row">
-        <span class="log-pop__label">请求模型</span>
-        ${copyBadge(asked || '—', { label: '请求模型' })}
-      </div>
-      <div class="log-pop__row">
-        <span class="log-pop__label">响应模型</span>
-        ${copyBadge(got, { label: '响应模型' })}
-      </div>`;
-    el.style.visibility = 'hidden';
-    document.body.appendChild(el);
-
-    modelMapPop = { el, anchor, pinned: !byHover };
-    placeModelMapPop();
-    el.style.visibility = '';
-
     anchor.setAttribute('aria-expanded', 'true');
-  }
-
-  // 优先贴在标记下方，下面放不下就翻到上方；水平方向夹在视口里。
-  // 滚动 / 缩放后重新算一次，气泡跟着标记移动；标记被重绘掉或滚出屏幕就收起。
-  function placeModelMapPop() {
-    if (!modelMapPop) return;
-    const { el, anchor } = modelMapPop;
-    if (!anchor.isConnected) { closeModelMapPop(); return; }
-    const r = anchor.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    if (r.bottom < 0 || r.top > vh) { closeModelMapPop(); return; }
-    const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    const left = Math.min(Math.max(8, r.left), Math.max(8, vw - w - 8));
-    let top = r.bottom + 8;
-    if (top + h > vh - 8 && r.top - h - 8 >= 8) top = r.top - h - 8;
-    el.style.left = `${Math.round(left)}px`;
-    el.style.top = `${Math.round(top)}px`;
-  }
-
-  // 滚动事件很密（含表格内部横向滚动），合并到下一帧再算位置。
-  function queuePlaceModelMapPop() {
-    if (!modelMapPop || modelMapRaf) return;
-    modelMapRaf = requestAnimationFrame(() => {
-      modelMapRaf = 0;
-      placeModelMapPop();
+    window.LDM.tip.show(anchor, {
+      html: `
+        <div class="log-pop__row">
+          <span class="log-pop__label">请求模型</span>
+          ${copyBadge(asked || '—', { label: '请求模型' })}
+        </div>
+        <div class="log-pop__row">
+          <span class="log-pop__label">响应模型</span>
+          ${copyBadge(got, { label: '响应模型' })}
+        </div>`,
+      className: 'chart-tip--panel log-pop',
+      interactive: true,
+      pinned: !byHover,
+      role: 'dialog',
+      ariaLabel: '请求模型与响应模型',
+      onHide: (a) => { if (a) a.setAttribute('aria-expanded', 'false'); },
     });
   }
 
@@ -140,52 +91,34 @@
   // 手机（没有悬停）：点徽章展开气泡，再去点里面的徽章复制。
   document.addEventListener('click', (e) => {
     const mark = e.target && e.target.closest ? e.target.closest('.log-model-map') : null;
-    if (mark) {
-      e.preventDefault();
-      if (canHover) {
-        copyText(mark.dataset.asked || '', '上游模型');
-        openModelMapPop(mark, false);
-      } else if (modelMapPop && modelMapPop.anchor === mark && modelMapPop.pinned) {
-        closeModelMapPop();
-      } else {
-        openModelMapPop(mark, false);
-      }
-      return;
+    if (!mark) return;
+    e.preventDefault();
+    const opened = mark.getAttribute('aria-expanded') === 'true';
+    if (canHover) {
+      copyText(mark.dataset.asked || '', '上游模型');
+      openModelMapPop(mark, false);
+    } else if (opened) {
+      window.LDM.tip.hide();
+    } else {
+      openModelMapPop(mark, false);
     }
-    if (modelMapPop && !(e.target.closest && e.target.closest('.log-pop'))) closeModelMapPop();
   });
 
   document.addEventListener('pointerover', (e) => {
     if (!canHover || !e.target.closest) return;
-    if (e.target.closest('.log-model-map')) {
-      if (modelMapTimer) { clearTimeout(modelMapTimer); modelMapTimer = 0; }
-      openModelMapPop(e.target.closest('.log-model-map'), true);
-      return;
-    }
-    // 从标记挪到气泡里不算离开，取消待关闭。
-    if (e.target.closest('.log-pop') && modelMapTimer) {
-      clearTimeout(modelMapTimer);
-      modelMapTimer = 0;
-    }
+    const mark = e.target.closest('.log-model-map');
+    // 已经开着的不要反复重渲染
+    if (mark && mark.getAttribute('aria-expanded') !== 'true') openModelMapPop(mark, true);
   });
 
   document.addEventListener('pointerout', (e) => {
-    if (!canHover || !modelMapPop || modelMapPop.pinned) return;
-    const from = e.target.closest && e.target.closest('.log-model-map, .log-pop');
-    if (!from) return;
+    if (!canHover || !e.target.closest) return;
+    if (!e.target.closest('.log-model-map')) return;
     const to = e.relatedTarget;
     if (to && to.closest && to.closest('.log-model-map, .log-pop')) return;
-    if (modelMapTimer) clearTimeout(modelMapTimer);
-    modelMapTimer = setTimeout(closeModelMapPop, 180);
+    // 点开的（pinned）要等点别处才收，悬停打开的一离开就收
+    window.LDM.tip.hideHover();
   });
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModelMapPop();
-  });
-  // 滚动（含表格内部滚动）、窗口缩放后重新贴到标记旁边。
-  window.addEventListener('scroll', queuePlaceModelMapPop, true);
-  window.addEventListener('resize', queuePlaceModelMapPop);
-  window.addEventListener('hashchange', closeModelMapPop);
 
   // 错误详情弹窗：顶部概要只放请求模型、渠道模型、渠道和状态码，
   // 下面分成「错误详情」和「内部原因」两个独立块。错误详情是调用方实际
@@ -1055,7 +988,7 @@
 
       function paintLogs() {
         // 重绘会换掉标记节点，气泡跟着收掉，别让它悬在旧位置上
-        closeModelMapPop();
+        window.LDM.tip.hide();
         if (!dashData.logs) return;
         const items = (dashData.logs && dashData.logs.items) || [];
         // 次要指标（缓存读 / 思考 / 首字）在数值下面另起一行，小一号灰字
@@ -5771,7 +5704,7 @@
 
       function renderTable() {
         // 重绘会换掉标记节点，气泡跟着收掉，别让它悬在旧位置上
-        closeModelMapPop();
+        window.LDM.tip.hide();
         if (lastItems == null) return;
         const host = q('#log-table');
         const items = lastItems;

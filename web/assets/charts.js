@@ -69,106 +69,30 @@
     if (tipEl) tipEl.classList.remove('is-on');
   }
 
+  // 没有鼠标的设备：点图上任意位置出数据，点图外收起。
+  // 桌面走 mousemove / mouseleave，这条只在触屏真正生效。
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    if (e.target && e.target.closest && e.target.closest('svg.chart')) return;
+    hideTip();
+  }, true);
+
   // ---- 名字气泡：省略号截断之后看全名 ----------------------------------
   // 环形图图例、排行条里的名字（模型名、渠道名）宽度不够就被省略号截断，
-  // 截断之后全名彻底没地方看。这里给「确实被截断」的那些名字挂一枚气泡：
-  // 有鼠标的悬停弹出、键盘 Tab 到就弹出、触屏点一下弹出，点别处 / 切页收起。
-  // 气泡挂在 body 上 fixed 定位（表格、卡片都可能裁内容），滚动时跟着名字走——
-  // 手机上点完常有惯性滚动，直接收起会像「点了没反应」。
-  let nameTipEl = null;
-  let nameTipFor = null;
-  let nameTipRaf = 0;
-  const canHover = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
-
-  function nameTip() {
-    if (!nameTipEl) {
-      nameTipEl = document.createElement('div');
-      nameTipEl.className = 'chart-tip chart-tip--name';
-      document.body.appendChild(nameTipEl);
-    }
-    return nameTipEl;
-  }
-
-  function hideNameTip() {
-    if (!nameTipEl) return;
-    nameTipEl.classList.remove('is-on');
-    nameTipFor = null;
-  }
-
-  function placeNameTip() {
-    if (!nameTipFor || !nameTipEl) return;
-    const el = nameTipFor;
-    if (!el.isConnected) { hideNameTip(); return; }
-    const r = el.getBoundingClientRect();
-    const vw = window.innerWidth, vh = window.innerHeight;
-    if (r.bottom < 4 || r.top > vh - 4) { hideNameTip(); return; }
-    const w = nameTipEl.offsetWidth, h = nameTipEl.offsetHeight;
-    const left = Math.min(Math.max(8, r.left), Math.max(8, vw - w - 8));
-    let top = r.bottom + 7;
-    if (top + h > vh - 8 && r.top - h - 7 >= 8) top = r.top - h - 7;
-    nameTipEl.style.left = `${Math.round(left)}px`;
-    nameTipEl.style.top = `${Math.round(top)}px`;
-  }
-
-  function queuePlaceNameTip() {
-    if (!nameTipFor || nameTipRaf) return;
-    nameTipRaf = requestAnimationFrame(() => {
-      nameTipRaf = 0;
-      placeNameTip();
-    });
-  }
-
-  function showNameTip(el) {
-    const name = (el.dataset.name || el.textContent || '').trim();
-    if (!name) return;
-    const t = nameTip();
-    t.textContent = name;
-    nameTipFor = el;
-    t.classList.add('is-on');
-    placeNameTip();
-  }
-
+  // 截断之后全名彻底没地方看。这里只判断「确实被截断」并挂上 data-tip，
+  // 气泡的显示、定位、跟随滚动、点别处关闭全站统一由 LDM.tip 管：
+  // 有鼠标的悬停弹出、键盘 Tab 弹出、触屏点一下弹出。
   // 只有真被截断才挂：短名字一悬停就冒气泡反而吵。
   // 判断靠 scrollWidth / clientWidth，所以必须在节点已经进文档之后再调。
   function bindNameTips(root) {
-    if (!root) return;
+    if (!root || !window.LDM || !window.LDM.tip) return;
     Array.prototype.forEach.call(root.querySelectorAll('[data-name]'), (el) => {
       if (el.scrollWidth <= el.clientWidth + 1) return;
       el.classList.add('chart-name--clip');
-      if (canHover) {
-        el.tabIndex = 0;
-        el.addEventListener('pointerenter', (e) => {
-          if (e.pointerType === 'touch') return;
-          showNameTip(el);
-        });
-        el.addEventListener('pointerleave', (e) => {
-          if (e.pointerType === 'touch') return;
-          hideNameTip();
-        });
-        el.addEventListener('focus', () => showNameTip(el));
-        el.addEventListener('blur', hideNameTip);
-      } else {
-        // 没有悬停：点一下弹出，再点一下收起
-        el.addEventListener('click', (e) => {
-          e.stopPropagation();
-          if (nameTipFor === el) hideNameTip();
-          else showNameTip(el);
-        });
-      }
+      el.tabIndex = 0; // 键盘也能 Tab 到，气泡跟着焦点弹
+      window.LDM.tip.attach(el, { className: 'chart-tip--name' });
     });
   }
-
-  document.addEventListener('click', (e) => {
-    if (!nameTipFor) return;
-    if (e.target && e.target.closest && e.target.closest('[data-name]')) return;
-    hideNameTip();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') hideNameTip();
-  });
-  window.addEventListener('scroll', queuePlaceNameTip, true);
-  window.addEventListener('resize', queuePlaceNameTip);
-  window.addEventListener('hashchange', hideNameTip);
 
   // 系统开了「减少动态效果」或页面在后台时不播动画：直接落在终态。
   // 后台标签页里 rAF 不触发，动画会一直停在「没画出来」的样子。
@@ -384,7 +308,7 @@
         return best;
       };
 
-      hit.addEventListener('mousemove', (e) => {
+      const showPoint = (e) => {
         const i = idxFromEvent(e);
         const x = xAt(i);
         hg.style.display = '';
@@ -420,11 +344,21 @@
         t.innerHTML = `<div style="opacity:.75;margin-bottom:3px">${esc(fullLabel(i))}</div>${rows.join('')}`;
         t.classList.add('is-on');
         const tw = t.offsetWidth, th = t.offsetHeight;
+        const vw = window.innerWidth, vh = window.innerHeight;
         let left = e.clientX + 14, top = e.clientY - th - 10;
-        if (left + tw > window.innerWidth - 8) left = e.clientX - tw - 14;
+        if (left + tw > vw - 8) left = e.clientX - tw - 14;
         if (top < 8) top = e.clientY + 16;
+        // 手机屏幕窄，气泡可能比剩余空间还宽：贴着边放，别让左边跑到负坐标
+        left = Math.min(Math.max(8, left), Math.max(8, vw - tw - 8));
+        top = Math.min(Math.max(8, top), Math.max(8, vh - th - 8));
         t.style.left = left + 'px';
         t.style.top = top + 'px';
+      };
+
+      hit.addEventListener('mousemove', showPoint);
+      // 触屏没有 mousemove：点一下就在点的位置显示，点图外收起
+      hit.addEventListener('click', (e) => {
+        if (!(window.LDM && window.LDM.tip && window.LDM.tip.canHover)) showPoint(e);
       });
       hit.addEventListener('mouseleave', () => {
         hg.style.display = 'none';
@@ -498,16 +432,24 @@
       const svg = container.querySelector('svg');
       const t = tip();
       svg.querySelectorAll('.hit').forEach((el) => {
-        el.addEventListener('mousemove', (e) => {
+        const showBar = (e) => {
           const i = Number(el.dataset.i);
           t.innerHTML = `<div style="opacity:.75;margin-bottom:2px">${esc(labels[i] || '')}</div><b>${esc(valueFmt(values[i] || 0))}</b>`;
           t.classList.add('is-on');
           const tw = t.offsetWidth, th = t.offsetHeight;
+          const vw = window.innerWidth, vh = window.innerHeight;
           let left = e.clientX + 12, top = e.clientY - th - 8;
-          if (left + tw > window.innerWidth - 8) left = e.clientX - tw - 12;
+          if (left + tw > vw - 8) left = e.clientX - tw - 12;
           if (top < 8) top = e.clientY + 14;
+          left = Math.min(Math.max(8, left), Math.max(8, vw - tw - 8));
+          top = Math.min(Math.max(8, top), Math.max(8, vh - th - 8));
           t.style.left = left + 'px';
           t.style.top = top + 'px';
+        };
+        el.addEventListener('mousemove', showBar);
+        // 触屏：点柱子出数值，点图外收起（同折线图）
+        el.addEventListener('click', (e) => {
+          if (!(window.LDM && window.LDM.tip && window.LDM.tip.canHover)) showBar(e);
         });
         el.addEventListener('mouseleave', () => t.classList.remove('is-on'));
       });
@@ -522,7 +464,7 @@
    * opts: { items:[{name,value,color}], size, thickness, valueFmt, centerLabel }
    */
   function donutChart(container, opts) {
-    hideNameTip();
+    if (window.LDM && window.LDM.tip) window.LDM.tip.hide();
     const { items = [], size = 168, thickness = 20 } = opts;
     const valueFmt = opts.valueFmt || null;
     const totalFmt = valueFmt || fmtNum;
@@ -585,7 +527,7 @@
 
   /** 横向排行条 */
   function rankList(container, items, opts) {
-    hideNameTip();
+    if (window.LDM && window.LDM.tip) window.LDM.tip.hide();
     const o = opts || {};
     if (!items || !items.length) {
       container.innerHTML = '<div class="muted fs-12" style="padding:8px 0">暂无数据</div>';
@@ -626,7 +568,7 @@
    */
   function clearChart(container) {
     if (!container) return;
-    hideNameTip();
+    if (window.LDM && window.LDM.tip) window.LDM.tip.hide();
     const ro = observers.get(container);
     if (ro) {
       ro.disconnect();

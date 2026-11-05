@@ -801,6 +801,236 @@
     return { enhance, enhanceAll, sync, close, isOpen: () => !!openState };
   })();
 
+  // ---------- 统一气泡提示 ----------
+  // 全站所有「鼠标悬停 / 触屏点一下」才出现的提示都走这一套，手感只有一个：
+  //  · 原生 title 属性被接管——原生气泡手机上没有，桌面上又慢又改不了样式
+  //  · 图表图例里被省略号截断的模型名、日志里的上游模型卡片复用同一个气泡
+  // 桌面悬停弹出、键盘 Tab 弹出、触屏点一下弹出（再点一下 / 点别处 / Esc / 切页收起）。
+  // 气泡挂 body 上 fixed 定位——表格和卡片都会裁内容；滚动时跟着锚点走，
+  // 手机上点完常有惯性滚动，直接收起会像「点了没反应」。
+  const HOVER_OK = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+
+  const Tip = (function () {
+    const SHOW_DELAY = 150; // 扫过一排按钮时不至于一串气泡乱闪
+    const HIDE_DELAY = 80;
+
+    let box = null;
+    let anchor = null;
+    let pinned = false; // 点开的：鼠标移开不收起，等点别处 / Esc
+    let interactive = false; // 内容是能点的卡片：鼠标要能移进去
+    let onHide = null;
+    let timer = 0;
+    let raf = 0;
+    let pointerType = '';
+
+    function node() {
+      if (!box) {
+        box = document.createElement('div');
+        box.className = 'chart-tip chart-tip--wrap';
+        box.setAttribute('role', 'tooltip');
+        document.body.appendChild(box);
+      }
+      return box;
+    }
+
+    // 贴在锚点下方，下面放不下就翻到上方；水平方向夹在视口里。
+    function place() {
+      if (!box || !anchor) return;
+      if (!anchor.isConnected) { hide(); return; }
+      const r = anchor.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      if (r.bottom < 4 || r.top > vh - 4) { hide(); return; }
+      const w = box.offsetWidth;
+      const h = box.offsetHeight;
+      const left = Math.min(Math.max(8, r.left), Math.max(8, vw - w - 8));
+      let top = r.bottom + 7;
+      if (top + h > vh - 8) {
+        const up = r.top - h - 7;
+        top = up >= 8 ? up : Math.max(8, vh - h - 8);
+      }
+      box.style.left = `${Math.round(left)}px`;
+      box.style.top = `${Math.round(top)}px`;
+    }
+
+    // 滚动很密（含表格内部滚动），合并到下一帧再量。
+    function queuePlace() {
+      if (!anchor || raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        place();
+      });
+    }
+
+    function clearTimer() {
+      if (timer) { clearTimeout(timer); timer = 0; }
+    }
+
+    function hide() {
+      clearTimer();
+      if (!box || !box.classList.contains('is-on')) return;
+      const a = anchor;
+      anchor = null;
+      pinned = false;
+      interactive = false;
+      const fn = onHide;
+      onHide = null;
+      // 直接摘掉节点：气泡是一次性的内容，留着空壳只会被各种
+      // 「.log-pop 还在不在」的判断误当成还开着
+      box.remove();
+      box = null;
+      if (fn) fn(a);
+    }
+
+    function show(a, opts) {
+      if (!a) return;
+      opts = opts || {};
+      clearTimer();
+      const el = node();
+      el.className = 'chart-tip ' + (opts.className || 'chart-tip--wrap');
+      el.setAttribute('role', opts.role || 'tooltip');
+      if (opts.ariaLabel) el.setAttribute('aria-label', opts.ariaLabel);
+      else el.removeAttribute('aria-label');
+      if (opts.html != null) el.innerHTML = opts.html;
+      else el.textContent = String(opts.text == null ? '' : opts.text);
+      // 卡片类气泡里的小徽章自己带 title，原生 tooltip 在气泡里冒出来很脏，
+      // 一并读走；委托那边会跳过气泡内部的元素，不会套娃弹气泡。
+      Array.prototype.forEach.call(el.querySelectorAll('[title]'), readTip);
+      el.style.pointerEvents = opts.interactive ? 'auto' : '';
+      el.classList.add('is-on');
+      anchor = a;
+      pinned = !!opts.pinned;
+      interactive = !!opts.interactive;
+      onHide = typeof opts.onHide === 'function' ? opts.onHide : null;
+      place();
+      // 整段帮助文本比屏幕还高时让它自己能滚（能滚就得能点到，不然鼠标一移就判成离开）
+      if (!interactive && el.scrollHeight > el.clientHeight + 1) el.style.pointerEvents = 'auto';
+    }
+
+    function open(a, opts, delay) {
+      clearTimer();
+      if (anchor === a) return;
+      if (delay > 0) timer = setTimeout(() => { timer = 0; show(a, opts); }, delay);
+      else show(a, opts);
+    }
+
+    function closeSoon(a) {
+      if (pinned) return;
+      if (a && anchor && anchor !== a) return;
+      clearTimer();
+      const wait = interactive ? 220 : HIDE_DELAY;
+      timer = setTimeout(() => { timer = 0; hide(); }, wait);
+    }
+
+    // ---- 原生 title 接管 ----
+    // 第一次要显示时把 title 读走存进 data-tip，顺手给纯图标元素补一个无障碍名称。
+    function readTip(el) {
+      const raw = el.getAttribute('title');
+      if (raw == null) return el.dataset.tip || '';
+      el.dataset.tip = raw;
+      if (!el.hasAttribute('aria-label') && !(el.textContent || '').trim()) el.setAttribute('aria-label', raw);
+      el.removeAttribute('title');
+      return raw;
+    }
+
+    function optsFor(el) {
+      const text = readTip(el);
+      if (!text) return null;
+      return { text, className: el.dataset.tipCls || '', pinned: false };
+    }
+
+    document.addEventListener('pointerdown', (e) => {
+      if (e.pointerType) pointerType = e.pointerType;
+      // 点开的（pinned）气泡点到别处就收，触屏也靠这条
+      if (!pinned) return;
+      const t = e.target;
+      if (t && ((anchor && anchor.contains(t)) || (box && box.contains(t)))) return;
+      hide();
+    }, true);
+
+    document.addEventListener('pointerover', (e) => {
+      if (e.pointerType) pointerType = e.pointerType;
+      if (!HOVER_OK || e.pointerType === 'touch') return;
+      // 列表重绘会把锚点换掉，鼠标一动就顺手收掉，别让气泡悬在旧位置
+      if (anchor && !anchor.isConnected) hide();
+      const t = e.target;
+      if (!t || !t.closest) return;
+      if (box && box.contains(t)) { clearTimer(); return; }
+      const a = t.closest('[title], [data-tip]');
+      if (!a) { closeSoon(); return; }
+      const opts = optsFor(a);
+      if (!opts) { closeSoon(); return; }
+      // 换锚点时立刻切（只有从无到有才等延迟），扫过一排按钮不会闪一串气泡
+      open(a, opts, anchor ? 0 : SHOW_DELAY);
+    });
+
+    document.addEventListener('pointerout', (e) => {
+      if (!HOVER_OK || e.pointerType === 'touch') return;
+      if (!anchor) return;
+      const from = e.target;
+      if (!from || !anchor.contains(from)) return;
+      const to = e.relatedTarget;
+      // 在锚点内部移动、或者移进可交互气泡里，都不算离开
+      if (to && (anchor.contains(to) || (box && box.contains(to)))) return;
+      closeSoon(anchor);
+    });
+
+    // 键盘 Tab 过来也要能看见。鼠标点击按钮也会带 focus，但那时气泡本来
+    // 就跟着悬停显示了，不会多弹一层；触屏（pointerType=touch）不在这里处理。
+    document.addEventListener('focusin', (e) => {
+      const t = e.target;
+      if (!t || !t.closest || pointerType === 'touch') return;
+      if (box && box.contains(t)) return;
+      // 文本类输入框点进去就忙着打字，说明气泡挡在下面反而碍事（开关类的照弹）
+      if (t.matches && t.matches('input:not([type=checkbox]):not([type=radio]), textarea')) return;
+      const a = t.closest('[title], [data-tip]');
+      if (!a) return;
+      const opts = optsFor(a);
+      if (opts) show(a, opts);
+    });
+
+    document.addEventListener('focusout', () => { if (anchor && !pinned) hide(); });
+
+    // 没有悬停的设备（手机 / 平板）：点一下弹出来，再点一下收起
+    document.addEventListener('click', (e) => {
+      if (pointerType !== 'touch') return;
+      const t = e.target;
+      if (!t || !t.closest) return;
+      if (box && box.contains(t)) return; // 气泡里的复制按钮自己处理
+      const a = t.closest('[title], [data-tip]');
+      if (!a) {
+        // 只收自己管的那些气泡，别把别的卡片（如日志里的上游模型）顺手关掉
+        if (anchor && anchor.hasAttribute('data-tip')) hide();
+        return;
+      }
+      const opts = optsFor(a);
+      if (!opts) return;
+      if (pinned && anchor === a) { hide(); return; }
+      // 点开的是弹窗类操作时别让气泡压在弹窗上
+      requestAnimationFrame(() => {
+        if (document.querySelector('.modal-backdrop')) return;
+        show(a, Object.assign({}, opts, { pinned: true }));
+      });
+    });
+
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+    window.addEventListener('hashchange', hide);
+    window.addEventListener('scroll', queuePlace, true);
+    window.addEventListener('resize', queuePlace);
+
+    // 给「没有 title、但也要气泡」的元素用（图表里被省略号截断的模型名）。
+    // 挂上 data-tip 之后剩下的全部由上面的委托接管，不需要再绑事件。
+    function attach(el, opts) {
+      if (!el) return;
+      const text = String((opts && opts.text) || el.dataset.name || el.textContent || '').trim();
+      if (!text) return;
+      el.dataset.tip = text;
+      if (opts && opts.className) el.dataset.tipCls = opts.className;
+    }
+
+    return { canHover: HOVER_OK, show, hide, hideHover: () => { if (!pinned) hide(); }, attach };
+  })();
+
   // ---------- 模态框 ----------
   let modalStack = [];
 
@@ -808,6 +1038,9 @@
     const {
       title, desc, body, footer, size, onMount, closable = true, onClose, top = false, cls = '',
     } = opts;
+
+    // 气泡是 fixed + 高层级，弹窗一开先收掉，免得压在弹窗上面
+    Tip.hide();
 
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop' + (top ? ' modal-backdrop--top' : '');
@@ -1235,6 +1468,7 @@
     esc, fmtNum, fmtInt, fmtUnit, fmtTime, fmtTimeShort, relTime, fmtDuration, fmtUptime,
     copyText, debounce, icon, providerIcon, providerAvatar, Toast, API, Select, openModal, confirmDialog, promptDialog,
     isCoarsePointer: COARSE_POINTER, REPO_URL,
+    tip: Tip,
     badge, statusBadge, emptyState, loadingBlock, switchEl, capBadges, fmtContext, colorBadge, copyBadge, tagHue,
     Theme, State, routeParam, applyLogo,
     registerPage(name, def) { PAGES[name] = def; },

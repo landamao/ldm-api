@@ -1025,22 +1025,9 @@ table.tbl--logs thead th { color: var(--text); }
 .log-model-map svg { opacity: .7; }
 .log-model-map:hover svg { opacity: 1; }
 
-/* 上游模型 / 响应模型气泡卡片：点标记打开，手机上同样可用。
-   固定挂在 body 上，避免被日志卡片的横向滚动裁掉。 */
-.log-pop {
-  position: fixed;
-  z-index: 95;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  width: max-content;
-  max-width: min(320px, calc(100vw - 24px));
-  padding: 10px 12px;
-  background: var(--surface);
-  border: 1.5px solid var(--card-line);
-  border-radius: 12px;
-}
+/* 上游模型 / 响应模型气泡卡片：只管「一行一个模型」的排版。
+   位置、层级、开关全部交给统一气泡（.chart-tip），别在这里重复一遍。 */
+.log-pop { display: flex; flex-direction: column; gap: 9px; }
 /* 一行一个模型：标签在左、可复制的徽章在右 */
 .log-pop__row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .log-pop__label { font-size: 11px; font-weight: 750; color: var(--text-3); white-space: nowrap; }
@@ -2754,11 +2741,35 @@ html[data-theme="dark"] .chart-legend__btn.is-on { background: #33422a; color: v
 }
 html[data-theme="dark"] .chart-tip { background: #33251a; border-color: #0d130c; color: #f3ecd9; }
 .chart-tip.is-on { opacity: 1; }
-/* 名字被省略号截断时的全名气泡：允许折行，别撑成一条超出屏幕的横条 */
+/* 统一的气泡内容：一句话、整段帮助文本、被省略号截断的长名字都允许折行，
+   别撑成一条超出屏幕的横条；特别高的（长帮助）自己滚，免得顶出视口。 */
+.chart-tip--wrap,
 .chart-tip--name {
-  max-width: min(300px, calc(100vw - 24px));
+  max-width: min(320px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+/* 白底卡片型气泡（日志里的上游模型）：内容是能点的行，底色跟着主题走 */
+.chart-tip--panel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1.5px solid var(--card-line);
+  border-radius: 12px;
+  color: var(--text);
+  white-space: normal;
+  font-variant-numeric: normal;
+}
+html[data-theme="dark"] .chart-tip--panel {
+  background: var(--surface);
+  border-color: var(--card-line);
+  color: var(--text);
 }
 /* 只有真被截断的名字才挂气泡，鼠标移上去给个「这里能看全」的手型；
    键盘 Tab 过来时也要能看见焦点 */

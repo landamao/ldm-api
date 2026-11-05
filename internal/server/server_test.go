@@ -2805,7 +2805,7 @@ func TestRecordErrorAsContentCountsAsSuccess(t *testing.T) {
 	}
 }
 
-// 模型已禁用属于配置侧拒绝：请求直接返回，不写错误日志、不进统计、不消耗额度。
+// 模型已禁用对外等同于不存在（404），仍是配置侧拒绝：不写错误日志、不进统计、不消耗额度。
 func TestDisabledModelSkipsLogAndStats(t *testing.T) {
 	s, st := newTestServer(t, "disabled-skip")
 	key, err := s.EnsureDefaultToken()
@@ -2834,8 +2834,8 @@ func TestDisabledModelSkipsLogAndStats(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "模型「off」不可用") {
-		t.Fatalf("应直接返回 403 与不可用提示，得到 %d（%s）", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), "模型「off」不存在") {
+		t.Fatalf("禁用模型对外应按不存在返回 404，得到 %d（%s）", resp.StatusCode, body)
 	}
 
 	if _, total, err := st.QueryLogs(store.LogFilter{Limit: 10}); err != nil {
