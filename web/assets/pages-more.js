@@ -199,6 +199,14 @@
   const dashChartPh = (height) => `<div class="dash-ph-chart" style="height:${height}px">
     <span class="dash-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>统计中…</span>
   </div>`;
+  // 统计卡骨架：标签照常写出来（当前区间一眼能看到），数值和脚注先留浅色条。
+  // 首屏骨架直接用它填，省掉页面建完再替换一遍的二次重排。
+  const dashStatPh = (iconName, label, wValue, wFoot) => `
+    <div class="stat__label">${icon(iconName, 13)}${label}</div>
+    <div class="stat__value">${dashPh(wValue, 'dash-ph--value')}</div>
+    <div class="stat__foot">${dashPh(wFoot, 'dash-ph--foot')}</div>`;
+  const dashLegendPh = () => [96, 82, 90, 76]
+    .map((w) => `<span class="dash-ph dash-ph--pill" style="width:${w}px"></span>`).join('');
   const dashRankPh = () => `<div class="rank-list">${[0, 1, 2, 3, 4].map((i) => `
     <div class="rank-item">
       <div class="rank-item__top">
@@ -335,14 +343,15 @@
       let loadSeq = 0;
 
       buildSkeleton();
-      loadAll();
+      // 骨架里已经铺好了占位，首屏不用再刷一遍（省一次整块重排）
+      loadAll(true);
 
       // 拉全量数据：首次进入、切区间、刷新
-      async function loadAll() {
+      async function loadAll(fresh) {
         const seq = ++loadSeq;
         const stale = () => seq !== loadSeq;
         // 区间变了，旧数字先清掉回到骨架，避免把上一段的统计当成这一段的
-        resetComputed();
+        if (!fresh) resetComputed();
         clearLoadError();
         // 选中某个模型时，统计和序列都按该模型取；「各模型」「总计」都是全局视图。
         const scope = dashSel.kind === 'model' ? '&model=' + encodeURIComponent(dashSel.id) : '';
@@ -429,29 +438,16 @@
         hideTip();
         body.setAttribute('aria-busy', 'true');
         const label = dashRangeInfo().label;
-        dom.req.innerHTML = `
-          <div class="stat__label">${icon('zap', 13)}${label}请求</div>
-          <div class="stat__value">${dashPh(104, 'dash-ph--value')}</div>
-          <div class="stat__foot">${dashPh(84, 'dash-ph--foot')}</div>`;
-        dom.token.innerHTML = `
-          <div class="stat__label">${icon('bolt', 13)}${label} Token</div>
-          <div class="stat__value">${dashPh(112, 'dash-ph--value')}</div>
-          <div class="stat__foot">${dashPh(72, 'dash-ph--foot')}</div>`;
-        dom.rate.innerHTML = `
-          <div class="stat__label">${icon('check', 13)}成功率</div>
-          <div class="stat__value">${dashPh(88, 'dash-ph--value')}</div>
-          <div class="stat__foot">${dashPh(64, 'dash-ph--foot')}</div>`;
-        dom.speed.innerHTML = `
-          <div class="stat__label">${icon('clock', 13)}平均速度</div>
-          <div class="stat__value">${dashPh(96, 'dash-ph--value')}</div>
-          <div class="stat__foot">${dashPh(150, 'dash-ph--foot')}</div>`;
+        dom.req.innerHTML = dashStatPh('zap', `${label}请求`, 104, 84);
+        dom.token.innerHTML = dashStatPh('bolt', `${label} Token`, 112, 72);
+        dom.rate.innerHTML = dashStatPh('check', '成功率', 88, 64);
+        dom.speed.innerHTML = dashStatPh('clock', '平均速度', 96, 150);
 
         dom.trendSub.textContent = '';
         // 先把旧的曲线和尺寸观察器一起清掉，窗口缩放时旧数据不会画回占位上
         clearChart(dom.trend);
         dom.trend.innerHTML = dashChartPh(256);
-        dom.legend.innerHTML = [96, 82, 90, 76]
-          .map((w) => `<span class="dash-ph dash-ph--pill" style="width:${w}px"></span>`).join('');
+        dom.legend.innerHTML = dashLegendPh();
         dom.note.textContent = '';
         dom.donutSub.textContent = '';
         clearChart(dom.donut);
@@ -483,23 +479,26 @@
         </div>`;
       }
 
-      // 骨架只建一次，之后所有操作都只重画局部
+      // 骨架只建一次，之后所有操作都只重画局部。
+      // 占位内容直接写进骨架里（而不是建完再替换一遍），切页只发生一次大的 DOM 变更。
       function buildSkeleton() {
         // 问候语：页面开头的视觉锚点，字号拉开和卡片的层级差
         const now = new Date();
         const h = now.getHours();
         const hello = h < 5 ? '夜深了' : h < 9 ? '早上好' : h < 12 ? '上午好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
         const week = '日一二三四五六'[now.getDay()];
+        const label = dashRangeInfo().label;
+        body.setAttribute('aria-busy', 'true');
         body.innerHTML = `
           <div class="dash-hello">
             <div class="dash-hello__hi">${hello}</div>
             <div class="dash-hello__sub">${now.getMonth() + 1} 月 ${now.getDate()} 日 星期${week} · 欢迎回来，站点概况都在这儿</div>
           </div>
           <div class="stat-grid stat-grid--4">
-            <div class="stat" id="card-req"></div>
-            <div class="stat" id="card-token"></div>
-            <div class="stat" id="card-rate"></div>
-            <div class="stat" id="card-speed"></div>
+            <div class="stat" id="card-req">${dashStatPh('zap', `${label}请求`, 104, 84)}</div>
+            <div class="stat" id="card-token">${dashStatPh('bolt', `${label} Token`, 112, 72)}</div>
+            <div class="stat" id="card-rate">${dashStatPh('check', '成功率', 88, 64)}</div>
+            <div class="stat" id="card-speed">${dashStatPh('clock', '平均速度', 96, 150)}</div>
           </div>
 
           <div class="dash-metric-row">
@@ -518,8 +517,8 @@
                 </div>
               </div>
               <div class="card__body">
-                <div id="trend-chart"></div>
-                <div class="chart-legend" id="model-legend"></div>
+                <div id="trend-chart">${dashChartPh(256)}</div>
+                <div class="chart-legend" id="model-legend">${dashLegendPh()}</div>
                 <div class="fs-12 muted" id="trend-note" style="margin-top:6px"></div>
               </div>
             </div>
@@ -531,7 +530,7 @@
                   <div class="card__sub" id="donut-sub"></div>
                 </div>
               </div>
-              <div class="card__body"><div id="model-donut"></div></div>
+              <div class="card__body"><div id="model-donut">${dashChartPh(196)}</div></div>
             </div>
           </div>
 
@@ -543,7 +542,7 @@
                   <div class="card__sub">按上游渠道统计</div>
                 </div>
               </div>
-              <div class="card__body"><div id="channel-rank"></div></div>
+              <div class="card__body"><div id="channel-rank">${dashRankPh()}</div></div>
             </div>
             <div class="card">
               <div class="card__head">
@@ -552,7 +551,7 @@
                   <div class="card__sub">按 API 密钥统计</div>
                 </div>
               </div>
-              <div class="card__body"><div id="token-rank"></div></div>
+              <div class="card__body"><div id="token-rank">${dashRankPh()}</div></div>
             </div>
           </div>
 

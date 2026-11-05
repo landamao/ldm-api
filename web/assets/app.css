@@ -876,6 +876,11 @@ html[data-theme="dark"] .dash-ph::after {
 }
 @keyframes dashPhSweep { to { transform: translateX(100%); } }
 
+/* 最近调用那张表一屏十几行、每行十来个骨架条，每根都挂一条无限扫光，
+   切进看板时要同时起一百多个动画图层，进门的第一帧就被拖住。
+   表格里只留静态底纹，动效交给上面统计卡和图表占位表达。 */
+.tbl .dash-ph::after { display: none; }
+
 /* 数值位比普通骨架高一档，和 23px 的数字占同样的行高，填上以后卡片不跳 */
 .dash-ph--value { height: 24px; border-radius: 8px; }
 .dash-ph--foot { height: 10px; }

@@ -69,10 +69,22 @@
     if (tipEl) tipEl.classList.remove('is-on');
   }
 
+  // 系统开了「减少动态效果」或页面在后台时不播动画：直接落在终态。
+  // 后台标签页里 rAF 不触发，动画会一直停在「没画出来」的样子。
+  function motionOff() {
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    return !!reduce || (typeof document !== 'undefined' && document.hidden);
+  }
+
+  // 动画统一走 WAAPI：一次启动，之后每帧的事由浏览器自己排，主线程不再参与。
+  // 以前是 rAF 里逐帧写 strokeDashoffset —— 切一次看板要重算上百次样式，
+  // 曲线多的时候主线程一直在忙，看起来就是页面「卡一下」。
+  const EASE = 'cubic-bezier(.34,.12,.22,1)';
+  function canAnimate(el) { return typeof el.animate === 'function'; }
+
   /**
    * 折线从左到右画出来：给每条 path 设置 dasharray，用 dashoffset 从全长收到 0。
    * 面积块同步淡入。多条曲线时按顺序错开一点，层次更清楚。
-   * 系统开了「减少动态效果」或页面在后台时直接画完。
    */
   function animateLines(svg, dur, stagger) {
     const paths = Array.from(svg.querySelectorAll('path.line'));
@@ -81,67 +93,56 @@
       .filter((c) => !(c.parentElement && c.parentElement.classList.contains('hover-group')));
     if (!paths.length) return;
     const gap = stagger || 0;
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    // 后台标签页不播动画：requestAnimationFrame 在那里不触发，
-    // 否则曲线会一直停在「没画出来」的状态。
-    if (reduce || (typeof document !== 'undefined' && document.hidden)) return;
+    if (motionOff()) return;
     const lens = paths.map((p) => {
       let len = 0;
       try { len = p.getTotalLength(); } catch (e) { len = 0; }
       return len;
     });
-    paths.forEach((p, i) => {
-      if (!lens[i]) return;
-      p.style.strokeDasharray = `${lens[i]} ${lens[i]}`;
-      p.style.strokeDashoffset = String(lens[i]);
-    });
-    areas.forEach((a) => { a.style.opacity = '0'; });
+    // 面积块 / 数据点各设一次过渡就够，别放到动画循环里反复写 style
+    areas.forEach((a) => { a.style.transition = 'opacity .45s ease-out'; a.style.opacity = '0'; });
     // 数据点跟着曲线走，线画到哪它再亮到哪
     dots.forEach((d) => {
       d.style.opacity = '0';
       d.style.transition = `opacity .35s ease-out ${(dur / 1000) * 0.45}s`;
     });
     requestAnimationFrame(() => {
+      areas.forEach((a) => { a.style.opacity = ''; });
       dots.forEach((d) => { d.style.opacity = ''; });
     });
-    // 收尾统一还原样式；后台标签页里定时器会被拖慢，这条兜底保证曲线一定会显示出来
+
+    const anims = [];
+    paths.forEach((p, i) => {
+      if (!lens[i]) return;
+      // 不支持 WAAPI 的浏览器别挂 dash 样式了，曲线直接显示；挂上线也不会动，等一秒才露脸更怪
+      if (!canAnimate(p)) return;
+      p.style.strokeDasharray = `${lens[i]} ${lens[i]}`;
+      p.style.strokeDashoffset = String(lens[i]);
+      // 后面的曲线依次晚一点起笔
+      anims.push(p.animate(
+        [{ strokeDashoffset: String(lens[i]) }, { strokeDashoffset: '0' }],
+        { duration: dur, delay: i * gap, easing: EASE, fill: 'both' }
+      ));
+    });
+    // 收尾统一还原样式；定时器还兼作兜底，动画没跑起来时曲线也一定会显示出来
     const finish = () => {
+      anims.forEach((a) => { try { a.cancel(); } catch (e) { /* 已结束 */ } });
       paths.forEach((p) => { p.style.strokeDasharray = ''; p.style.strokeDashoffset = ''; });
       areas.forEach((a) => { a.style.transition = ''; a.style.opacity = ''; });
       dots.forEach((d) => { d.style.transition = ''; d.style.opacity = ''; });
     };
     setTimeout(finish, dur + gap * (paths.length - 1) + 400);
-    const start = performance.now();
-    const step = (now) => {
-      let done = true;
-      paths.forEach((p, i) => {
-        if (!lens[i]) return;
-        // 后面的曲线依次晚一点起笔
-        const t = Math.min(1, Math.max(0, (now - start - i * gap) / dur));
-        if (t < 1) done = false;
-        const e = 1 - Math.pow(1 - t, 3); // 缓出，起步快收尾稳
-        p.style.strokeDashoffset = String(lens[i] * (1 - e));
-      });
-      areas.forEach((a) => {
-        a.style.transition = 'opacity .45s ease-out';
-        a.style.opacity = '';
-      });
-      if (!done) requestAnimationFrame(step);
-      else finish();
-    };
-    requestAnimationFrame(step);
   }
 
   /**
    * 环形图顺时针扫出来：每段弧从自己起点开始由 0 长到该有的长度，按顺序错开起笔；
    * 中心合计数字从 0 跳到合计。
-   * 和折线一致：系统开了「减少动态效果」或页面在后台时直接落在终态。
+   * 弧的动画同样交给 WAAPI 一次启动，主线程只负责那 0.2s 的数字。
    */
   function animateDonut(svg, dur, stagger, countOpt) {
     const arcs = Array.from(svg.querySelectorAll('circle.donut-arc'));
     if (!arcs.length) return;
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduce || (typeof document !== 'undefined' && document.hidden)) return;
+    if (motionOff()) return;
 
     const circ = Number(arcs[0].getAttribute('data-circ')) || 0;
     if (!(circ > 0)) return;
@@ -151,14 +152,23 @@
       el: a,
       len: Number(a.getAttribute('data-len')) || 0,
     }));
-    spans.forEach((s) => { s.el.style.strokeDasharray = `0 ${circ.toFixed(2)}`; });
 
     // 最后一段收笔的时刻
     const span = dur + gap * Math.max(0, spans.length - 1);
-    // 数字不跟着整段扫环慢慢数：环一段要 1s，数字一直往上蹦看着太急，
-    // 这里让它 0.2s 就落定，之后环继续扫、数字不再变。
-    const countDur = Math.min(200, span);
+    const anims = [];
+    spans.forEach((s, i) => {
+      s.el.style.strokeDasharray = `0 ${circ.toFixed(2)}`;
+      if (!canAnimate(s.el)) {
+        s.el.style.strokeDasharray = `${s.len.toFixed(2)} ${(circ - s.len).toFixed(2)}`;
+        return;
+      }
+      anims.push(s.el.animate([
+        { strokeDasharray: `0 ${circ.toFixed(2)}` },
+        { strokeDasharray: `${s.len.toFixed(2)} ${(circ - s.len).toFixed(2)}` },
+      ], { duration: dur, delay: i * gap, easing: EASE, fill: 'both' }));
+    });
     const finish = () => {
+      anims.forEach((a) => { try { a.cancel(); } catch (e) { /* 已结束 */ } });
       // 清掉内联样式，让属性上的原始 dasharray 生效
       spans.forEach((s) => { s.el.style.strokeDasharray = ''; });
       if (countOpt && countOpt.text) countOpt.text.textContent = countOpt.fmt(countOpt.total);
@@ -166,24 +176,16 @@
     // 收尾兜底：后台标签页里 rAF 会被拖慢，这条保证环和数字一定会落到终态
     setTimeout(finish, span + 600);
 
+    // 数字不跟着整段扫环慢慢数：环一段要 1s，数字一直往上蹦看着太急，
+    // 这里让它 0.2s 就落定，之后环继续扫、数字不再变。
+    const countDur = Math.min(200, span);
     const start = performance.now();
     const step = (now) => {
-      let done = true;
-      spans.forEach((s, i) => {
-        const t = Math.min(1, Math.max(0, (now - start - i * gap) / dur));
-        if (t < 1) done = false;
-        const e = 1 - Math.pow(1 - t, 3); // 缓出，起步快收尾稳
-        const len = s.len * e;
-        s.el.style.strokeDasharray = `${len.toFixed(2)} ${Math.max(0, circ - len).toFixed(2)}`;
-      });
-      if (countOpt && countOpt.text) {
-        // rAF 的时间戳可能早于 start（帧起点），这里要夹一下，否则数字会先跳到负数
-        const t = Math.min(1, Math.max(0, (now - start) / countDur));
-        const e = 1 - Math.pow(1 - t, 3);
-        countOpt.text.textContent = countOpt.fmt(Math.round(countOpt.total * e));
-      }
-      if (!done) requestAnimationFrame(step);
-      else finish();
+      // rAF 的时间戳可能早于 start（帧起点），这里要夹一下，否则数字会先跳到负数
+      const t = Math.min(1, Math.max(0, (now - start) / countDur));
+      const e = 1 - Math.pow(1 - t, 3); // 缓出，起步快收尾稳
+      if (countOpt && countOpt.text) countOpt.text.textContent = countOpt.fmt(Math.round(countOpt.total * e));
+      if (t < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
   }
@@ -265,8 +267,9 @@
       const hdots = Array.from(hg.querySelectorAll('circle'));
       const t = tip();
 
-      // 折线从左往右画出来（尺寸变化重画时不重播）
-      if (animate) animateLines(svg, 1150, 110);
+      // 折线从左往右画出来（尺寸变化重画时不重播）。
+      // 时长比早先的 1.15s 收短一档：切页时两条曲线同时起笔，收得慢会显得页面「拖着」
+      if (animate) animateLines(svg, 820, 70);
 
       const idxFromEvent = (e) => {
         const rect = svg.getBoundingClientRect();
@@ -463,12 +466,12 @@
       </div>
     </div>`;
 
-    // 环扫出来（节奏放慢到跟折线一个量级：每段 1s 长完，后面的依次晚 100ms 起笔；
+    // 环扫出来（节奏跟折线一致：每段 0.76s 长完，后面的依次晚 60~90ms 起笔；
     // 模型多的时候缩短错开间隔，免得最后一段等太久）
     const svg = container.querySelector('svg');
     if (svg && total > 0) {
       const n = items.length || 1;
-      animateDonut(svg, 1000, Math.min(110, 800 / n), {
+      animateDonut(svg, 760, Math.min(90, 560 / n), {
         text: svg.querySelector('.donut-total'),
         total,
         fmt: totalFmt,
