@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -195,11 +196,10 @@ func (s *Server) saveProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isNew {
+		// 提供商 ID 只是内部标识（模型归属、接口路径），不对外展示，
+		// 所以前端不再让用户手填：能按名称转写就用 slug，转不出来就用 p-N 顺延。
 		if id == "" {
-			id = slugifyProviderID(name)
-		}
-		if id == "" {
-			id = "provider-" + time.Now().Format("20060102150405")
+			id = s.nextProviderID(name)
 		}
 		if !providerIDPattern.MatchString(id) {
 			writeErr(w, http.StatusBadRequest, "提供商 ID 只能包含小写字母、数字、下划线和短横线")
@@ -377,6 +377,24 @@ func normalizeMatch(list []string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+// nextProviderID 生成一个没被占用的提供商 ID。
+// ID 只在模型归属、接口路径和数据库里用，不对外展示，所以不需要用户手填：
+// 英文名按名称转写成 slug（排查问题时还能认出来），中文名转不出字符时用 p-N 顺延。
+func (s *Server) nextProviderID(name string) string {
+	base := slugifyProviderID(name)
+	if base == "" {
+		base = "p"
+	}
+	id := base
+	for i := 2; i <= 100; i++ {
+		if _, err := s.store.GetProvider(id); err == store.ErrNotFound {
+			return id
+		}
+		id = fmt.Sprintf("%s-%d", base, i)
+	}
+	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano())
 }
 
 // slugifyProviderID 把名称转成可用的 ID：英文/数字直接保留，中文等无法转写的字符丢弃。

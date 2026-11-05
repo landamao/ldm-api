@@ -3488,7 +3488,11 @@
         const makeBtn = (act, iconName, title, onclick) => {
           const btn = document.createElement('button');
           btn.className = 'btn btn--ghost btn--sm btn--icon';
-          btn.dataset[act] = '1';
+          // data-copy 是全局复制的「载荷」约定（app.js 在 document 上委托），
+          // 这里的复制键自己绑了 onclick，再带 data-copy 会被当成待复制文本
+          // 复制一次 "1"，于是点一下弹两个提示、剪贴板还被覆盖。
+          if (act === 'copy') btn.dataset.msgCopy = '1';
+          else btn.dataset[act] = '1';
           btn.title = title;
           btn.setAttribute('aria-label', title);
           btn.innerHTML = icon(iconName, 12);
@@ -3848,6 +3852,25 @@
         }
       };
 
+      // 同一轮里上游可能反复下发 usage（硅基流动等把累积用量塞进每个分块），
+      // 只取最后一次的快照：逐块相加会把 267 token 加出三万多，速度直接上千。
+      const snapshotUsage = (base, u) => {
+        if (!u) return base;
+        const out = { ...u };
+        if (!base) return out;
+        // 个别上游只在首块给出缓存/思考字段，后续快照里没有时沿用上一份
+        if (!out.prompt_tokens_details && base.prompt_tokens_details) {
+          out.prompt_tokens_details = base.prompt_tokens_details;
+        }
+        if (out.prompt_cache_hit_tokens == null && base.prompt_cache_hit_tokens != null) {
+          out.prompt_cache_hit_tokens = base.prompt_cache_hit_tokens;
+        }
+        if (!out.completion_tokens_details && base.completion_tokens_details) {
+          out.completion_tokens_details = base.completion_tokens_details;
+        }
+        return out;
+      };
+
       // 多轮工具调用会把用量拆到多次响应里，展示时按轮累加
       const mergeUsage = (base, u) => {
         if (!u) return base;
@@ -4119,7 +4142,7 @@
             if (!useStream) {
               // 非流式：等完整响应，思考与正文一次性渲染
               const j = await res.json();
-              run.usage = mergeUsage(run.usage, j.usage);
+              run.roundUsage = snapshotUsage(run.roundUsage, j.usage);
               const msg = (j.choices && j.choices[0] && j.choices[0].message) || {};
               const reasoning = msg.reasoning_content || msg.reasoning || '';
               if (reasoning) addThink(reasoning);
@@ -4165,11 +4188,14 @@
                   if (data === '[DONE]') continue;
                   let j;
                   try { j = JSON.parse(data); } catch (e) { continue; }
-                  if (j.usage) run.usage = mergeUsage(run.usage, j.usage);
+                  if (j.usage) run.roundUsage = snapshotUsage(run.roundUsage, j.usage);
                   const d = j.choices && j.choices[0] && j.choices[0].delta;
                   if (!d) continue;
-                  if (!run.firstTokenMs && (d.reasoning_content || d.content || d.tool_calls)) {
-                    run.firstTokenMs = Date.now() - t0;
+                  if (d.reasoning_content || d.content || d.tool_calls) {
+                    const now = Date.now();
+                    if (!run.firstTokenMs) run.firstTokenMs = now - t0;
+                    if (!run.roundFirstAt) run.roundFirstAt = now;
+                    run.roundLastAt = now;
                   }
                   if (d.reasoning_content) addThink(d.reasoning_content);
                   if (d.content) addContent(d.content);
@@ -4205,6 +4231,16 @@
                 scrollLog();
               }
             }
+
+            // 本轮收尾：用量并进总计（同一轮重复下发的 usage 只算最后一份），
+            // 生成窗口也只累积本轮的吐字区间，下一轮重新计时。
+            run.usage = mergeUsage(run.usage, run.roundUsage);
+            run.roundUsage = null;
+            if (run.roundLastAt > run.roundFirstAt) {
+              run.genMs += run.roundLastAt - run.roundFirstAt;
+            }
+            run.roundFirstAt = 0;
+            run.roundLastAt = 0;
 
             if (run.stopped || run.failed) break;
             // 没开工具、没有工具调用，或者已经达到轮数上限：结束本次生成
@@ -4329,7 +4365,8 @@
         }
 
         const totalMs = Date.now() - t0;
-        const usage = run.usage;
+        // 异常中断时本轮还挂着一份没并进总计的用量，展示时一并算上
+        const usage = mergeUsage(run.usage, run.roundUsage);
 
         // 输入组：输入 token + 缓存命中
         const inputParts = [];
@@ -4348,8 +4385,13 @@
           const rt = usage.completion_tokens_details
             && usage.completion_tokens_details.reasoning_tokens;
           if (rt) outputParts.push(`思考 ${fmtInt(rt)}`);
-          const genMs = totalMs - run.firstTokenMs;
-          if (useStream && usage.completion_tokens && genMs > 0) {
+          // 分母用真实吐字窗口（首块→末块），和网关日志的算法一致：
+          // 「总耗时 - 首字」会把收尾的 usage 块、[DONE]、断开连接也算进去。
+          // 窗口太短（上游一次性吐完）时不给速度，避免几万 t/s 这种没意义的数。
+          const genMs = run.roundLastAt > run.roundFirstAt
+            ? run.genMs + (run.roundLastAt - run.roundFirstAt)
+            : run.genMs;
+          if (useStream && usage.completion_tokens && genMs >= 50) {
             outputParts.push(`${(usage.completion_tokens * 1000 / genMs).toFixed(1)} t/s`);
           }
         }
@@ -4421,6 +4463,9 @@
           tools: !customBody && toolsOn,
           ctl: new AbortController(),
           t0: Date.now(), firstTokenMs: 0, usage: null,
+          // 用量按「轮」收集：轮内取最后一次快照，轮与轮之间才相加；
+          // genMs 只累加每轮真正在吐字的窗口，工具执行和中途等待不算进速度。
+          roundUsage: null, roundFirstAt: 0, roundLastAt: 0, genMs: 0,
           think: '', answer: '', curThink: null, thinkTimer: null,
           // parts 是气泡的时间线：思考段、正文段与工具调用段按输出顺序排列
           parts: [], curText: null, roundText: '',

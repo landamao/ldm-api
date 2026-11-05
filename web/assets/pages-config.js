@@ -6,7 +6,7 @@
 
   const {
     esc, API, State, Toast, openModal, confirmDialog, icon, providerIcon, providerAvatar,
-    badge, statusBadge, emptyState, loadingBlock, fmtTime, fmtContext, copyText, debounce, Theme,
+    badge, statusBadge, emptyState, loadingBlock, fmtTime, fmtContext, copyText, copyBadge, debounce, Theme,
   } = window.LDM;
 
   const CHANNEL_TYPES = [
@@ -2356,7 +2356,6 @@
             } else if (act === 'test') await testModel(m, btn);
             else if (act === 'toggle') await toggleModel(m);
             else if (act === 'del') await removeModel(m);
-            else if (act === 'copy') copyText(m.id, '模型 ID ');
           };
         });
       };
@@ -2542,13 +2541,7 @@
 
     return `<tr class="${multi ? 'is-selectable' : ''}" data-rowid="${esc(m.id)}">
       ${multi ? `<td><input type="checkbox" data-msel data-mid="${esc(m.id)}" aria-label="选择 ${esc(m.id)}"></td>` : ''}
-      <td>
-        <div class="flex-center gap-8">
-          ${providerIcon(provider && provider.icon, 16)}
-          <span class="mono strong" style="word-break:break-all">${esc(m.id)}</span>
-          <button class="btn btn--ghost btn--sm btn--icon" data-mact="copy" data-mid="${esc(m.id)}" title="复制 ID">${icon('copy', 12)}</button>
-        </div>
-      </td>
+      <td>${copyBadge(m.id, { label: '模型 ID ', cls: 'badge--model' })}</td>
       <td>${isCustom
         ? badge('自定义', 'wood')
         : badge('渠道', 'blue')}
@@ -3106,15 +3099,13 @@
           listEl.innerHTML = `<div class="table-wrap" style="border:none">
             <table class="tbl">
               <thead><tr>
-                <th style="min-width:150px">提供商</th>
-                <th>ID</th>
+                <th style="min-width:170px">提供商</th>
                 <th style="min-width:190px">自动匹配关键词</th>
                 <th>模型数</th>
                 <th style="width:150px">操作</th>
               </tr></thead>
               <tbody>${providers.map((p) => `<tr data-pid="${esc(p.id)}">
                 <td><div class="provider-tag">${providerIcon(p.icon, 20)}<b>${esc(p.name)}</b>${p.builtin ? ' ' + badge('内置', 'gray') : ''}</div></td>
-                <td><code class="mono">${esc(p.id)}</code></td>
                 <td class="fs-12 muted">${esc((p.match || []).join('、') || '—')}</td>
                 <td>${p.model_count || 0}</td>
                 <td><div class="row-actions">
@@ -3258,16 +3249,9 @@
     const icons = builtinProviderIcons();
     const icon = (p && p.icon) || '';
     const body = `
-      <div class="form-row">
-        <div class="field">
-          <label class="field__label">名称<span class="req">*</span></label>
-          <input class="input" id="pv-name" value="${esc(p ? p.name : '')}" placeholder="例如：智谱">
-        </div>
-        <div class="field">
-          <label class="field__label">ID${isNew ? '<span class="req">*</span>' : ''}</label>
-          <input class="input mono" id="pv-id" value="${esc(p ? p.id : '')}" ${isNew ? '' : 'disabled'} placeholder="例如：zhipu">
-          <div class="field__hint">${isNew ? '只能包含小写字母、数字、下划线和短横线；留空则按名称生成。' : '提供商 ID 创建后不可修改。'}</div>
-        </div>
+      <div class="field">
+        <label class="field__label">名称<span class="req">*</span></label>
+        <input class="input" id="pv-name" value="${esc(p ? p.name : '')}" placeholder="例如：智谱">
       </div>
 
       <div class="field">
@@ -3317,7 +3301,6 @@
             icon: iconInput.value.trim(),
             match: mo.body.querySelector('#pv-match').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
           };
-          if (isNew) payload.id = mo.body.querySelector('#pv-id').value.trim();
           const btn = mo.foot.querySelector('[data-act=save]');
           btn.disabled = true;
           btn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';

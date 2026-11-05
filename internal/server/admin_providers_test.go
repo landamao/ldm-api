@@ -177,6 +177,47 @@ func TestProviderCRUDAndModelCleanup(t *testing.T) {
 	}
 }
 
+func TestProviderIDGeneratedInternally(t *testing.T) {
+	s, st := newTestServer(t, "provider-id")
+	create := func(name string) string {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"name": name})
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/providers", strings.NewReader(string(body)))
+		s.saveProvider(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("创建提供商 %q 失败: %d %s", name, rec.Code, rec.Body.String())
+		}
+		var p store.Provider
+		if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+			t.Fatalf("解析返回值失败: %v", err)
+		}
+		return p.ID
+	}
+
+	// 英文名按名称转写，中文名转不出字符时用 p-N 顺延，两个都不能空、不能重复
+	en := create("My Vendor")
+	if en != "my-vendor" {
+		t.Errorf("英文名应转写成 my-vendor，实际 %q", en)
+	}
+	first := create("测试厂商")
+	second := create("测试厂商")
+	if first == "" || second == "" {
+		t.Fatalf("中文名也应生成 ID，实际 %q / %q", first, second)
+	}
+	if first == second {
+		t.Errorf("同名提供商不能拿到相同 ID，实际都是 %q", first)
+	}
+	for _, id := range []string{en, first, second} {
+		if !providerIDPattern.MatchString(id) {
+			t.Errorf("生成的 ID %q 不符合规则", id)
+		}
+		if _, err := st.GetProvider(id); err != nil {
+			t.Errorf("提供商 %q 未落库: %v", id, err)
+		}
+	}
+}
+
 func TestRestoreDefaultProviders(t *testing.T) {
 	s, st := newTestServer(t, "restore")
 	if err := st.SaveChannel(store.Channel{

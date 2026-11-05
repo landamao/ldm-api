@@ -275,6 +275,8 @@
         `<div class="toast__body"><div class="toast__title">${esc(title)}</div>` +
         (msg ? `<div class="toast__msg">${esc(msg)}</div>` : '') +
         `</div>` +
+        // 复制走整条提示的纯文本（标题 + 正文），报错信息长的时候不用再手动选中
+        `<button class="toast__act" data-toast-copy aria-label="复制提示内容" title="复制提示内容">${icon('copy', 13)}</button>` +
         `<button class="toast__close" aria-label="关闭">${icon('x', 13)}</button>`;
       this._host().appendChild(el);
       const t = setTimeout(() => {
@@ -286,6 +288,10 @@
         el.classList.add('is-out');
         setTimeout(() => el.remove(), 200);
       };
+      el.querySelector('[data-toast-copy]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        copyText((title || '') + (msg ? '\n' + msg : ''));
+      });
       el.querySelector('.toast__close').addEventListener('click', (e) => {
         e.stopPropagation();
         dismiss();

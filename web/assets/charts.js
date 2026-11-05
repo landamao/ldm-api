@@ -69,6 +69,107 @@
     if (tipEl) tipEl.classList.remove('is-on');
   }
 
+  // ---- 名字气泡：省略号截断之后看全名 ----------------------------------
+  // 环形图图例、排行条里的名字（模型名、渠道名）宽度不够就被省略号截断，
+  // 截断之后全名彻底没地方看。这里给「确实被截断」的那些名字挂一枚气泡：
+  // 有鼠标的悬停弹出、键盘 Tab 到就弹出、触屏点一下弹出，点别处 / 切页收起。
+  // 气泡挂在 body 上 fixed 定位（表格、卡片都可能裁内容），滚动时跟着名字走——
+  // 手机上点完常有惯性滚动，直接收起会像「点了没反应」。
+  let nameTipEl = null;
+  let nameTipFor = null;
+  let nameTipRaf = 0;
+  const canHover = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+
+  function nameTip() {
+    if (!nameTipEl) {
+      nameTipEl = document.createElement('div');
+      nameTipEl.className = 'chart-tip chart-tip--name';
+      document.body.appendChild(nameTipEl);
+    }
+    return nameTipEl;
+  }
+
+  function hideNameTip() {
+    if (!nameTipEl) return;
+    nameTipEl.classList.remove('is-on');
+    nameTipFor = null;
+  }
+
+  function placeNameTip() {
+    if (!nameTipFor || !nameTipEl) return;
+    const el = nameTipFor;
+    if (!el.isConnected) { hideNameTip(); return; }
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (r.bottom < 4 || r.top > vh - 4) { hideNameTip(); return; }
+    const w = nameTipEl.offsetWidth, h = nameTipEl.offsetHeight;
+    const left = Math.min(Math.max(8, r.left), Math.max(8, vw - w - 8));
+    let top = r.bottom + 7;
+    if (top + h > vh - 8 && r.top - h - 7 >= 8) top = r.top - h - 7;
+    nameTipEl.style.left = `${Math.round(left)}px`;
+    nameTipEl.style.top = `${Math.round(top)}px`;
+  }
+
+  function queuePlaceNameTip() {
+    if (!nameTipFor || nameTipRaf) return;
+    nameTipRaf = requestAnimationFrame(() => {
+      nameTipRaf = 0;
+      placeNameTip();
+    });
+  }
+
+  function showNameTip(el) {
+    const name = (el.dataset.name || el.textContent || '').trim();
+    if (!name) return;
+    const t = nameTip();
+    t.textContent = name;
+    nameTipFor = el;
+    t.classList.add('is-on');
+    placeNameTip();
+  }
+
+  // 只有真被截断才挂：短名字一悬停就冒气泡反而吵。
+  // 判断靠 scrollWidth / clientWidth，所以必须在节点已经进文档之后再调。
+  function bindNameTips(root) {
+    if (!root) return;
+    Array.prototype.forEach.call(root.querySelectorAll('[data-name]'), (el) => {
+      if (el.scrollWidth <= el.clientWidth + 1) return;
+      el.classList.add('chart-name--clip');
+      if (canHover) {
+        el.tabIndex = 0;
+        el.addEventListener('pointerenter', (e) => {
+          if (e.pointerType === 'touch') return;
+          showNameTip(el);
+        });
+        el.addEventListener('pointerleave', (e) => {
+          if (e.pointerType === 'touch') return;
+          hideNameTip();
+        });
+        el.addEventListener('focus', () => showNameTip(el));
+        el.addEventListener('blur', hideNameTip);
+      } else {
+        // 没有悬停：点一下弹出，再点一下收起
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (nameTipFor === el) hideNameTip();
+          else showNameTip(el);
+        });
+      }
+    });
+  }
+
+  document.addEventListener('click', (e) => {
+    if (!nameTipFor) return;
+    if (e.target && e.target.closest && e.target.closest('[data-name]')) return;
+    hideNameTip();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideNameTip();
+  });
+  window.addEventListener('scroll', queuePlaceNameTip, true);
+  window.addEventListener('resize', queuePlaceNameTip);
+  window.addEventListener('hashchange', hideNameTip);
+
   // 系统开了「减少动态效果」或页面在后台时不播动画：直接落在终态。
   // 后台标签页里 rAF 不触发，动画会一直停在「没画出来」的样子。
   function motionOff() {
@@ -421,6 +522,7 @@
    * opts: { items:[{name,value,color}], size, thickness, valueFmt, centerLabel }
    */
   function donutChart(container, opts) {
+    hideNameTip();
     const { items = [], size = 168, thickness = 20 } = opts;
     const valueFmt = opts.valueFmt || null;
     const totalFmt = valueFmt || fmtNum;
@@ -459,12 +561,14 @@
         ${items.length === 0 ? '<div class="muted fs-12">暂无数据</div>' : items.map((it, i) => `
           <div style="display:flex;align-items:center;gap:8px;font-size:12.5px">
             <span style="width:8px;height:8px;border-radius:3px;background:${it.color || PALETTE[i % PALETTE.length]};flex-shrink:0"></span>
-            <span class="truncate" style="max-width:140px;font-family:var(--mono);font-size:11.5px">${esc(it.name)}</span>
+            <span class="truncate donut-legend__name" data-name="${esc(it.name)}" style="max-width:140px;font-family:var(--mono);font-size:11.5px">${esc(it.name)}</span>
             <span style="margin-left:auto;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap;flex-shrink:0">${esc(itemFmt(it.value))}</span>
             <span class="muted" style="width:42px;text-align:right;font-size:11px;flex-shrink:0">${total ? ((it.value / total) * 100).toFixed(1) + '%' : '0%'}</span>
           </div>`).join('')}
       </div>
     </div>`;
+
+    bindNameTips(container);
 
     // 环扫出来（节奏跟折线一致：每段 0.76s 长完，后面的依次晚 60~90ms 起笔；
     // 模型多的时候缩短错开间隔，免得最后一段等太久）
@@ -481,6 +585,7 @@
 
   /** 横向排行条 */
   function rankList(container, items, opts) {
+    hideNameTip();
     const o = opts || {};
     if (!items || !items.length) {
       container.innerHTML = '<div class="muted fs-12" style="padding:8px 0">暂无数据</div>';
@@ -490,13 +595,14 @@
     container.innerHTML = `<div class="rank-list">${items.map((it, i) => `
       <div class="rank-item">
         <div class="rank-item__top">
-          <span class="rank-item__name truncate" style="max-width:${o.nameWidth || 170}px">${esc(it.name)}</span>
+          <span class="rank-item__name truncate" data-name="${esc(it.name)}" style="max-width:${o.nameWidth || 170}px">${esc(it.name)}</span>
           <span class="rank-item__val">${esc((o.fmt || fmtInt)(it.value))}</span>
         </div>
         <div class="rank-item__bar">
           <div class="rank-item__fill" style="width:${((it.value / max) * 100).toFixed(1)}%;${it.color ? `background:${it.color}` : ''}"></div>
         </div>
       </div>`).join('')}</div>`;
+    bindNameTips(container);
   }
 
   const observers = new WeakMap();
@@ -520,6 +626,7 @@
    */
   function clearChart(container) {
     if (!container) return;
+    hideNameTip();
     const ro = observers.get(container);
     if (ro) {
       ro.disconnect();
