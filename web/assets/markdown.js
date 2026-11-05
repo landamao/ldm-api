@@ -26,7 +26,7 @@
     return '<div class="md-code">'
       + '<div class="md-code__bar">'
       + `<span class="md-code__lang">${esc(lang)}</span>`
-      + '<button type="button" class="md-code__copy" data-md-copy="1" title="复制代码">复制</button>'
+      + '<button type="button" class="md-code__copy" data-md-copy="1">复制</button>'
       + '</div>'
       + `<pre><code${cls}>${esc(code)}</code></pre>`
       + '</div>';

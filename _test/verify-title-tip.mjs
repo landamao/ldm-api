@@ -81,6 +81,40 @@ await dpage.screenshot({ path: `${SHOT}/title-tip-desktop.png`, clip: { x: 0, y:
 await dpage.mouse.move(20, 700);
 await dpage.waitForTimeout(320);
 ok(!(await tipOn(dpage)), '鼠标移开后气泡收起');
+
+// 带文字的操作按钮：title 只是把功能重说一遍（「测试」/「测试连通性」），不弹
+const btnBox = await dpage.evaluate(() => {
+  const el = document.querySelector('.channels-card [data-act="test"]');
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2, title: el.getAttribute('title'), text: el.textContent.trim() };
+});
+if (btnBox && btnBox.title) {
+  await dpage.mouse.move(btnBox.x, btnBox.y);
+  await dpage.waitForTimeout(320);
+  ok(!(await tipOn(dpage)), `带文字的按钮不弹功能说明（${btnBox.text} / ${btnBox.title}）`);
+  const left = await dpage.evaluate(() => {
+    const el = document.querySelector('.channels-card [data-act="test"]');
+    return el ? el.getAttribute('title') : 'gone';
+  });
+  ok(left === null, '这类 title 连原生 tooltip 一起摘掉');
+}
+
+// 纯图标按钮（没有文字）：同样不弹——「清空当前对话」这类说明比原生气泡还吵
+const iconBox = await dpage.evaluate(() => {
+  const el = document.querySelector('.channels-card [data-act="del"]');
+  if (!el || el.textContent.trim()) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2, title: el.getAttribute('title') };
+});
+if (iconBox) {
+  await dpage.mouse.move(iconBox.x, iconBox.y);
+  await dpage.waitForTimeout(320);
+  const iconTip = await tipOn(dpage);
+  ok(!iconTip, `纯图标按钮也不弹功能说明（${iconBox.title}）`);
+  await dpage.mouse.move(20, 700);
+  await dpage.waitForTimeout(320);
+}
 ok((await dpage.locator('.chart-tip.is-on').count()) === 0, '收起后节点也摘掉了');
 
 // 长帮助文本：问号按钮
@@ -105,6 +139,26 @@ ok(d2 && d2.text === LONG, '长帮助文本内容一致');
 ok(d2 && d2.bottom <= d2.vh && d2.top >= 0, '长帮助文本不顶出视口', d2 && `${d2.top}..${d2.bottom}/${d2.vh}`);
 ok(d2 && (d2.right - d2.left) <= 340, '长帮助文本按最大宽度折行', d2 && `${d2.right - d2.left}px`);
 await dpage.screenshot({ path: `${SHOT}/title-tip-long.png`, clip: { x: 0, y: 100, width: 1440, height: 640 } });
+
+// 图例统计是 button，但显式写了 data-tip：这类「不给气泡就看不到」的照样弹
+await dpage.goto(BASE + '/#/dashboard', { waitUntil: 'domcontentloaded' });
+await dpage.waitForTimeout(900);
+await dpage.evaluate(() => {
+  const el = document.querySelector('#dash-preset');
+  if (el) { el.value = 'all'; el.dispatchEvent(new Event('change', { bubbles: true })); }
+});
+await dpage.waitForTimeout(2400);
+const lg = await pin(dpage, '.chart-legend__item[data-sel="total"]');
+if (lg) {
+  await dpage.mouse.move(lg.x, lg.y);
+  await dpage.waitForTimeout(320);
+  const lt = await tipOn(dpage);
+  ok(!!lt && lt.text.includes('调用'), `图例统计（data-tip）仍然弹（${lt && lt.text.slice(0, 24)}）`);
+  await dpage.mouse.move(20, 700);
+  await dpage.waitForTimeout(320);
+} else {
+  ok(false, '看板图例项没找到');
+}
 
 // ---------- 手机 ----------
 console.log('\n[手机 390]');

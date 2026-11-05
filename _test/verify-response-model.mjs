@@ -138,9 +138,57 @@ const toastText = async (page) => {
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.waitForTimeout(250);
   check(await page.locator('.log-pop').count() === 1, '桌面悬停也能打开气泡');
+
+  // 鼠标在徽章内部挪动（从文字挪到右侧路由图标）不该让气泡闪掉
+  for (const dx of [6, 18, 30, 42, 54, 66, 78]) {
+    await page.mouse.move(box.x + dx, box.y + box.height / 2);
+    await page.waitForTimeout(80);
+  }
+  await page.waitForTimeout(700);
+  check(await page.locator('.log-pop').count() === 1, '鼠标在徽章内部移动时气泡不闪掉');
+
+  // 从徽章挪进气泡里也不该收起
+  const popBox = await page.evaluate(() => {
+    const el = document.querySelector('.log-pop');
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  if (popBox) {
+    await page.mouse.move(popBox.x, popBox.y, { steps: 6 });
+    await page.waitForTimeout(500);
+    check(await page.locator('.log-pop').count() === 1, '鼠标移进气泡里气泡不消失');
+  }
+
   await page.mouse.move(40, 700);
   await page.waitForTimeout(400);
   check(await page.locator('.log-pop').count() === 0, '鼠标移开后悬停气泡自动收起');
+
+  // 和旁边的亲和星（带 title 的邻居）不能互相打架：滑过去再滑回来，卡片还得能弹
+  const starGeo = await page.evaluate(() => {
+    const wrap = document.querySelector('.log-star-wrap');
+    const map = wrap.querySelector('.log-model-map');
+    const star = document.createElement('span');
+    star.className = 'affinity-star';
+    star.title = '模型亲和命中：本次直接复用了上次成功的路由';
+    star.textContent = '★';
+    star.style.cssText = 'display:inline-block;font-size:14px;line-height:1;color:#d97706';
+    wrap.appendChild(star);
+    const sr = star.getBoundingClientRect();
+    const mr = map.getBoundingClientRect();
+    window.__map = map;
+    return { sx: sr.x + sr.width / 2, sy: sr.y + sr.height / 2, mx: mr.x + mr.width / 2, my: mr.y + mr.height / 2 };
+  });
+  await page.mouse.move(starGeo.mx, starGeo.my);
+  await page.waitForTimeout(320);
+  check(await page.locator('.log-pop').count() === 1, '模型名卡片先打开');
+  await page.mouse.move(starGeo.sx, starGeo.sy, { steps: 5 });
+  await page.waitForTimeout(320);
+  check(await page.locator('.log-pop').count() === 0, '滑到亲和星时卡片收起');
+  check(await page.evaluate(() => window.__map.getAttribute('aria-expanded')) === 'false', '被顶掉时 aria-expanded 同步回 false');
+  await page.mouse.move(starGeo.mx, starGeo.my, { steps: 5 });
+  await page.waitForTimeout(420);
+  check(await page.locator('.log-pop').count() === 1, '再滑回模型名卡片还能重新弹出');
 
   // 看板同一套交互
   await page.goto(BASE + '/#/dashboard', { waitUntil: 'domcontentloaded' });

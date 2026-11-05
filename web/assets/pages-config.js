@@ -106,7 +106,7 @@
 
   // 长说明统一收进标签旁的问号：悬停看摘要，点击打开完整说明。
   function helpBadgeHtml(text, label) {
-    return `<button type="button" class="badge badge--blue badge--click field__help" title="${esc(text)}" aria-label="${esc(label)}">?</button>`;
+    return `<button type="button" class="badge badge--blue badge--click field__help" data-tip="${esc(text)}" aria-label="${esc(label)}">?</button>`;
   }
 
   function openHelpModal(title, html) {
@@ -245,7 +245,7 @@
       <td>
         <div class="flex-center gap-8">
           <button type="button" class="code code--copy" data-copy="${esc(c.id)}" data-copy-label="渠道 ID "
-            title="点击复制渠道 ID">${esc(c.id)}</button>
+            >${esc(c.id)}</button>
           ${c.enabled ? '' : badge('已禁用', 'gray')}
         </div>
       </td>
@@ -258,7 +258,7 @@
       <td><span class="muted fs-12 truncate" style="display:block;max-width:170px" title="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
       <td>
         <div class="badge-group">
-          ${names.slice(0, 4).map((m) => `<button type="button" class="badge badge--click mono" data-copy="${esc(m)}" data-copy-label="模型名 " title="点击复制">${esc(m)}</button>`).join('')}
+          ${names.slice(0, 4).map((m) => `<button type="button" class="badge badge--click mono" data-copy="${esc(m)}" data-copy-label="模型名 ">${esc(m)}</button>`).join('')}
           ${names.length > 4 ? `<span class="badge badge--gray">+${names.length - 4}</span>` : ''}
           ${names.length === 0 ? '<span class="muted fs-12">未配置模型</span>' : ''}
         </div>
@@ -1027,7 +1027,8 @@
           b.classList.remove('ct-fm--busy', 'ct-fm--ok', 'ct-fm--fail');
           b.classList.add(res.ok ? 'ct-fm--ok' : 'ct-fm--fail');
           b.textContent = b.dataset.fm;
-          b.title = `${b.dataset.fm}：${res.ok ? `通过（${res.latency}ms）` : res.message}`;
+          // 测试结果是信息，不是操作说明：走 data-tip（按钮自己写着模型名，title 会被过滤掉）
+          b.dataset.tip = `${b.dataset.fm}：${res.ok ? `通过（${res.latency}ms）` : res.message}`;
           if (res.ok) {
             Toast.show('success', `「${b.dataset.fm}」测试通过`, `${res.latency}ms\n\n上游返回：\n${res.content || '（空响应）'}`, 12000);
           } else {
@@ -1545,7 +1546,7 @@
         <div style="margin-bottom:6px">
           <label class="field__label" style="margin-bottom:0">Key 调度
             <button type="button" class="badge badge--blue badge--click field__help"
-                    id="f-key-sched-help" title="${esc(keySchedHelpText)}" aria-label="查看 Key 调度规则">?</button>
+                    id="f-key-sched-help" data-tip="${esc(keySchedHelpText)}" aria-label="查看 Key 调度规则">?</button>
           </label>
         </div>
         <div class="flex-center gap-12" style="flex-wrap:wrap">
@@ -1571,7 +1572,7 @@
         <div class="field__head" style="margin-top:12px">
           <label class="field__label" style="margin-bottom:0">触发 Key 冷却的状态码
             <button type="button" class="badge badge--blue badge--click field__help"
-                    id="f-key-cooldown-status-help" title="${esc(keyCooldownStatusHelpText)}" aria-label="查看状态码规则">?</button>
+                    id="f-key-cooldown-status-help" data-tip="${esc(keyCooldownStatusHelpText)}" aria-label="查看状态码规则">?</button>
           </label>
           <button type="button" class="btn btn--ghost btn--sm field__reset"
                   id="f-key-cooldown-status-template" title="填入常用模板">${icon('paste', 11)}填入模板</button>
@@ -1819,7 +1820,7 @@
                 <button type="button" class="btn btn--sm" id="preview-test-btn" title="打开渠道测试弹窗">${icon('zap', 13)}测试</button>
               </div>
             </div>
-            <div class="badge-group">${list.map((m) => `<button type="button" class="badge badge--click mono" data-copy-model="${esc(m)}" title="点击复制">${esc(m)}</button>`).join('')}</div>
+            <div class="badge-group">${list.map((m) => `<button type="button" class="badge badge--click mono" data-copy-model="${esc(m)}">${esc(m)}</button>`).join('')}</div>
             <div class="field__hint" style="margin-top:8px">接入到「模型管理」后，它们会分别以
               ${list.slice(0, 3).map((m) => `<code>${esc(cid)}/${esc(m)}</code>`).join('、')}${list.length > 3 ? ' 等' : ''} 的形式出现。</div>`;
         };
@@ -3391,7 +3392,7 @@
             <div class="field__head">
               <label class="field__label">强制流式请求
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="m-forcestream-help" title="${esc(FORCE_STREAM_HELP_TEXT)}" aria-label="查看强制流式请求机制">?</button>
+                        id="m-forcestream-help" data-tip="${esc(FORCE_STREAM_HELP_TEXT)}" aria-label="查看强制流式请求机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="m-forcestream" ${m.force_stream ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
@@ -3400,7 +3401,7 @@
             <div class="field__head">
               <label class="field__label">不可重试状态码
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="m-no-retry-help" title="${esc(NO_RETRY_STATUS_HELP_TEXT)}" aria-label="查看不可重试状态码规则">?</button>
+                        id="m-no-retry-help" data-tip="${esc(NO_RETRY_STATUS_HELP_TEXT)}" aria-label="查看不可重试状态码规则">?</button>
               </label>
               <button type="button" class="btn btn--ghost btn--sm field__reset"
                       id="m-no-retry-template" title="填入常用模板">${icon('paste', 11)}填入模板</button>
@@ -3413,7 +3414,7 @@
             <div class="field__head">
               <label class="field__label">系统提示词注入
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="m-sysprompt-help" title="${esc(SYSTEM_PROMPT_HELP_TEXT)}" aria-label="查看系统提示词注入机制">?</button>
+                        id="m-sysprompt-help" data-tip="${esc(SYSTEM_PROMPT_HELP_TEXT)}" aria-label="查看系统提示词注入机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="m-sysprompt-enabled" ${m.system_prompt_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
@@ -3428,7 +3429,7 @@
             <div class="field__head">
               <label class="field__label">自定义内容返回
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="m-content-help" title="${esc(CUSTOM_CONTENT_HELP_TEXT)}" aria-label="查看自定义内容返回机制">?</button>
+                        id="m-content-help" data-tip="${esc(CUSTOM_CONTENT_HELP_TEXT)}" aria-label="查看自定义内容返回机制">?</button>
               </label>
               <div class="flex-center gap-8">
                 <div class="pill-toggle" id="m-content-mode">
@@ -3477,7 +3478,7 @@
             <div class="field__head">
               <label class="field__label">思考覆写
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="m-thinkoverride-help" title="${esc(THINKING_OVERRIDE_HELP_TEXT)}" aria-label="查看思考覆写机制">?</button>
+                        id="m-thinkoverride-help" data-tip="${esc(THINKING_OVERRIDE_HELP_TEXT)}" aria-label="查看思考覆写机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="m-thinkoverride-enabled" ${m.thinking_override_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
@@ -3492,7 +3493,7 @@
             <div class="field__head">
               <label class="field__label">错误覆写
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="m-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看错误覆写机制">?</button>
+                        id="m-error-help" data-tip="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看错误覆写机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="m-error-enabled" ${m.error_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
@@ -3798,7 +3799,7 @@
         <div class="section-title" style="display:flex;align-items:center;gap:10px">
           <span>能力参数</span>
           <button type="button" class="badge badge--blue badge--click field__help"
-                  id="caps-help" title="${esc(CAPS_HELP_TEXT)}" aria-label="查看能力参数说明">?</button>
+                  id="caps-help" data-tip="${esc(CAPS_HELP_TEXT)}" aria-label="查看能力参数说明">?</button>
           <div class="pill-toggle" id="caps-mode" style="margin-left:auto">
             <button type="button" data-caps-mode="visual" class="is-on">可视化</button>
             <button type="button" data-caps-mode="json">JSON</button>
@@ -4055,7 +4056,7 @@
 
       <div class="field">
         <div class="field__label" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
-          <span>目标路由模型<button type="button" class="badge badge--blue badge--click field__help" id="cm-route-help" title="${esc(routeHelpText)}" aria-label="查看路由规则">?</button></span>
+          <span>目标路由模型<button type="button" class="badge badge--blue badge--click field__help" id="cm-route-help" data-tip="${esc(routeHelpText)}" aria-label="查看路由规则">?</button></span>
           <div class="pill-toggle" id="cm-route-mode" style="margin-left:auto">
             <button type="button" data-route-mode="visual" class="is-on">可视化</button>
             <button type="button" data-route-mode="json">JSON</button>
@@ -4079,7 +4080,7 @@
       <div class="field">
         <label class="field__label">调度选项
           <button type="button" class="badge badge--blue badge--click field__help"
-                  id="cm-sched-help" title="查看模型亲和、失败冷却与自动重置规则" aria-label="查看调度规则">?</button>
+                  id="cm-sched-help" data-tip="查看模型亲和、失败冷却与自动重置规则" aria-label="查看调度规则">?</button>
         </label>
         <div class="sched-grid">
           <label class="switch"><input type="checkbox" id="cm-affinity" ${m.affinity ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">模型亲和</span></label>
@@ -4105,7 +4106,7 @@
             <div class="field__head">
               <label class="field__label">强制流式请求
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="cm-forcestream-help" title="${esc(FORCE_STREAM_HELP_TEXT)}" aria-label="查看强制流式请求机制">?</button>
+                        id="cm-forcestream-help" data-tip="${esc(FORCE_STREAM_HELP_TEXT)}" aria-label="查看强制流式请求机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="cm-forcestream" ${m.force_stream ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
@@ -4114,7 +4115,7 @@
             <div class="field__head">
               <label class="field__label">不可重试状态码
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="cm-no-retry-help" title="${esc(NO_RETRY_STATUS_HELP_TEXT)}" aria-label="查看不可重试状态码规则">?</button>
+                        id="cm-no-retry-help" data-tip="${esc(NO_RETRY_STATUS_HELP_TEXT)}" aria-label="查看不可重试状态码规则">?</button>
               </label>
               <button type="button" class="btn btn--ghost btn--sm field__reset"
                       id="cm-no-retry-template" title="填入常用模板">${icon('paste', 11)}填入模板</button>
@@ -4127,7 +4128,7 @@
             <div class="field__head">
               <label class="field__label">系统提示词注入
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="cm-sysprompt-help" title="${esc(SYSTEM_PROMPT_HELP_TEXT)}" aria-label="查看系统提示词注入机制">?</button>
+                        id="cm-sysprompt-help" data-tip="${esc(SYSTEM_PROMPT_HELP_TEXT)}" aria-label="查看系统提示词注入机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="cm-sysprompt-enabled" ${m.system_prompt_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
@@ -4142,7 +4143,7 @@
             <div class="field__head">
               <label class="field__label">自定义内容返回
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="cm-content-help" title="${esc(CUSTOM_CONTENT_HELP_TEXT)}" aria-label="查看自定义内容返回机制">?</button>
+                        id="cm-content-help" data-tip="${esc(CUSTOM_CONTENT_HELP_TEXT)}" aria-label="查看自定义内容返回机制">?</button>
               </label>
               <div class="flex-center gap-8">
                 <div class="pill-toggle" id="cm-content-mode">
@@ -4191,7 +4192,7 @@
             <div class="field__head">
               <label class="field__label">思考覆写
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="cm-thinkoverride-help" title="${esc(THINKING_OVERRIDE_HELP_TEXT)}" aria-label="查看思考覆写机制">?</button>
+                        id="cm-thinkoverride-help" data-tip="${esc(THINKING_OVERRIDE_HELP_TEXT)}" aria-label="查看思考覆写机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="cm-thinkoverride-enabled" ${m.thinking_override_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
@@ -4206,7 +4207,7 @@
             <div class="field__head">
               <label class="field__label">错误覆写
                 <button type="button" class="badge badge--blue badge--click field__help"
-                        id="cm-error-help" title="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看错误覆写机制">?</button>
+                        id="cm-error-help" data-tip="${esc(CUSTOM_ERROR_HELP_TEXT)}" aria-label="查看错误覆写机制">?</button>
               </label>
               <label class="switch"><input type="checkbox" id="cm-error-enabled" ${m.error_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>

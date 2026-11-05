@@ -107,18 +107,14 @@
   document.addEventListener('pointerover', (e) => {
     if (!canHover || !e.target.closest) return;
     const mark = e.target.closest('.log-model-map');
-    // 已经开着的不要反复重渲染
-    if (mark && mark.getAttribute('aria-expanded') !== 'true') openModelMapPop(mark, true);
+    // 这个徽章的气泡已经开着就别反复重渲染；不能拿 aria-expanded 判断——
+    // 气泡被别处的提示顶掉时那个属性不一定同步过
+    if (mark && !window.LDM.tip.isOn(mark)) openModelMapPop(mark, true);
   });
 
-  document.addEventListener('pointerout', (e) => {
-    if (!canHover || !e.target.closest) return;
-    if (!e.target.closest('.log-model-map')) return;
-    const to = e.relatedTarget;
-    if (to && to.closest && to.closest('.log-model-map, .log-pop')) return;
-    // 点开的（pinned）要等点别处才收，悬停打开的一离开就收
-    window.LDM.tip.hideHover();
-  });
+  // 「鼠标移开就收」不再在这里做：统一气泡引擎离开锚点后有一段延时收起，
+  // 鼠标从徽章挪进气泡（中间隔几像素）时不会被立刻判成离开。
+  // 点开的（pinned）照样要等点空白 / Esc 才收。
 
   // 错误详情弹窗：顶部概要只放请求模型、渠道模型、渠道和状态码，
   // 下面分成「错误详情」和「内部原因」两个独立块。错误详情是调用方实际
@@ -878,12 +874,12 @@
         const failTag = (n) => (n ? `<span class="chart-legend__fail">${fmtDash(n)} 失败</span>` : '');
         const totalVal = isTok ? totalTok : totalReq;
         const items = [
-          `<button type="button" class="chart-legend__item chart-legend__btn${kind === 'all' ? ' is-on' : ''}" data-sel="all" title="每个模型一条曲线">
+          `<button type="button" class="chart-legend__item chart-legend__btn${kind === 'all' ? ' is-on' : ''}" data-sel="all" data-tip="每个模型一条曲线">
             <span class="chart-legend__swatch" style="background:linear-gradient(135deg,#4d9e2f,#3f8fbf 55%,#8a5ac2)"></span>
             <span class="nowrap">各模型</span>
             <b>${modelRows.length}</b>
           </button>`,
-          `<button type="button" class="chart-legend__item chart-legend__btn${kind === 'total' ? ' is-on' : ''}" data-sel="total" title="全部模型：调用 ${fmtDash(totalReq)} 次（成功 ${fmtDash(Math.max(0, totalReq - totalErr))} · 失败 ${fmtDash(totalErr)}）· Token 消耗 ${fmtDash(totalTok)}">
+          `<button type="button" class="chart-legend__item chart-legend__btn${kind === 'total' ? ' is-on' : ''}" data-sel="total" data-tip="全部模型：调用 ${fmtDash(totalReq)} 次（成功 ${fmtDash(Math.max(0, totalReq - totalErr))} · 失败 ${fmtDash(totalErr)}）· Token 消耗 ${fmtDash(totalTok)}">
             <span class="chart-legend__swatch" style="background:#3f8fbf"></span>
             <span class="nowrap">总计</span>
             <b>${fmtDash(totalVal)}</b>
@@ -900,7 +896,7 @@
           const hasLine = !!ms[m.name];
           const on = kind === 'model' && dashSel.id === m.name;
           const val = isTok ? (m.tokens || 0) : m.value;
-          items.push(`<button type="button" class="chart-legend__item chart-legend__btn${on ? ' is-on' : ''}${hasLine ? '' : ' chart-legend__btn--plain'}" data-sel="${esc(m.name)}" title="${esc(m.name)} · 区间内调用 ${fmtDash(m.value)} 次${m.errors ? ` · 失败 ${fmtDash(m.errors)} 次` : ''} · Token 消耗 ${fmtDash(m.tokens || 0)}">
+          items.push(`<button type="button" class="chart-legend__item chart-legend__btn${on ? ' is-on' : ''}${hasLine ? '' : ' chart-legend__btn--plain'}" data-sel="${esc(m.name)}" data-tip="${esc(m.name)} · 区间内调用 ${fmtDash(m.value)} 次${m.errors ? ` · 失败 ${fmtDash(m.errors)} 次` : ''} · Token 消耗 ${fmtDash(m.tokens || 0)}">
             <span class="chart-legend__swatch" style="background:${color}"></span>
             <span class="truncate chart-legend__name">${esc(m.name)}</span>
             <b>${fmtDash(val)}</b>
@@ -908,7 +904,7 @@
           </button>`);
         });
         if (hiddenCount > 0) {
-          items.push(`<button type="button" class="chart-legend__item chart-legend__more" data-more="1" title="展开其余 ${hiddenCount} 个模型">其他 ${hiddenCount} 个 ▾</button>`);
+          items.push(`<button type="button" class="chart-legend__item chart-legend__more" data-more="1" data-tip="展开其余 ${hiddenCount} 个模型">其他 ${hiddenCount} 个 ▾</button>`);
         }
         dom.legend.innerHTML = items.join('');
         const moreBtn = dom.legend.querySelector('[data-more]');
@@ -1037,10 +1033,10 @@
                   <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
                   <td class="fs-12">${colorBadge(l.ip)}</td>
                   <td>${logSoft(l)
-                    ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
+                    ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || 200)}</button>`
                     : (logOK(l)
                       ? '<span class="badge badge--green">成功</span>'
-                      : `<button type="button" class="badge badge--red badge--click" data-recent-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || '失败')}</button>`)}</td>
+                      : `<button type="button" class="badge badge--red badge--click" data-recent-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || '失败')}</button>`)}</td>
                 </tr>`;
                 }).join('')}</tbody>
               </table>
@@ -1105,7 +1101,7 @@
           <button data-f="custom" class="${plazaState.filter === 'custom' ? 'is-on' : ''}">自定义模型</button>
           <button data-f="channel" class="${plazaState.filter === 'channel' ? 'is-on' : ''}">渠道模型</button>
         </div>
-        <select class="select" id="plaza-sort" style="width:auto;min-width:150px" title="按成功率排序">
+        <select class="select" id="plaza-sort" style="width:auto;min-width:150px">
           <option value="">默认排序</option>
           <option value="r24_desc">近 24h 成功率 降序</option>
           <option value="r24_asc">近 24h 成功率 升序</option>
@@ -1216,7 +1212,7 @@
                 </span>
               </div>
               <div class="flex gap-6">
-                <button class="btn btn--sm btn--icon" data-copy="${esc(m.id)}" title="复制模型 ID">${icon('copy', 13)}</button>
+                <button class="btn btn--sm btn--icon" data-copy="${esc(m.id)}" aria-label="复制模型 ID">${icon('copy', 13)}</button>
                 <button class="btn btn--sm" data-goto="${esc(m.id)}">${icon('chat', 13)}对话</button>
               </div>
             </div>
@@ -2355,7 +2351,7 @@
         img.className = 'msg__image';
         img.src = src;
         img.alt = '图片';
-        img.title = '点击查看大图';
+        img.setAttribute('aria-label', '点击查看大图');
         img.loading = 'lazy';
         box.appendChild(img);
       };
@@ -4982,7 +4978,7 @@
                 <div class="flex-center gap-6">
                   <span class="mono" style="font-size:11.5px" data-key-mask>${esc(maskKey(t.key))}</span>
                   <button class="btn btn--ghost btn--sm btn--icon" data-tact="reveal" data-tid="${esc(t.id)}" title="显示 / 隐藏">${icon('eye', 12)}</button>
-                  <button class="btn btn--ghost btn--sm btn--icon" data-tact="copy" data-tid="${esc(t.id)}" title="复制密钥">${icon('copy', 12)}</button>
+                  <button class="btn btn--ghost btn--sm btn--icon" data-tact="copy" data-tid="${esc(t.id)}" aria-label="复制密钥">${icon('copy', 12)}</button>
                 </div>
               </td>
               <td>${t.expired ? badge('已过期', 'red') : (t.enabled ? statusBadge(true, '启用') : statusBadge(false, '', '禁用'))}</td>
@@ -5252,7 +5248,7 @@
                  <div class="section-title" style="margin-bottom:0">共 ${list.length} 个模型</div>
                  <div class="ml-auto muted fs-12">点击模型名可复制</div>
                </div>
-               <div class="badge-group">${list.map((m) => `<button type="button" class="badge badge--gray badge--click mono" data-copy-model="${esc(m)}" title="点击复制">${esc(m)}</button>`).join('')}</div>`
+               <div class="badge-group">${list.map((m) => `<button type="button" class="badge badge--gray badge--click mono" data-copy-model="${esc(m)}">${esc(m)}</button>`).join('')}</div>`
             : '<span class="muted fs-12">全部模型</span>';
         };
         renderPreview();
@@ -5771,10 +5767,10 @@
               <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
               <td class="fs-12">${copyBadge(l.ip, { label: 'IP ' })}</td>
               <td>${logSoft(l)
-                ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
+                ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || 200)}</button>`
                 : (logOK(l)
                   ? '<span class="badge badge--green">成功</span>'
-                  : `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || '失败')}</button>`)}</td>
+                  : `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || '失败')}</button>`)}</td>
             </tr>`;
             }).join('')}</tbody>
           </table>
@@ -5877,7 +5873,7 @@
                 <div class="input-group">
                   <input class="input mono" id="s-logo" value="${esc(settings.logo || '')}"
                          placeholder="留空使用默认图标，也可填图片直链">
-                  <span class="brand__logo" id="s-logo-preview" style="width:36px;height:36px" title="预览"></span>
+                  <span class="brand__logo" id="s-logo-preview" style="width:36px;height:36px" aria-label="预览"></span>
                 </div>
                 <div class="field__hint">支持任意图片直链（<code>https://…</code>）或 data URI；留空则用内置默认图标。</div>
               </div>

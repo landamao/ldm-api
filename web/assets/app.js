@@ -276,7 +276,7 @@
         (msg ? `<div class="toast__msg">${esc(msg)}</div>` : '') +
         `</div>` +
         // 复制走整条提示的纯文本（标题 + 正文），报错信息长的时候不用再手动选中
-        `<button class="toast__act" data-toast-copy aria-label="复制提示内容" title="复制提示内容">${icon('copy', 13)}</button>` +
+        `<button class="toast__act" data-toast-copy aria-label="复制提示内容">${icon('copy', 13)}</button>` +
         `<button class="toast__close" aria-label="关闭">${icon('x', 13)}</button>`;
       this._host().appendChild(el);
       const t = setTimeout(() => {
@@ -886,6 +886,14 @@
       if (!a) return;
       opts = opts || {};
       clearTimer();
+      // 被新气泡顶掉时，先把上一个气泡的收尾回调跑掉——否则它留下的状态
+      // （比如日志里上游模型徽章的 aria-expanded）会一直停在「已展开」，
+      // 下次悬停时那边以为还开着、干脆不再弹。
+      if (onHide && anchor && anchor !== a) {
+        const prev = onHide;
+        onHide = null;
+        prev(anchor);
+      }
       const el = node();
       el.className = 'chart-tip ' + (opts.className || 'chart-tip--wrap');
       el.setAttribute('role', opts.role || 'tooltip');
@@ -923,13 +931,28 @@
     }
 
     // ---- 原生 title 接管 ----
+    // 按钮 / 链接上的 title 一律不弹：图标或文字已经把功能说清楚了，鼠标每划过一次
+    // 就冒一个「清空当前对话」「测试连通性」，比原生气泡还吵。这类 title 连原生
+    // tooltip 一起摘掉。
+    // 还会弹的只有「不给气泡就看不全」的信息：被截断的名字、问号里的整段帮助、
+    // 图例统计、错误摘要……问号和图例这类按钮用 data-tip 显式声明，绕过这条过滤。
+    function wantsTip(el) {
+      return el.tagName !== 'BUTTON' && el.tagName !== 'A';
+    }
+
     // 第一次要显示时把 title 读走存进 data-tip，顺手给纯图标元素补一个无障碍名称。
     function readTip(el) {
       const raw = el.getAttribute('title');
       if (raw == null) return el.dataset.tip || '';
+      // 不管弹不弹，原生 title 一律摘掉：慢、丑，手机上还按不出来
+      el.removeAttribute('title');
+      if (!raw) return '';
+      if (!wantsTip(el)) {
+        if (!el.hasAttribute('aria-label') && !(el.textContent || '').trim()) el.setAttribute('aria-label', raw);
+        return '';
+      }
       el.dataset.tip = raw;
       if (!el.hasAttribute('aria-label') && !(el.textContent || '').trim()) el.setAttribute('aria-label', raw);
-      el.removeAttribute('title');
       return raw;
     }
 
@@ -957,7 +980,13 @@
       if (!t || !t.closest) return;
       if (box && box.contains(t)) { clearTimer(); return; }
       const a = t.closest('[title], [data-tip]');
-      if (!a) { closeSoon(); return; }
+      if (!a) {
+        // 鼠标还在锚点自己身上（比如从徽章文字移到徽章里的图标）不算离开——
+        // 否则每动一下就挂个延时关闭，气泡看着就是「显示一会儿就没了」
+        if (anchor && (t === anchor || anchor.contains(t))) { clearTimer(); return; }
+        closeSoon(anchor);
+        return;
+      }
       const opts = optsFor(a);
       if (!opts) { closeSoon(); return; }
       // 换锚点时立刻切（只有从无到有才等延迟），扫过一排按钮不会闪一串气泡
@@ -1028,7 +1057,14 @@
       if (opts && opts.className) el.dataset.tipCls = opts.className;
     }
 
-    return { canHover: HOVER_OK, show, hide, hideHover: () => { if (!pinned) hide(); }, attach };
+    return {
+      canHover: HOVER_OK,
+      show,
+      hide,
+      attach,
+      // 这个元素身上的气泡是不是正开着（调用方用来判断要不要重新打开）
+      isOn: (el) => !!el && anchor === el && !!box && box.classList.contains('is-on'),
+    };
   })();
 
   // ---------- 模态框 ----------
@@ -1345,9 +1381,10 @@
     const o = opts || {};
     const value = o.copy == null ? text : o.copy;
     const cls = 'badge badge--tag badge--click' + (o.cls ? ' ' + o.cls : '');
+    // 不加 title：点击就直接复制、有 toast 反馈，悬停再冒一个「点击复制」的气泡纯属多余
     return `<button type="button" class="${cls}" style="--tag-h:${tagHue(text)}"`
       + ` data-copy="${esc(value)}" data-copy-label="${esc(o.label || '')}"`
-      + ` title="${esc(text)} · 点击复制">${esc(text)}</button>`;
+      + `>${esc(text)}</button>`;
   }
 
   function statusBadge(enabled, onText, offText) {
