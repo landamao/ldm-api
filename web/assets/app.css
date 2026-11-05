@@ -4507,8 +4507,48 @@ html[data-theme="dark"] .backup-result__head { color: var(--leaf-300); }
   }
 }
 
-/* 手机宽度：右侧留不出「多选 / 退出多选」的固定位，放回行内，别和搜索框压在一起 */
+/* 手机宽度：右侧没有绝对定位的固定位，改成两列栅格——
+   搜索/计数独占一整行；下一行左边是批量按钮（放不下就在自己的列里换行，仍靠左），
+   右边一列永远留给「多选 / 退出多选」，贴在这块区域的右上角 */
 @media (max-width: 640px) {
-  .filter-bar { padding-right: 0; }
-  .filter-chip--toggle { position: static; min-width: 0; }
+  .filter-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px;
+    padding: 0 0 14px;
+  }
+  .filter-bar__leads {
+    grid-column: 1 / -1;
+    flex-wrap: nowrap;
+    /* 令牌页的计数在多选时会清空，这一行不能跟着塌掉，否则「退出多选」会比「多选」高一截 */
+    min-height: 30px;
+  }
+  /* 手机上搜索框按剩余空间等分，别让计数文字被挤成竖排；计数放不下就整块换行 */
+  .filter-bar__leads .search {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+  }
+  .filter-bar__leads > .muted {
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+  .filter-bar__batch {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: start;
+    gap: 5px;
+  }
+  /* 手机上按钮收紧一点，少折一行 */
+  .filter-bar .filter-chip { padding: 0 10px; }
+  /* 批量按钮在自己的列里换行时，这一列会变高，但「多选 / 退出多选」始终贴在这块区域的
+     右上角（也就是第二行的右边），不会跟着按钮一路往下跑 */
+  .filter-chip--toggle {
+    position: static;
+    min-width: 0;
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+    align-self: start;
+  }
 }
