@@ -560,7 +560,6 @@
             <div class="card__head">
               <div>
                 <div class="card__title">最近调用</div>
-                <div class="card__sub">最新 8 条请求记录</div>
               </div>
               <div class="card__actions">
                 <button class="btn btn--sm" id="go-logs">查看全部${icon('logs', 13)}</button>
@@ -1037,13 +1036,11 @@
         </div>`;
 
       root.innerHTML = `
-        <div class="card mb-18">
-          <div class="provider-filter" id="plaza-providers" style="padding:12px 16px">
+        <div class="provider-filter" id="plaza-providers">
             <button class="provider-chip${plazaState.provider === 'all' ? ' is-on' : ''}" data-p="all">全部提供商<span class="provider-chip__count">${availableItems.length}</span></button>
             ${plazaProviders.map((p) => `<button class="provider-chip${plazaState.provider === p.id ? ' is-on' : ''}" data-p="${esc(p.id)}">${providerIcon(p.icon, 15)}<span>${esc(p.name)}</span><span class="provider-chip__count">${providerCounts[p.id]}</span></button>`).join('')}
             ${unassigned ? `<button class="provider-chip${plazaState.provider === '__none' ? ' is-on' : ''}" data-p="__none">${providerIcon('', 15)}<span>未设置</span><span class="provider-chip__count">${unassigned}</span></button>` : ''}
             <span class="muted fs-12" id="plaza-count" style="margin-left:auto"></span>
-          </div>
         </div>
         <div id="plaza-grid"></div>`;
 
@@ -1727,7 +1724,7 @@
                       <span class="chat-switch-row__label">工具调用</span>
                       ${switchEl(false, '', 'id="chat-tools" title="开启后向模型提供获取当前时间的工具，用于测试工具调用"')}
                     </div>
-                    <div class="muted fs-12">提供 get_current_time 工具，用于测试模型是否支持工具调用</div>
+                    <div class="muted fs-12">提供 get_current_time 工具</div>
                   </div>
                   <div class="chat-field">
                     <div class="chat-field__head">
