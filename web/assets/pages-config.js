@@ -361,38 +361,43 @@
         ${filterSelect('ch-filter-usage', '接入情况', 'usage', usageOptions, '166px')}`;
 
       root.innerHTML = `
-        <div class="card channels-card">
-          <div class="toolbar" style="gap:8px">
-            <div class="search" style="flex:0 1 220px;min-width:170px">
-              <span class="search__icon">${icon('search', 15)}</span>
-              <input class="input" id="channel-search" placeholder="搜索渠道 ID、名称或地址…" value="${esc(channelListState.keyword)}">
+        <div class="list-page">
+          <div class="filter-bar">
+            <div class="filter-bar__leads">
+              <div class="search" style="flex:0 1 240px;min-width:150px">
+                <span class="search__icon">${icon('search', 15)}</span>
+                <input class="input" id="channel-search" placeholder="搜索渠道 ID、名称或地址…" value="${esc(channelListState.keyword)}">
+              </div>
+              <div class="search" style="flex:0 1 190px;min-width:140px">
+                <span class="search__icon">${icon('search', 15)}</span>
+                <input class="input" id="channel-model-search" placeholder="搜索模型名…" value="${esc(channelListState.modelKeyword)}">
+              </div>
+              <span class="muted fs-12" id="channel-filter-count" style="margin-left:auto${channelListState.multi ? ';display:none' : ''}"></span>
             </div>
-            <div class="search" style="flex:0 1 170px;min-width:150px">
-              <span class="search__icon">${icon('search', 15)}</span>
-              <input class="input" id="channel-model-search" placeholder="搜索模型名…" value="${esc(channelListState.modelKeyword)}">
+            <div class="filter-bar__batch" id="ch-batch" style="${channelListState.multi ? '' : 'display:none'}">
+              <span class="muted fs-12" id="channel-multi-count">已选 ${channelListState.selected.size} 个</span>
+              <button class="filter-chip" id="ch-enable">${icon('play', 13)}启用</button>
+              <button class="filter-chip" id="ch-disable">${icon('pause', 13)}禁用</button>
+              <button class="filter-chip" id="ch-test">${icon('zap', 13)}测试</button>
+              <button class="filter-chip" id="ch-cooldown">${icon('refresh', 13)}清除冷却</button>
+              <button class="filter-chip filter-chip--danger" id="ch-del">${icon('trash', 13)}删除</button>
             </div>
-            <div class="toolbar__spacer"></div>
-            <span class="muted fs-12" id="channel-filter-count" ${channelListState.multi ? 'style="display:none"' : ''}></span>
-            <button class="btn btn--sm" id="ch-multi" style="${channelListState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
-            <span class="muted fs-12" id="channel-multi-count" style="${channelListState.multi ? '' : 'display:none'}">已选 ${channelListState.selected.size} 个</span>
-            <button class="btn btn--sm" id="ch-enable" style="${channelListState.multi ? '' : 'display:none'}">${icon('play', 13)}启用</button>
-            <button class="btn btn--sm" id="ch-disable" style="${channelListState.multi ? '' : 'display:none'}">${icon('pause', 13)}禁用</button>
-            <button class="btn btn--sm" id="ch-test" style="${channelListState.multi ? '' : 'display:none'}">${icon('zap', 13)}测试</button>
-            <button class="btn btn--sm" id="ch-cooldown" style="${channelListState.multi ? '' : 'display:none'}">${icon('refresh', 13)}清除冷却</button>
-            <button class="btn btn--sm btn--danger" id="ch-del" style="${channelListState.multi ? '' : 'display:none'}">${icon('trash', 13)}删除</button>
-            <button class="btn btn--sm btn--ghost" id="ch-exit" style="${channelListState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
+            <button class="filter-chip filter-chip--toggle" id="ch-multi" style="${channelListState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
+            <button class="filter-chip filter-chip--toggle filter-chip--ghost" id="ch-exit" style="${channelListState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
           </div>
-          <div id="channel-table"></div>
-          ${channelHintDismissed() ? '' : `<div class="alert alert--pink mt-16" id="channel-hint" style="margin:0 14px 14px">
-            ${icon('info', 15)}<div>
-              <span class="strong">这里填的是上游真实的模型名。</span>
-              接入到「模型管理」之后，它们会各自获得一个带渠道前缀的 ID，例如渠道
-              <code>${esc(channels[0].id)}</code> 的模型 <code>a</code> 对应
-              <code>${esc(channels[0].id)}/a</code>，调用时使用那个 ID。
-              渠道模型必须先在「模型管理」中手动添加，才会对外开放。
-            </div>
-            <button class="alert__close" id="btn-dismiss-hint" title="关闭提示" aria-label="关闭提示">${icon('x', 14)}</button>
-          </div>`}
+          <div class="card channels-card">
+            <div id="channel-table"></div>
+            ${channelHintDismissed() ? '' : `<div class="alert alert--pink mt-16" id="channel-hint" style="margin:0 14px 14px">
+              ${icon('info', 15)}<div>
+                <span class="strong">这里填的是上游真实的模型名。</span>
+                接入到「模型管理」之后，它们会各自获得一个带渠道前缀的 ID，例如渠道
+                <code>${esc(channels[0].id)}</code> 的模型 <code>a</code> 对应
+                <code>${esc(channels[0].id)}/a</code>，调用时使用那个 ID。
+                渠道模型必须先在「模型管理」中手动添加，才会对外开放。
+              </div>
+              <button class="alert__close" id="btn-dismiss-hint" title="关闭提示" aria-label="关闭提示">${icon('x', 14)}</button>
+            </div>`}
+          </div>
         </div>`;
 
       const renderTable = () => {
@@ -551,13 +556,8 @@
           if (el) el.style.display = show ? '' : 'none';
         };
         set('channel-filter-count', !channelListState.multi);
+        set('ch-batch', channelListState.multi);
         set('ch-multi', !channelListState.multi);
-        set('channel-multi-count', channelListState.multi);
-        set('ch-enable', channelListState.multi);
-        set('ch-disable', channelListState.multi);
-        set('ch-test', channelListState.multi);
-        set('ch-cooldown', channelListState.multi);
-        set('ch-del', channelListState.multi);
         set('ch-exit', channelListState.multi);
         renderTable();
       };
@@ -2196,24 +2196,29 @@
         ${filterSelect('f-status', '启用状态', 'status', statusOptions, '138px')}`;
 
       root.innerHTML = `
-        <div class="card models-card">
-          <div class="toolbar">
-            <div class="search" style="flex:0 1 320px">
-              <span class="search__icon">${icon('search', 15)}</span>
-              <input class="input" id="model-search" placeholder="搜索模型 ID…" value="${esc(modelState.keyword)}">
+        <div class="list-page">
+          <div class="filter-bar">
+            <div class="filter-bar__leads">
+              <div class="search" style="flex:0 1 320px;min-width:170px">
+                <span class="search__icon">${icon('search', 15)}</span>
+                <input class="input" id="model-search" placeholder="搜索模型 ID…" value="${esc(modelState.keyword)}">
+              </div>
+              <span class="muted fs-12" id="filter-count" style="margin-left:auto${modelState.multi ? ';display:none' : ''}"></span>
             </div>
-            <div class="toolbar__spacer"></div>
-            <span class="muted fs-12" id="filter-count" ${modelState.multi ? 'style="display:none"' : ''}></span>
-            <button class="btn btn--sm" id="btn-multi" style="${modelState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
-            <span class="muted fs-12" id="multi-count" style="${modelState.multi ? '' : 'display:none'}">已选 ${modelState.selected.size} 个</span>
-            <button class="btn btn--sm" id="m-enable" style="${modelState.multi ? '' : 'display:none'}">${icon('play', 13)}启用</button>
-            <button class="btn btn--sm" id="m-disable" style="${modelState.multi ? '' : 'display:none'}">${icon('pause', 13)}禁用</button>
-            <button class="btn btn--sm" id="m-provider" style="${modelState.multi ? '' : 'display:none'}">${icon('box', 13)}设置提供商</button>
-            <button class="btn btn--sm" id="m-cooldown" style="${modelState.multi ? '' : 'display:none'}">${icon('refresh', 13)}清除冷却</button>
-            <button class="btn btn--sm btn--danger" id="m-del" style="${modelState.multi ? '' : 'display:none'}">${icon('trash', 13)}删除</button>
-            <button class="btn btn--sm btn--ghost" id="m-exit" style="${modelState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
+            <div class="filter-bar__batch" id="m-batch" style="${modelState.multi ? '' : 'display:none'}">
+              <span class="muted fs-12" id="multi-count">已选 ${modelState.selected.size} 个</span>
+              <button class="filter-chip" id="m-enable">${icon('play', 13)}启用</button>
+              <button class="filter-chip" id="m-disable">${icon('pause', 13)}禁用</button>
+              <button class="filter-chip" id="m-provider">${icon('box', 13)}设置提供商</button>
+              <button class="filter-chip" id="m-cooldown">${icon('refresh', 13)}清除冷却</button>
+              <button class="filter-chip filter-chip--danger" id="m-del">${icon('trash', 13)}删除</button>
+            </div>
+            <button class="filter-chip filter-chip--toggle" id="btn-multi" style="${modelState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
+            <button class="filter-chip filter-chip--toggle filter-chip--ghost" id="m-exit" style="${modelState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
           </div>
-          <div id="model-table"></div>
+          <div class="card models-card">
+            <div id="model-table"></div>
+          </div>
         </div>`;
 
       const renderTable = () => {
@@ -2392,13 +2397,8 @@
           if (el) el.style.display = show ? '' : 'none';
         };
         set('filter-count', !modelState.multi);
+        set('m-batch', modelState.multi);
         set('btn-multi', !modelState.multi);
-        set('multi-count', modelState.multi);
-        set('m-enable', modelState.multi);
-        set('m-disable', modelState.multi);
-        set('m-provider', modelState.multi);
-        set('m-cooldown', modelState.multi);
-        set('m-del', modelState.multi);
         set('m-exit', modelState.multi);
         renderTable();
       };
