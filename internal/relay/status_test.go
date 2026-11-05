@@ -1051,6 +1051,48 @@ func TestModelCustomContentSkipsUpstream(t *testing.T) {
 	}
 }
 
+// 填写自定义 JSON 后，流式和非流式都原样返回这段 JSON，不再包成对话结构。
+func TestModelCustomContentJSON(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+	on := true
+	const raw = `{"created":1700000000,"data":[{"url":"https://example.com/cat.png"}]}`
+	if err := st.SaveModel(store.Model{
+		ID: "img", Type: store.ModelTypeCustom,
+		ContentEnabled: &on, ContentText: "不应返回的正文", ContentReasoning: "不应返回的思考",
+		ContentJSON: raw,
+		Enabled:     true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, stream := range []bool{false, true} {
+		req := statusTestRequest("img")
+		req.Stream = stream
+		rec := httptest.NewRecorder()
+		res := New(st).Do(context.Background(), rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("stream=%v 应返回 200，得到 %d: %s", stream, rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Errorf("stream=%v 应返回 JSON，得到 %q", stream, ct)
+		}
+		if body := rec.Body.String(); body != raw {
+			t.Errorf("stream=%v 应原样返回配置的 JSON，得到 %s", stream, body)
+		}
+		if res.StatusCode != http.StatusOK || res.Err != "" || res.StreamGen {
+			t.Errorf("stream=%v 结果不正确: %+v", stream, res)
+		}
+		if res.Usage.CompletionTokens == 0 {
+			t.Errorf("stream=%v 应按 JSON 估算输出 token: %+v", stream, res.Usage)
+		}
+		if res.ReasoningChars != 0 {
+			t.Errorf("stream=%v 不应统计被忽略的思考内容: %+v", stream, res)
+		}
+	}
+}
+
 // 自定义内容返回优先于自定义错误返回：两者同时开启时只返回内容。
 func TestModelCustomContentWinsOverCustomError(t *testing.T) {
 	st := newTestStore(t)
@@ -1293,5 +1335,106 @@ func TestCustomContentChunks(t *testing.T) {
 	}
 	if d := customContentChunkDelay("好", 0); d != 0 {
 		t.Errorf("速度为 0 时不应等待，得到 %v", d)
+	}
+}
+
+// 上游非流式响应完全不带 usage 时，输出 token 要按正文估算，不能一直记 0。
+func TestNonStreamEstimatesMissingUsage(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"x","object":"chat.completion","model":"up","choices":[{"index":0,`+
+			`"message":{"role":"assistant","content":"你好世界，这是一段用来估算的测试正文"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "nou", srv.URL, []string{"key-nou-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "nou/a", Type: store.ModelTypeChannel, ChannelID: "nou", Upstream: "a",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("nou/a"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应返回 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if res.Usage.CompletionTokens == 0 {
+		t.Errorf("上游没给用量时应按正文估算输出: %+v", res.Usage)
+	}
+	if res.Usage.TotalTokens != res.Usage.PromptTokens+res.Usage.CompletionTokens {
+		t.Errorf("总计应等于输入 + 输出: %+v", res.Usage)
+	}
+	if !res.UsageEstimate || res.OutputEstimate {
+		t.Errorf("整份用量都缺失时只标 UsageEstimate: %+v", res)
+	}
+}
+
+// 上游只报了输入、没报输出时，只补输出并单独标记，输入保持上游真值。
+func TestNonStreamEstimatesOnlyOutput(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"x","object":"chat.completion","model":"up","choices":[{"index":0,`+
+			`"message":{"role":"assistant","content":"半份用量也要把输出补上"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":30,"completion_tokens":0,"total_tokens":30}}`)
+	}))
+	defer srv.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "half", srv.URL, []string{"key-half-000001"}, []string{"a"})
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "half/a", Type: store.ModelTypeChannel, ChannelID: "half", Upstream: "a",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	res := New(st).Do(context.Background(), rec, statusTestRequest("half/a"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应返回 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if res.Usage.PromptTokens != 30 {
+		t.Errorf("输入是上游上报的真值，不应被改写: %+v", res.Usage)
+	}
+	if res.Usage.CompletionTokens == 0 {
+		t.Errorf("上游没报输出时应按正文补齐: %+v", res.Usage)
+	}
+	if want := 30 + res.Usage.CompletionTokens; res.Usage.TotalTokens != want {
+		t.Errorf("总计应重算成 %d，得到 %d", want, res.Usage.TotalTokens)
+	}
+	if res.UsageEstimate || !res.OutputEstimate {
+		t.Errorf("只估输出时应只标 OutputEstimate: %+v", res)
+	}
+}
+
+// 图片、embedding 这类响应没有正文，不能被当成输出 token 估算。
+func TestResponseOutputTextSkipsBinary(t *testing.T) {
+	if got := responseOutputText([]byte(`{"created":1,"data":[{"b64_json":"AAAA"}]}`)); got != "" {
+		t.Errorf("图片响应不应估算正文，得到 %q", got)
+	}
+	raw := []byte(`{"choices":[{"message":{"content":[` +
+		`{"type":"text","text":"看图"},` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}}]}`)
+	if got := responseOutputText(raw); got != "看图" {
+		t.Errorf("多模态只算文本片段，得到 %q", got)
+	}
+	if got := responseOutputText([]byte(`{"choices":[{"message":{"reasoning_content":"想一想","content":"答案"}}]}`)); got != "想一想答案" {
+		t.Errorf("思考和正文都要计入输出，得到 %q", got)
+	}
+	if got := responseOutputText([]byte(`{"output":[{"content":[{"type":"output_text","text":"回答"}]}]}`)); got != "回答" {
+		t.Errorf("Responses API 的正文也要计入输出，得到 %q", got)
 	}
 }

@@ -115,6 +115,80 @@ func flattenText(v any) string {
 	return ""
 }
 
+// responseOutputText 取出非流式响应里的正文与思考文本，用于上游没上报用量时
+// 估算输出 token。只认对话响应里的文本字段：图片 base64、embedding 向量这类
+// 没有 token 概念的内容不会被算成正文。工具调用的参数也是模型产出的内容，一并算进去。
+func responseOutputText(raw []byte) string {
+	var probe struct {
+		Choices []struct {
+			Text    string `json:"text"`
+			Message struct {
+				Content          any    `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
+				ToolCalls        []struct {
+					Function struct {
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+		// Responses API 的正文在 output[].content[].text，另有一个 output_text 便捷字段
+		OutputText string `json:"output_text"`
+		Output     []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, c := range probe.Choices {
+		sb.WriteString(c.Text)
+		sb.WriteString(c.Message.ReasoningContent)
+		sb.WriteString(c.Message.Reasoning)
+		sb.WriteString(contentText(c.Message.Content))
+		for _, tc := range c.Message.ToolCalls {
+			sb.WriteString(tc.Function.Arguments)
+		}
+	}
+	sb.WriteString(probe.OutputText)
+	for _, o := range probe.Output {
+		for _, p := range o.Content {
+			sb.WriteString(p.Text)
+		}
+	}
+	return sb.String()
+}
+
+// contentText 只取多模态内容里的文本片段：图片的 data URL / b64 不算正文，
+// 否则一张图就能把字符数撑到几十万，估算出来的 token 毫无意义。
+func contentText(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case []any:
+		var sb strings.Builder
+		for _, item := range t {
+			if m, ok := item.(map[string]any); ok {
+				if s, ok := m["text"].(string); ok {
+					sb.WriteString(s)
+					continue
+				}
+				// 图片、音频这类片段没有 text 字段，整段跳过。
+				if typ, _ := m["type"].(string); typ != "" && typ != "text" {
+					continue
+				}
+			}
+			sb.WriteString(contentText(item))
+		}
+		return sb.String()
+	}
+	return ""
+}
+
 // reasoningCharsOf 从非流式响应体里读出思考内容的字符数。
 // 不同上游用的字段名不完全一样，这里把常见的几种都认一遍。
 func reasoningCharsOf(raw []byte) int {

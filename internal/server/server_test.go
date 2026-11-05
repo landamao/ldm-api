@@ -2694,8 +2694,9 @@ func TestRecordPersistsUsageEstimate(t *testing.T) {
 	s, st := newTestServer(t, "usage-estimate")
 	res := &relay.Result{
 		ModelID: "x", ChannelID: "A", StatusCode: http.StatusOK,
-		Usage:         upstream.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12},
-		UsageEstimate: true,
+		Usage:          upstream.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12},
+		UsageEstimate:  true,
+		OutputEstimate: true,
 	}
 	s.record(store.Token{ID: "tk", Name: "测试密钥"}, &relay.Request{Path: "/v1/chat/completions"}, res)
 
@@ -2708,6 +2709,9 @@ func TestRecordPersistsUsageEstimate(t *testing.T) {
 	}
 	if !logs[0].UsageEstimate {
 		t.Error("估算标记未持久化")
+	}
+	if !logs[0].OutputEstimate {
+		t.Error("输出估算标记未持久化")
 	}
 }
 

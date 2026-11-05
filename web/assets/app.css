@@ -1398,6 +1398,37 @@ html[data-theme="dark"] .log-time::-webkit-calendar-picker-indicator { filter: i
 .field__head .field__label { margin-bottom: 0; }
 .field__reset { height: 23px; padding: 0 9px; font-size: 11.5px; }
 
+/* 高级设置整块包一圈描边：折叠时也能看出范围，避免和弹窗下面的字段混在一起。 */
+.advanced-settings {
+  border: 2px solid var(--card-line);
+  border-radius: 12px;
+  background: var(--surface-2);
+  padding: 12px 14px;
+}
+.advanced-settings > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-2);
+  list-style: none;
+  user-select: none;
+}
+.advanced-settings > summary::-webkit-details-marker { display: none; }
+.advanced-settings > summary::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform .15s;
+}
+.advanced-settings[open] > summary::before { transform: rotate(90deg); }
+
 .select {
   height: 34px;
   appearance: none;

@@ -947,7 +947,7 @@
                     ? `<span class="log-star-wrap">${colorBadge(l.upstream_model)}${modelStar}</span>`
                     : '<span class="muted">—</span>'}</td>
                   <td class="num">${fmtDash(l.prompt_tokens)}${l.usage_estimate ? ' <span class="muted fs-12" title="上游未上报用量，Token 数为网关估算">(估算)</span>' : ''}${l.cached_tokens ? sub(`缓存读 ${fmtDash(l.cached_tokens)}`) : ''}</td>
-                  <td class="num">${fmtDash(l.completion_tokens)}${reasoning ? sub(reasoning) : ''}</td>
+                  <td class="num">${fmtDash(l.completion_tokens)}${l.output_estimate ? ' <span class="muted fs-12" title="上游未上报输出用量，按响应正文长度估算">(估算)</span>' : ''}${reasoning ? sub(reasoning) : ''}</td>
                   <td class="num">${l.tokens_per_sec
                     ? `<span title="输出 tokens / 生成耗时，按流式请求上游的记录计算（首块内容到末块内容）">${l.tokens_per_sec.toFixed(1)} t/s</span>`
                     : '<span class="muted">—</span>'}</td>
@@ -5569,6 +5569,11 @@
       const estMark = (l) => (l.usage_estimate
         ? ' <span class="muted fs-12" title="上游未上报用量，Token 数为网关估算">(估算)</span>'
         : '');
+      // 只有输出是估的（上游报了输入、没报输出）时，标记挂在输出列，
+      // 免得让人以为输入也是估出来的。
+      const outEstMark = (l) => (l.output_estimate
+        ? ' <span class="muted fs-12" title="上游未上报输出用量，按响应正文长度估算">(估算)</span>'
+        : '');
 
       function renderTable() {
         if (lastItems == null) return;
@@ -5629,7 +5634,7 @@
                 : '<span class="muted">—</span>'}</td>
               <td class="fs-12">${colorBadge(l.token_name)}</td>
               <td class="num">${tok(l.prompt_tokens)}${estMark(l)}${l.cached_tokens ? sub(`缓存读 ${tok(l.cached_tokens)}`) : ''}</td>
-              <td class="num">${tok(l.completion_tokens)}${reasoning ? sub(reasoning) : ''}</td>
+              <td class="num">${tok(l.completion_tokens)}${outEstMark(l)}${reasoning ? sub(reasoning) : ''}</td>
               <td class="num">${l.tokens_per_sec
                 ? `<span title="输出 tokens / 生成耗时，按流式请求上游的记录计算（首块内容到末块内容）">${l.tokens_per_sec.toFixed(1)} t/s</span>`
                 : '<span class="muted">—</span>'}</td>

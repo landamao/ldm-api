@@ -35,12 +35,13 @@
     <div style="margin-bottom:8px">命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。</div>
     <div style="margin-bottom:8px">留空表示所有状态码都可重试（未配置过的旧数据也按留空处理）；点击「填入模板」填入 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）。</div>
     <div>401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。</div>`;
-  const CUSTOM_CONTENT_HELP_TEXT = '开启后错误覆写将不可用。每次请求都直接返回这里填写的内容，不再请求上游；可附加思考内容并模拟首字、速度和延迟。关闭后恢复正常路由。';
+  const CUSTOM_CONTENT_HELP_TEXT = '开启后错误覆写将不可用。每次请求都直接返回这里填写的内容，不再请求上游；可附加思考内容并模拟首字、速度和延迟。返回内容分「文本 / JSON」两页：文本页按对话结构返回，JSON 页无论流式非流式都直接返回整段 JSON，适合生图等其它响应类型。';
   const CUSTOM_CONTENT_HELP_HTML = `
     <div style="margin-bottom:8px"><b>开启后错误覆写将不可用。</b></div>
     <div style="margin-bottom:8px"><b>总开关</b>：开启后所有调用都直接返回这里填写的内容，不请求上游，也不解析路由。</div>
-    <div style="margin-bottom:8px">返回内容按 OpenAI 兼容格式输出：流式请求返回 SSE，非流式请求返回完整 JSON；对话、补全、Responses 等端点会按各自的响应结构返回。</div>
-    <div style="margin-bottom:8px"><b>思考内容</b>：填写后会在正文前输出思考内容；留空时响应里不会出现思考字段。</div>
+    <div style="margin-bottom:8px"><b>文本页</b>：按 OpenAI 兼容格式输出，流式请求返回 SSE，非流式请求返回完整 JSON；对话、补全、Responses 等端点会按各自的响应结构返回。</div>
+    <div style="margin-bottom:8px"><b>JSON 页</b>：直接把整段 JSON 原文返回（<code>200</code> / <code>application/json</code>），不再套用对话结构，流式与非流式一样。用来返回生图等其它类型的响应体；流式首字和速度不生效，非流式延迟仍然有效。</div>
+    <div style="margin-bottom:8px"><b>思考内容</b>：文本页可填写，会在正文前输出；留空时响应里不会出现思考字段。</div>
     <div style="margin-bottom:8px"><b>耗时模拟</b>：流式首字是发送第一块数据前的等待（毫秒）；流式速度是每秒输出的字符数，按这个速度分块发送；非流式延迟是返回完整 JSON 前的等待（毫秒）。填 0 表示不模拟。</div>
     <div><b>优先级</b>：开启自定义内容返回会自动关闭错误覆写；关闭内容返回后，可以重新打开错误覆写，之前填写的状态码和详情仍会保留。</div>`;
   const CUSTOM_ERROR_HELP_TEXT = '开启自定义内容返回后，此功能将不可用。总开关关闭时以下配置都不生效。只开总开关：请求最终失败时，用这里的错误替代上游原始错误，成功请求不受影响；再开「始终返回错误」：所有调用都直接返回这里的错误，不再请求上游。开「覆写为正文」时把错误详情当成正常回复、以 200 返回。「跳过不可重试状态码」默认开启，命中模型不可重试状态码的上游错误不参与任何覆写，原样返回。状态码支持 400–599，错误详情留空时返回默认文案。';
@@ -65,6 +66,7 @@
     <div><b>优先级</b>：自定义内容返回优先级最高，开启后思考覆写不生效，关闭内容返回后自动恢复。配合能力参数里的「思考 → 不支持、关闭报错」时，请求里的思考参数和历史思考内容会先被移除，上下文里不会留下思考内容。</div>`;
   const FORCE_STREAM_HELP_TEXT = '开启后对话类请求一律以流式请求上游：客户端要流式时正常透传，客户端要非流式时由网关流式收完再按非流式返回。这样超时时间按「两段输出之间的空档」生效，上游迟迟不吐字、或者吐一半卡住，都能快速失败并切到下一条路由。';
   const FORCE_STREAM_HELP_HTML = `
+    <div style="margin-bottom:8px">开启后对话请求都用流式请求上游：客户端要流式时正常透传，非流式时由网关收完再按非流式返回。超时时间因此按「两段输出之间的空档」生效：慢上游不吐字、或吐一半卡住，都会在空档超过超时时间时快速切下一条路由。</div>
     <div style="margin-bottom:8px"><b>为什么需要它</b>：有些上游思考很久才吐字，非流式请求无法区分「在思考」和「卡住不动」，只能等整次超时；改成流式后，只要一段时间没有新输出就可以判定这条路由不可用。</div>
     <div style="margin-bottom:8px"><b>客户端要流式</b>：行为不变，按 SSE 逐块透传。</div>
     <div style="margin-bottom:8px"><b>客户端要非流式</b>：网关仍然以 <code>stream: true</code> 请求上游，自己把整条流收完、聚合成完整响应（正文、思考内容、工具调用、用量都在），再按非流式返回给客户端。</div>
@@ -134,6 +136,23 @@
     } catch (e) {
       Toast.error('无法读取剪贴板，请手动粘贴（Ctrl+V）');
       input.focus();
+    }
+  }
+
+  // 把 textarea 里的 JSON 重新缩进输出；解析失败时只提示，不改动原内容。
+  function formatJSONTextarea(ta) {
+    if (!ta) return;
+    const raw = ta.value.trim();
+    if (!raw) {
+      Toast.warn('还没有填写 JSON');
+      ta.focus();
+      return;
+    }
+    try {
+      ta.value = JSON.stringify(JSON.parse(raw), null, 2);
+      Toast.success('已格式化 JSON');
+    } catch (e) {
+      Toast.error(e.message, 'JSON 格式有误');
     }
   }
 
@@ -1576,7 +1595,7 @@
       </div>
 
       <details class="mt-16 advanced-settings">
-        <summary style="cursor:pointer;font-size:12.5px;font-weight:620;color:var(--text-2)">高级设置</summary>
+        <summary>高级设置</summary>
         <div class="mt-12">
           <div class="form-row">
             <div class="field">
@@ -3382,7 +3401,7 @@
         <div class="field__hint">非流式限制整次请求；流式限制两段真实输出之间的空档，心跳和空块不续命。开启「强制流式请求」后，非流式调用也按这个空档计算。</div>
       </div>
       <details class="mt-16 advanced-settings">
-        <summary style="cursor:pointer;font-size:12.5px;font-weight:620;color:var(--text-2)">高级设置</summary>
+        <summary>高级设置</summary>
         <div class="mt-12">
           <div class="field">
             <div class="field__head">
@@ -3392,7 +3411,6 @@
               </label>
               <label class="switch"><input type="checkbox" id="m-forcestream" ${m.force_stream ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
-            <div class="field__hint">开启后对话请求都用流式请求上游：客户端要流式时正常透传，非流式时由网关收完再按非流式返回。超时时间因此按「两段输出之间的空档」生效：一直不吐字、或吐一半卡住，都会在空档超过超时时间时判失败。</div>
           </div>
           <div class="field">
             <div class="field__head">
@@ -3428,15 +3446,33 @@
                 <button type="button" class="badge badge--blue badge--click field__help"
                         id="m-content-help" title="${esc(CUSTOM_CONTENT_HELP_TEXT)}" aria-label="查看自定义内容返回机制">?</button>
               </label>
-              <label class="switch"><input type="checkbox" id="m-content-enabled" ${m.content_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+              <div class="flex-center gap-8">
+                <div class="pill-toggle" id="m-content-mode">
+                  <button type="button" data-content-mode="text" class="is-on">文本</button>
+                  <button type="button" data-content-mode="json">JSON</button>
+                </div>
+                <label class="switch"><input type="checkbox" id="m-content-enabled" ${m.content_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+              </div>
             </div>
             <div id="m-content-detail" style="${m.content_enabled ? '' : 'display:none'}">
-              <textarea class="textarea" id="m-content-text" spellcheck="false"
-                        style="min-height:72px;font-family:inherit;font-size:13px"
-                        placeholder="例如：好的">${esc(m.content_text || '')}</textarea>
-              <textarea class="textarea" id="m-content-reasoning" spellcheck="false"
-                        style="min-height:56px;margin-top:8px"
-                        placeholder="思考内容（可选，留空则不输出思考内容）">${esc(m.content_reasoning || '')}</textarea>
+              <div id="m-content-text-pane">
+                <textarea class="textarea" id="m-content-text" spellcheck="false"
+                          style="min-height:72px;font-family:inherit;font-size:13px"
+                          placeholder="例如：好的">${esc(m.content_text || '')}</textarea>
+                <textarea class="textarea" id="m-content-reasoning" spellcheck="false"
+                          style="min-height:56px;margin-top:8px"
+                          placeholder="思考内容（可选，留空则不输出思考内容）">${esc(m.content_reasoning || '')}</textarea>
+              </div>
+              <div id="m-content-json-pane" style="display:none">
+                <div class="field__head">
+                  <label class="field__label" style="font-size:12px">要返回的 JSON</label>
+                  <button type="button" class="btn btn--ghost btn--sm" id="m-content-json-format">格式化</button>
+                </div>
+                <textarea class="textarea" id="m-content-json" spellcheck="false"
+                          style="min-height:120px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px"
+                          placeholder='例如生图：{"created":1700000000,"data":[{"url":"https://example.com/cat.png","revised_prompt":"一只猫"}]}'>${esc(m.content_json || '')}</textarea>
+                <div class="field__hint">按原文直接返回这段 JSON：无论流式还是非流式都返回 <code>application/json</code>（200），不再套用对话结构。可以返回生图等其它类型的响应体。</div>
+              </div>
               <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:8px">
                 <label class="field__hint" style="margin:0">流式首字（毫秒）
                   <input class="input" id="m-content-first-byte" type="number" min="0" max="600000" step="1"
@@ -3509,9 +3545,28 @@
         const contentDetailEl = mo.body.querySelector('#m-content-detail');
         const contentTextEl = mo.body.querySelector('#m-content-text');
         const contentReasoningEl = mo.body.querySelector('#m-content-reasoning');
+        const contentJSONEl = mo.body.querySelector('#m-content-json');
+        const contentModeEl = mo.body.querySelector('#m-content-mode');
+        const contentTextPaneEl = mo.body.querySelector('#m-content-text-pane');
+        const contentJSONPaneEl = mo.body.querySelector('#m-content-json-pane');
         const contentFirstByteEl = mo.body.querySelector('#m-content-first-byte');
         const contentSpeedEl = mo.body.querySelector('#m-content-speed');
         const contentLatencyEl = mo.body.querySelector('#m-content-latency');
+        // 已配置 JSON 的模型默认停在 JSON 页，否则停在文本页。
+        let contentMode = (m.content_json || '').trim() ? 'json' : 'text';
+        const setContentMode = (mode, focus) => {
+          contentMode = mode === 'json' ? 'json' : 'text';
+          contentModeEl.querySelectorAll('[data-content-mode]').forEach((b) => {
+            b.classList.toggle('is-on', b.dataset.contentMode === contentMode);
+          });
+          contentTextPaneEl.style.display = contentMode === 'text' ? '' : 'none';
+          contentJSONPaneEl.style.display = contentMode === 'json' ? '' : 'none';
+          // 流式首字 / 速度只在文本模式有意义，JSON 模式直接返回整段。
+          const contentOn = contentEnabledEl.checked;
+          contentFirstByteEl.disabled = !contentOn || contentMode === 'json';
+          contentSpeedEl.disabled = !contentOn || contentMode === 'json';
+          if (focus && contentMode === 'json' && contentOn) contentJSONEl.focus();
+        };
         const errorEnabledEl = mo.body.querySelector('#m-error-enabled');
         const errorDetailEl = mo.body.querySelector('#m-error-detail');
         const errorAlwaysEl = mo.body.querySelector('#m-error-always');
@@ -3545,10 +3600,13 @@
           const keepNoRetryDisabled = !errorActive || errorAlwaysEl.checked;
           errorKeepNoRetryEl.disabled = keepNoRetryDisabled;
           errorEnabledEl.disabled = contentOn;
+          // 内容返回关闭时切换页没有意义，直接藏起来。
+          contentModeEl.style.display = contentOn ? '' : 'none';
           contentTextEl.disabled = !contentOn;
           contentReasoningEl.disabled = !contentOn;
-          contentFirstByteEl.disabled = !contentOn;
-          contentSpeedEl.disabled = !contentOn;
+          contentJSONEl.disabled = !contentOn;
+          contentFirstByteEl.disabled = !contentOn || contentMode === 'json';
+          contentSpeedEl.disabled = !contentOn || contentMode === 'json';
           contentLatencyEl.disabled = !contentOn;
           const sysPromptOn = sysPromptEnabledEl.checked;
           sysPromptTextEl.disabled = !sysPromptOn;
@@ -3578,14 +3636,24 @@
           }
         };
         contentEnabledEl.onchange = syncAdvancedFields;
+        contentModeEl.querySelectorAll('[data-content-mode]').forEach((b) => {
+          b.onclick = () => {
+            setContentMode(b.dataset.contentMode, true);
+            syncAdvancedFields();
+          };
+        });
         errorEnabledEl.onchange = syncAdvancedFields;
         errorAlwaysEl.onchange = syncAdvancedFields;
         errorAsContentEl.onchange = syncAdvancedFields;
         sysPromptEnabledEl.onchange = syncAdvancedFields;
         thinkOverrideEnabledEl.onchange = syncAdvancedFields;
         syncAdvancedFields();
+        setContentMode(contentMode);
         mo.body.querySelector('#m-content-help').onclick = () => {
           openHelpModal('自定义内容返回', CUSTOM_CONTENT_HELP_HTML);
+        };
+        mo.body.querySelector('#m-content-json-format').onclick = () => {
+          formatJSONTextarea(mo.body.querySelector('#m-content-json'));
         };
         mo.body.querySelector('#m-error-help').onclick = () => {
           openHelpModal('错误覆写', CUSTOM_ERROR_HELP_HTML);
@@ -3619,10 +3687,26 @@
           const contentEnabled = mo.body.querySelector('#m-content-enabled').checked;
           const contentText = mo.body.querySelector('#m-content-text').value;
           const contentReasoning = mo.body.querySelector('#m-content-reasoning').value;
+          // 只有当前选中的页会真正生效：文本页保存时清空 JSON，JSON 页则用下面的内容。
+          const contentJSON = contentMode === 'json'
+            ? mo.body.querySelector('#m-content-json').value.trim() : '';
           const contentFirstByte = Math.max(0, Math.min(600000, Math.round(Number(mo.body.querySelector('#m-content-first-byte').value) || 0)));
           const contentSpeed = Math.max(0, Math.min(100000, Math.round(Number(mo.body.querySelector('#m-content-speed').value) || 0)));
           const contentLatency = Math.max(0, Math.min(600000, Math.round(Number(mo.body.querySelector('#m-content-latency').value) || 0)));
-          if (contentEnabled && !contentText.trim()) {
+          if (contentMode === 'json') {
+            if (contentEnabled && !contentJSON) {
+              Toast.warn('选择 JSON 返回时请填写要返回的 JSON');
+              return;
+            }
+            if (contentJSON) {
+              try {
+                JSON.parse(contentJSON);
+              } catch (e) {
+                Toast.error(e.message, 'JSON 格式有误');
+                return;
+              }
+            }
+          } else if (contentEnabled && !contentText.trim()) {
             Toast.warn('开启自定义内容返回时请填写返回内容');
             return;
           }
@@ -3667,6 +3751,7 @@
               content_enabled: contentEnabled,
               content_text: contentText,
               content_reasoning: contentReasoning,
+              content_json: contentJSON,
               content_first_byte_ms: contentFirstByte,
               content_speed: contentSpeed,
               content_latency_ms: contentLatency,
@@ -3959,7 +4044,7 @@
       id: '', type: 'custom', routes: [], affinity: true, cooldown_sec: 300, cooldown_reset: false,
       caps: {}, enabled: true, display_name: '', description: '', tags: [], timeout: 300,
       force_stream: false,
-      no_retry_status: '', content_enabled: false, content_text: '',
+      no_retry_status: '', content_enabled: false, content_text: '', content_json: '',
       thinking_override_enabled: false, thinking_override_text: '',
       error_enabled: false, error_always: false, error_as_content: false, error_status: 0, error_message: '',
       error_keep_no_retry: true,
@@ -4030,7 +4115,7 @@
       </div>
 
       <details class="mt-16 advanced-settings">
-        <summary style="cursor:pointer;font-size:12.5px;font-weight:620;color:var(--text-2)">高级设置</summary>
+        <summary>高级设置</summary>
         <div class="mt-12">
           <div class="field">
             <div class="field__head">
@@ -4040,7 +4125,6 @@
               </label>
               <label class="switch"><input type="checkbox" id="cm-forcestream" ${m.force_stream ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
             </div>
-            <div class="field__hint">开启后对话请求都用流式请求上游：客户端要流式时正常透传，非流式时由网关收完再按非流式返回。超时时间因此按「两段输出之间的空档」生效：慢上游不吐字、或吐一半卡住，都会在空档超过超时时间时快速切下一条路由。</div>
           </div>
           <div class="field">
             <div class="field__head">
@@ -4076,15 +4160,33 @@
                 <button type="button" class="badge badge--blue badge--click field__help"
                         id="cm-content-help" title="${esc(CUSTOM_CONTENT_HELP_TEXT)}" aria-label="查看自定义内容返回机制">?</button>
               </label>
-              <label class="switch"><input type="checkbox" id="cm-content-enabled" ${m.content_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+              <div class="flex-center gap-8">
+                <div class="pill-toggle" id="cm-content-mode">
+                  <button type="button" data-content-mode="text" class="is-on">文本</button>
+                  <button type="button" data-content-mode="json">JSON</button>
+                </div>
+                <label class="switch"><input type="checkbox" id="cm-content-enabled" ${m.content_enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用</span></label>
+              </div>
             </div>
             <div id="cm-content-detail" style="${m.content_enabled ? '' : 'display:none'}">
-              <textarea class="textarea" id="cm-content-text" spellcheck="false"
-                        style="min-height:72px;font-family:inherit;font-size:13px"
-                        placeholder="例如：好的">${esc(m.content_text || '')}</textarea>
-              <textarea class="textarea" id="cm-content-reasoning" spellcheck="false"
-                        style="min-height:56px;margin-top:8px"
-                        placeholder="思考内容（可选，留空则不输出思考内容）">${esc(m.content_reasoning || '')}</textarea>
+              <div id="cm-content-text-pane">
+                <textarea class="textarea" id="cm-content-text" spellcheck="false"
+                          style="min-height:72px;font-family:inherit;font-size:13px"
+                          placeholder="例如：好的">${esc(m.content_text || '')}</textarea>
+                <textarea class="textarea" id="cm-content-reasoning" spellcheck="false"
+                          style="min-height:56px;margin-top:8px"
+                          placeholder="思考内容（可选，留空则不输出思考内容）">${esc(m.content_reasoning || '')}</textarea>
+              </div>
+              <div id="cm-content-json-pane" style="display:none">
+                <div class="field__head">
+                  <label class="field__label" style="font-size:12px">要返回的 JSON</label>
+                  <button type="button" class="btn btn--ghost btn--sm" id="cm-content-json-format">格式化</button>
+                </div>
+                <textarea class="textarea" id="cm-content-json" spellcheck="false"
+                          style="min-height:120px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px"
+                          placeholder='例如生图：{"created":1700000000,"data":[{"url":"https://example.com/cat.png","revised_prompt":"一只猫"}]}'>${esc(m.content_json || '')}</textarea>
+                <div class="field__hint">按原文直接返回这段 JSON：无论流式还是非流式都返回 <code>application/json</code>（200），不再套用对话结构。可以返回生图等其它类型的响应体。</div>
+              </div>
               <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:8px">
                 <label class="field__hint" style="margin:0">流式首字（毫秒）
                   <input class="input" id="cm-content-first-byte" type="number" min="0" max="600000" step="1"
@@ -4177,9 +4279,28 @@
         const contentDetailEl = mo.body.querySelector('#cm-content-detail');
         const contentTextEl = mo.body.querySelector('#cm-content-text');
         const contentReasoningEl = mo.body.querySelector('#cm-content-reasoning');
+        const contentJSONEl = mo.body.querySelector('#cm-content-json');
+        const contentModeEl = mo.body.querySelector('#cm-content-mode');
+        const contentTextPaneEl = mo.body.querySelector('#cm-content-text-pane');
+        const contentJSONPaneEl = mo.body.querySelector('#cm-content-json-pane');
         const contentFirstByteEl = mo.body.querySelector('#cm-content-first-byte');
         const contentSpeedEl = mo.body.querySelector('#cm-content-speed');
         const contentLatencyEl = mo.body.querySelector('#cm-content-latency');
+        // 已配置 JSON 的模型默认停在 JSON 页，否则停在文本页。
+        let contentMode = (m.content_json || '').trim() ? 'json' : 'text';
+        const setContentMode = (mode, focus) => {
+          contentMode = mode === 'json' ? 'json' : 'text';
+          contentModeEl.querySelectorAll('[data-content-mode]').forEach((b) => {
+            b.classList.toggle('is-on', b.dataset.contentMode === contentMode);
+          });
+          contentTextPaneEl.style.display = contentMode === 'text' ? '' : 'none';
+          contentJSONPaneEl.style.display = contentMode === 'json' ? '' : 'none';
+          // 流式首字 / 速度只在文本模式有意义，JSON 模式直接返回整段。
+          const contentOn = contentEnabledEl.checked;
+          contentFirstByteEl.disabled = !contentOn || contentMode === 'json';
+          contentSpeedEl.disabled = !contentOn || contentMode === 'json';
+          if (focus && contentMode === 'json' && contentOn) contentJSONEl.focus();
+        };
         const errorEnabledEl = mo.body.querySelector('#cm-error-enabled');
         const errorDetailEl = mo.body.querySelector('#cm-error-detail');
         const errorAlwaysEl = mo.body.querySelector('#cm-error-always');
@@ -4213,10 +4334,13 @@
           const keepNoRetryDisabled = !errorActive || errorAlwaysEl.checked;
           errorKeepNoRetryEl.disabled = keepNoRetryDisabled;
           errorEnabledEl.disabled = contentOn;
+          // 内容返回关闭时切换页没有意义，直接藏起来。
+          contentModeEl.style.display = contentOn ? '' : 'none';
           contentTextEl.disabled = !contentOn;
           contentReasoningEl.disabled = !contentOn;
-          contentFirstByteEl.disabled = !contentOn;
-          contentSpeedEl.disabled = !contentOn;
+          contentJSONEl.disabled = !contentOn;
+          contentFirstByteEl.disabled = !contentOn || contentMode === 'json';
+          contentSpeedEl.disabled = !contentOn || contentMode === 'json';
           contentLatencyEl.disabled = !contentOn;
           const sysPromptOn = sysPromptEnabledEl.checked;
           sysPromptTextEl.disabled = !sysPromptOn;
@@ -4246,17 +4370,27 @@
           }
         };
         contentEnabledEl.onchange = syncAdvancedFields;
+        contentModeEl.querySelectorAll('[data-content-mode]').forEach((b) => {
+          b.onclick = () => {
+            setContentMode(b.dataset.contentMode, true);
+            syncAdvancedFields();
+          };
+        });
         errorEnabledEl.onchange = syncAdvancedFields;
         errorAlwaysEl.onchange = syncAdvancedFields;
         errorAsContentEl.onchange = syncAdvancedFields;
         sysPromptEnabledEl.onchange = syncAdvancedFields;
         thinkOverrideEnabledEl.onchange = syncAdvancedFields;
         syncAdvancedFields();
+        setContentMode(contentMode);
         mo.body.querySelector('#cm-sched-help').onclick = () => {
           openHelpModal('调度选项', SCHED_HELP_HTML);
         };
         mo.body.querySelector('#cm-content-help').onclick = () => {
           openHelpModal('自定义内容返回', CUSTOM_CONTENT_HELP_HTML);
+        };
+        mo.body.querySelector('#cm-content-json-format').onclick = () => {
+          formatJSONTextarea(mo.body.querySelector('#cm-content-json'));
         };
         mo.body.querySelector('#cm-error-help').onclick = () => {
           openHelpModal('错误覆写', CUSTOM_ERROR_HELP_HTML);
@@ -5072,10 +5206,26 @@
           const contentEnabled = mo.body.querySelector('#cm-content-enabled').checked;
           const contentText = mo.body.querySelector('#cm-content-text').value;
           const contentReasoning = mo.body.querySelector('#cm-content-reasoning').value;
+          // 只有当前选中的页会真正生效：文本页保存时清空 JSON，JSON 页则用下面的内容。
+          const contentJSON = contentMode === 'json'
+            ? mo.body.querySelector('#cm-content-json').value.trim() : '';
           const contentFirstByte = Math.max(0, Math.min(600000, Math.round(Number(mo.body.querySelector('#cm-content-first-byte').value) || 0)));
           const contentSpeed = Math.max(0, Math.min(100000, Math.round(Number(mo.body.querySelector('#cm-content-speed').value) || 0)));
           const contentLatency = Math.max(0, Math.min(600000, Math.round(Number(mo.body.querySelector('#cm-content-latency').value) || 0)));
-          if (contentEnabled && !contentText.trim()) {
+          if (contentMode === 'json') {
+            if (contentEnabled && !contentJSON) {
+              Toast.warn('选择 JSON 返回时请填写要返回的 JSON');
+              return;
+            }
+            if (contentJSON) {
+              try {
+                JSON.parse(contentJSON);
+              } catch (e) {
+                Toast.error(e.message, 'JSON 格式有误');
+                return;
+              }
+            }
+          } else if (contentEnabled && !contentText.trim()) {
             Toast.warn('开启自定义内容返回时请填写返回内容');
             return;
           }
@@ -5124,6 +5274,7 @@
             content_enabled: contentEnabled,
             content_text: contentText,
             content_reasoning: contentReasoning,
+            content_json: contentJSON,
             content_first_byte_ms: contentFirstByte,
             content_speed: contentSpeed,
             content_latency_ms: contentLatency,

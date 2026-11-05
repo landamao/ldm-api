@@ -231,6 +231,8 @@ type Result struct {
 	// 表示没有有意义的生成窗口，不统计速度。
 	GenMs         int64
 	UsageEstimate bool
+	// OutputEstimate 表示只有输出 token 是估算的（上游没上报输出用量）。
+	OutputEstimate bool
 	// ReasoningChars 是思考内容的字符数，模型没输出思考时为 0。
 	ReasoningChars int
 	// ReasoningTokens 是上游上报的思考 token 数，未上报时为 0。
@@ -318,6 +320,9 @@ func writeCustomError(ctx context.Context, w http.ResponseWriter, req *Request, 
 type customContent struct {
 	text      string
 	reasoning string
+	// json 非空时按原始 JSON 直接返回：忽略正文、思考和流式速度，
+	// 无论流式还是非流式都输出完整响应体。
+	json      string
 	firstByte time.Duration
 	speed     int // 每秒输出字符数
 	latency   time.Duration
@@ -331,6 +336,7 @@ func customContentOf(m store.Model) (customContent, bool) {
 	return customContent{
 		text:      m.ContentText,
 		reasoning: m.ContentReasoning,
+		json:      strings.TrimSpace(m.ContentJSON),
 		firstByte: time.Duration(m.ContentFirstByteMs) * time.Millisecond,
 		speed:     m.ContentSpeed,
 		latency:   time.Duration(m.ContentLatencyMs) * time.Millisecond,
@@ -340,7 +346,12 @@ func customContentOf(m store.Model) (customContent, bool) {
 // customContentUsage 估算一次自定义内容返回的 token 用量。
 func customContentUsage(req *Request, cc customContent) upstream.Usage {
 	usage := estimateUsage(req)
-	usage.CompletionTokens = estimateTokens(cc.reasoning + cc.text)
+	body := cc.reasoning + cc.text
+	// 直接返回 JSON 时正文不会输出，按实际写出的 JSON 估算。
+	if cc.json != "" {
+		body = cc.json
+	}
+	usage.CompletionTokens = estimateTokens(body)
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	return usage
 }
@@ -359,6 +370,14 @@ func writeCustomContent(w http.ResponseWriter, req *Request, model string, cc cu
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write(mustJSON(customContentObject(req.Path, model, cc, usage)))
+}
+
+// writeCustomContentJSON 把配置的自定义 JSON 原样写出。
+// 不按端点改写结构：就是为了让模型能返回生图等非对话形态的响应体。
+func writeCustomContentJSON(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(body))
 }
 
 // customContentObject 按请求端点返回对应的非流式响应体。
@@ -815,7 +834,25 @@ func (r *Relay) Do(ctx context.Context, w http.ResponseWriter, req *Request) *Re
 		usage := customContentUsage(req, cc)
 		res.Usage = usage
 		res.UsageEstimate = true
-		res.ReasoningChars = len([]rune(cc.reasoning))
+		if cc.json == "" {
+			res.ReasoningChars = len([]rune(cc.reasoning))
+		}
+		// 「自定义 JSON」优先：无论调用方要的是流式还是非流式，都直接写出这段
+		// 完整 JSON（200 / application/json）。这样模型才能返回生图等非对话
+		// 形态的响应体；正文、思考和流式速度配置此时都不生效。
+		if cc.json != "" {
+			if !waitCtx(ctx, cc.latency) {
+				res.StatusCode = http.StatusOK
+				res.Canceled = true
+				res.Err = "客户端已断开连接"
+				res.LatencyMs = time.Since(start).Milliseconds()
+				return res
+			}
+			writeCustomContentJSON(w, cc.json)
+			res.StatusCode = http.StatusOK
+			res.LatencyMs = time.Since(start).Milliseconds()
+			return res
+		}
 		if req.Stream {
 			firstByte, genMs, canceled := writeCustomContentStream(ctx, w, req, resolved.Model.ID, cc, usage, start)
 			res.StatusCode = http.StatusOK
@@ -957,6 +994,7 @@ outer:
 				res.Err = "客户端已断开连接"
 				res.Usage = outcome.usage
 				res.UsageEstimate = outcome.estimated
+				res.OutputEstimate = outcome.estimatedOutput
 				res.FirstByteMs = outcome.firstByte
 				res.StreamGen = outcome.streamGen
 				res.GenMs = outcome.genMs
@@ -981,6 +1019,7 @@ outer:
 				res.StatusCode = outcome.status
 				res.Usage = outcome.usage
 				res.UsageEstimate = outcome.estimated
+				res.OutputEstimate = outcome.estimatedOutput
 				res.FirstByteMs = outcome.firstByte
 				res.StreamGen = outcome.streamGen
 				res.GenMs = outcome.genMs
@@ -1029,7 +1068,9 @@ outer:
 		}
 	}
 	res.StatusCode = lastStatus
-	if !res.UsageEstimate {
+	// 一条路由都没走成时没有任何上游用量，补一份输入估算，让失败记录也能看出
+	// 请求规模；已经拿到用量（哪怕只有一半）就保留原值，别把真值覆盖成估算。
+	if res.Usage.PromptTokens == 0 && res.Usage.CompletionTokens == 0 {
 		res.Usage = estimateUsage(req)
 		res.UsageEstimate = true
 	}
@@ -1072,6 +1113,9 @@ type attemptOutcome struct {
 	retryable bool
 	wrote     bool
 	estimated bool
+	// estimatedOutput 表示只有输出 token 是估算的：上游报了输入用量、没报输出，
+	// 网关按响应正文长度补齐。输入仍是上游的真值。
+	estimatedOutput bool
 	reasoning int
 	// streamGen 表示这次输出是流式一块块生成出来的。
 	// 与写给客户端的形态无关：调用方要非流式、网关收完再返回时同样是 true。
@@ -1291,11 +1335,25 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		}
 		writeUpstreamRaw(w, resp, decoded)
 		reasoning := reasoningCharsOf(decoded)
+		// 上游没上报用量时按响应正文估算输出 token：非流式只有这一个地方能拿到
+		// 模型真正写出来的内容，不补的话日志里的输出会一直是 0。
+		outTokens := estimateTokens(responseOutputText(decoded))
 		// 非流式是一次性返回的，「首字耗时」没有意义，留 0 让前端显示成 —
 		if usage.Empty() {
 			usage = estimateUsage(req)
+			usage.CompletionTokens = outTokens
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 			return attemptOutcome{status: resp.StatusCode, usage: usage,
 				estimated: true, wrote: true, reasoning: reasoning}
+		}
+		// 上游报了输入、输出却是 0：多半是只上报了一半用量。此时只补输出，
+		// 输入保持上游的真值，并单独标记成「仅输出估算」——整份标记会让前端
+		// 把「(估算)」挂在输入旁边，看着像是输入也被估了。
+		if usage.CompletionTokens == 0 && outTokens > 0 {
+			usage.CompletionTokens = outTokens
+			usage.TotalTokens = usage.PromptTokens + outTokens
+			return attemptOutcome{status: resp.StatusCode, usage: usage,
+				estimatedOutput: true, wrote: true, reasoning: reasoning}
 		}
 		return attemptOutcome{status: resp.StatusCode, usage: usage,
 			wrote: true, reasoning: reasoning}

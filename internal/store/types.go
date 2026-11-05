@@ -286,11 +286,15 @@ type Model struct {
 	// ContentEnabled 开启后，所有调用都直接返回 ContentText，不再请求上游；
 	// 优先级高于错误覆写，两者同时开启时错误配置不生效。
 	// ContentReasoning 是可选的思考内容，为空时不输出思考字段。
+	// ContentJSON 非空时忽略 ContentText / ContentReasoning：无论请求是不是流式，
+	// 都把这段 JSON 原样返回（200 / application/json），用于返回生图等
+	// 非对话形态的响应体。
 	// ContentFirstByteMs / ContentSpeed / ContentLatencyMs 用于模拟响应耗时：
 	// 首字等待（毫秒）、流式每秒输出字符数、非流式延迟（毫秒）。
 	ContentEnabled     *bool  `json:"content_enabled,omitempty"`
 	ContentText        string `json:"content_text,omitempty"`
 	ContentReasoning   string `json:"content_reasoning,omitempty"`
+	ContentJSON        string `json:"content_json,omitempty"`
 	ContentFirstByteMs int    `json:"content_first_byte_ms,omitempty"`
 	ContentSpeed       int    `json:"content_speed,omitempty"`
 	ContentLatencyMs   int    `json:"content_latency_ms,omitempty"`
@@ -436,7 +440,10 @@ type Log struct {
 	CompletionTokens int  `json:"completion_tokens"`
 	TotalTokens      int  `json:"total_tokens"`
 	// UsageEstimate 表示 token 用量是网关估算的（上游没有上报），前端会标注「估算」。
-	UsageEstimate bool  `json:"usage_estimate,omitempty"`
+	UsageEstimate bool `json:"usage_estimate,omitempty"`
+	// OutputEstimate 表示只有输出 token 是估算的：上游上报了输入用量、没上报输出，
+	// 网关按响应正文长度补齐。输入仍是上游真值，前端只在输出旁标「估算」。
+	OutputEstimate bool `json:"output_estimate,omitempty"`
 	LatencyMs     int64 `json:"latency_ms"`
 	FirstByteMs   int64 `json:"first_byte_ms"`
 	StatusCode    int   `json:"status_code"`

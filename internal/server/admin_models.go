@@ -245,6 +245,7 @@ type modelRequest struct {
 	ContentEnabled       *bool          `json:"content_enabled"`
 	ContentText          *string        `json:"content_text"`
 	ContentReasoning     *string        `json:"content_reasoning"`
+	ContentJSON          *string        `json:"content_json"`
 	ContentFirstByteMs   *int           `json:"content_first_byte_ms"`
 	ContentSpeed         *int           `json:"content_speed"`
 	ContentLatencyMs     *int           `json:"content_latency_ms"`
@@ -466,6 +467,9 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	if req.ContentReasoning != nil {
 		m.ContentReasoning = *req.ContentReasoning
 	}
+	if req.ContentJSON != nil {
+		m.ContentJSON = strings.TrimSpace(*req.ContentJSON)
+	}
 	// 时间模拟参数做范围保护：首字/非流式延迟最长 10 分钟，
 	// 速度上限 100000 字/秒，避免配置异常值长时间占用连接。
 	if req.ContentFirstByteMs != nil {
@@ -477,8 +481,17 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	if req.ContentLatencyMs != nil {
 		m.ContentLatencyMs = clampInt(*req.ContentLatencyMs, 0, 600000)
 	}
-	if contentEnabled && strings.TrimSpace(m.ContentText) == "" {
-		writeErr(w, http.StatusBadRequest, "开启自定义内容返回时请填写返回内容")
+	// 自定义 JSON：填写后无论流式还是非流式都直接返回这段 JSON，
+	// 因此需要提前校验，避免把坏掉的响应体存进去。
+	if m.ContentJSON != "" {
+		var v any
+		if err := json.Unmarshal([]byte(m.ContentJSON), &v); err != nil {
+			writeErr(w, http.StatusBadRequest, "自定义 JSON 格式有误："+err.Error())
+			return
+		}
+	}
+	if contentEnabled && strings.TrimSpace(m.ContentText) == "" && m.ContentJSON == "" {
+		writeErr(w, http.StatusBadRequest, "开启自定义内容返回时请填写返回内容或自定义 JSON")
 		return
 	}
 	m.ContentEnabled = &contentEnabled

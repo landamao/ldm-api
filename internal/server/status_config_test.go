@@ -499,6 +499,54 @@ func TestSaveModelCustomContent(t *testing.T) {
 	}
 }
 
+// 自定义 JSON 可以单独开启内容返回，非法 JSON 直接拒绝保存。
+func TestSaveModelCustomContentJSON(t *testing.T) {
+	s, st := newTestServer(t, "model-custom-content-json")
+
+	put := func(id, payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/models/"+id, strings.NewReader(payload))
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		s.saveModel(rec, req)
+		return rec
+	}
+
+	// 只填 JSON、不填正文也能开启
+	rec := put("img", `{"id":"img","type":"custom","routes":[],"content_enabled":true,
+		"content_json":" {\"created\":1700000000,\"data\":[{\"url\":\"u\"}]} "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败 %d: %s", rec.Code, rec.Body.String())
+	}
+	m, err := st.GetModel("img")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.CustomContentEnabled() || m.ContentJSON != `{"created":1700000000,"data":[{"url":"u"}]}` ||
+		m.ContentText != "" {
+		t.Fatalf("自定义 JSON 未正确保存: %+v", m)
+	}
+
+	// 非法 JSON 直接拒绝，且不覆盖已经保存的配置
+	rec = put("img", `{"content_json":"{bad"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("非法 JSON 应返回 400，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "自定义 JSON 格式有误") {
+		t.Errorf("应提示 JSON 格式有误: %s", rec.Body.String())
+	}
+	m, _ = st.GetModel("img")
+	if m.ContentJSON != `{"created":1700000000,"data":[{"url":"u"}]}` {
+		t.Fatalf("拒绝保存时不应覆盖原配置: %+v", m)
+	}
+
+	// 空白 JSON 视为未填写，此时正文也为空，开启状态应被拒绝
+	rec = put("img", `{"content_json":"   ","content_text":""}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("正文和 JSON 都为空应返回 400，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // 通过完整 HTTP 入口验证：内容返回优先于自定义错误，且不请求上游；
 // 没有路由的自定义内容模型也能出现在 /v1/models 并正常调用。
 func TestModelCustomContentOverHTTP(t *testing.T) {

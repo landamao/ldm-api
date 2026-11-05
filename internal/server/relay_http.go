@@ -172,6 +172,7 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		CompletionTokens: res.Usage.CompletionTokens,
 		TotalTokens:      res.Usage.TotalTokens,
 		UsageEstimate:    res.UsageEstimate,
+		OutputEstimate:   res.OutputEstimate,
 		LatencyMs:        res.LatencyMs,
 		FirstByteMs:      res.FirstByteMs,
 		StatusCode:       res.StatusCode,
