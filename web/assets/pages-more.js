@@ -7,7 +7,7 @@
   const {
     esc, API, State, Toast, openModal, confirmDialog, promptDialog, icon, providerIcon, providerAvatar,
     badge, statusBadge, emptyState, loadingBlock, fmtTime, fmtInt, fmtUnit, fmtNum, fmtDuration,
-    fmtUptime, relTime, copyText, debounce, fmtContext, Theme, switchEl, colorBadge, isCoarsePointer,
+    fmtUptime, relTime, copyText, debounce, fmtContext, Theme, switchEl, colorBadge, copyBadge, isCoarsePointer,
     REPO_URL,
   } = window.LDM;
 
@@ -953,7 +953,7 @@
                     : '<span class="muted">—</span>'}</td>
                   <td class="num">${fmtDash(l.total_tokens)}</td>
                   <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
-                  <td class="text-strong fs-12 mono">${esc(l.ip || '—')}</td>
+                  <td class="fs-12">${colorBadge(l.ip)}</td>
                   <td>${logSoft(l)
                     ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
                     : (logOK(l)
@@ -5593,7 +5593,7 @@
         host.innerHTML = `<div class="table-wrap table-scroll" style="border:none;border-radius:0">
           <table class="tbl tbl--logs">
             <thead><tr>
-              <th>时间</th><th>请求模型</th><th>渠道</th><th>上游模型</th><th>密钥</th>
+              <th>时间</th><th>请求模型</th><th>渠道</th><th>上游模型</th><th>令牌</th>
               <th>输入</th>
               <th>输出</th>
               <th>速度</th>
@@ -5617,22 +5617,22 @@
               <td class="nowrap fs-12">${esc(fmtTime(l.time))}</td>
               <td>
                 <div class="flex-center gap-6">
-                  ${colorBadge(l.model_id)}
+                  ${copyBadge(l.model_id, { label: '模型' })}
                   ${l.stream ? '<span class="badge badge--blue" title="客户端请求了流式输出（请求体里 stream: true）">流式</span>' : ''}
                   ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看渠道重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
                 </div>
               </td>
               <td class="fs-12">
                 ${l.channel_id
-                  ? `<div class="log-route">${colorBadge(channelLabel(l.channel_id))}${l.key_masked
+                  ? `<div class="log-route">${copyBadge(channelLabel(l.channel_id), { label: '渠道', copy: l.channel_id })}${l.key_masked
                     ? `<span class="log-star-wrap">${colorBadge(keyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
                     : ''}</div>`
                   : '<span>未命中渠道</span>'}
               </td>
               <td class="fs-12">${l.upstream_model
-                ? `<span class="log-star-wrap">${colorBadge(l.upstream_model)}${modelStar}</span>`
+                ? `<span class="log-star-wrap">${copyBadge(l.upstream_model, { label: '上游模型' })}${modelStar}</span>`
                 : '<span class="muted">—</span>'}</td>
-              <td class="fs-12">${colorBadge(l.token_name)}</td>
+              <td class="fs-12">${copyBadge(l.token_name, { label: '令牌' })}</td>
               <td class="num">${tok(l.prompt_tokens)}${estMark(l)}${l.cached_tokens ? sub(`缓存读 ${tok(l.cached_tokens)}`) : ''}</td>
               <td class="num">${tok(l.completion_tokens)}${outEstMark(l)}${reasoning ? sub(reasoning) : ''}</td>
               <td class="num">${l.tokens_per_sec
@@ -5640,7 +5640,7 @@
                 : '<span class="muted">—</span>'}</td>
               <td class="num">${tok(l.total_tokens)}</td>
               <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
-              <td class="text-strong fs-12 mono">${esc(l.ip || '—')}</td>
+              <td class="fs-12">${copyBadge(l.ip, { label: 'IP ' })}</td>
               <td>${logSoft(l)
                 ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" title="${esc(l.error || '点击查看错误详情')}">${esc(l.status_code || 200)}</button>`
                 : (logOK(l)

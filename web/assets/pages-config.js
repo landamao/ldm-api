@@ -244,7 +244,8 @@
       ${multi ? `<td><input type="checkbox" data-csel data-cid="${esc(c.id)}" aria-label="选择 ${esc(c.id)}"></td>` : ''}
       <td>
         <div class="flex-center gap-8">
-          <span class="code" style="font-weight:650">${esc(c.id)}</span>
+          <button type="button" class="code code--copy" data-copy="${esc(c.id)}" data-copy-label="渠道 ID "
+            title="点击复制渠道 ID">${esc(c.id)}</button>
           ${c.enabled ? '' : badge('已禁用', 'gray')}
         </div>
       </td>
@@ -257,7 +258,7 @@
       <td><span class="muted fs-12 truncate" style="display:block;max-width:170px" title="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
       <td>
         <div class="badge-group">
-          ${names.slice(0, 4).map((m) => `<span class="badge mono">${esc(m)}</span>`).join('')}
+          ${names.slice(0, 4).map((m) => `<button type="button" class="badge badge--click mono" data-copy="${esc(m)}" data-copy-label="模型名 " title="点击复制">${esc(m)}</button>`).join('')}
           ${names.length > 4 ? `<span class="badge badge--gray">+${names.length - 4}</span>` : ''}
           ${names.length === 0 ? '<span class="muted fs-12">未配置模型</span>' : ''}
         </div>

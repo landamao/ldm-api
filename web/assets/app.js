@@ -123,6 +123,15 @@
     return false;
   }
 
+  // 带 data-copy 的元素点一下就复制。日志表这类地方每次重绘都换一批节点，
+  // 委托在 document 上只用挂一次，不用跟着重绘重新绑事件。
+  document.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('[data-copy]') : null;
+    if (!el) return;
+    e.preventDefault();
+    copyText(el.dataset.copy, el.dataset.copyLabel);
+  });
+
   function debounce(fn, wait) {
     let t;
     return function (...args) {
@@ -1071,15 +1080,35 @@
   // 名称徽章：色相由字符串哈希决定，同一个模型/密钥在任何地方都是同一种颜色。
   // 这样日志翻页、换筛选条件后颜色不会乱跳，扫一眼就能把同一来源的行串起来。
   // 用 FNV-1a 而不是简单求和：ldm-flash / ldm-free 这类只差后缀的名字才能落到不同颜色。
-  function colorBadge(text, extraClass) {
-    if (!text) return '<span class="muted">—</span>';
+  function tagHue(text) {
+    const s = String(text);
     let hash = 0x811c9dc5;
-    for (let i = 0; i < text.length; i++) {
-      hash ^= text.charCodeAt(i);
+    for (let i = 0; i < s.length; i++) {
+      hash ^= s.charCodeAt(i);
       hash = Math.imul(hash, 0x01000193) >>> 0;
     }
-    const hue = hash % 360;
-    return `<span class="badge badge--tag${extraClass ? ' ' + extraClass : ''}" style="--tag-h:${hue}" title="${esc(text)}">${esc(text)}</span>`;
+    return hash % 360;
+  }
+
+  function colorBadge(text, extraClass) {
+    if (!text) return '<span class="muted">—</span>';
+    return `<span class="badge badge--tag${extraClass ? ' ' + extraClass : ''}" style="--tag-h:${tagHue(text)}" title="${esc(text)}">${esc(text)}</span>`;
+  }
+
+  // 点一下就能复制的名称徽章：外观和 colorBadge 一模一样（色相按显示文本哈希，
+  // 和看板里同名徽章对得上），只是把 <span> 换成按钮。
+  // badge--click 不能少：它给按钮补上 pointer 指针、悬停压暗和 font-family:inherit，
+  // 否则 <button> 会退回默认箭头光标和 Arial，看着像一段死文字。
+  // 显示文本和要复制的值可能不同——渠道徽章显示「12（主渠道）」，复制出去的仍是纯 id，
+  // 所以复制值单独用 opts.copy 传；opts.label 是提示里的对象名（「渠道已复制」）。
+  function copyBadge(text, opts) {
+    if (!text) return '<span class="muted">—</span>';
+    const o = opts || {};
+    const value = o.copy == null ? text : o.copy;
+    const cls = 'badge badge--tag badge--click' + (o.cls ? ' ' + o.cls : '');
+    return `<button type="button" class="${cls}" style="--tag-h:${tagHue(text)}"`
+      + ` data-copy="${esc(value)}" data-copy-label="${esc(o.label || '')}"`
+      + ` title="${esc(text)} · 点击复制">${esc(text)}</button>`;
   }
 
   function statusBadge(enabled, onText, offText) {
@@ -1200,7 +1229,7 @@
     esc, fmtNum, fmtInt, fmtUnit, fmtTime, fmtTimeShort, relTime, fmtDuration, fmtUptime,
     copyText, debounce, icon, providerIcon, providerAvatar, Toast, API, Select, openModal, confirmDialog, promptDialog,
     isCoarsePointer: COARSE_POINTER, REPO_URL,
-    badge, statusBadge, emptyState, loadingBlock, switchEl, capBadges, fmtContext, colorBadge,
+    badge, statusBadge, emptyState, loadingBlock, switchEl, capBadges, fmtContext, colorBadge, copyBadge,
     Theme, State, routeParam, applyLogo,
     registerPage(name, def) { PAGES[name] = def; },
     PAGES: null,

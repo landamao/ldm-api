@@ -648,7 +648,6 @@ body.is-chat-page .chat-card {
 }
 .btn:hover {
   background-image: linear-gradient(180deg, #fffefb, #f9eed8);
-  transform: translateY(-1px);
 }
 .btn:active { transform: translateY(2px); }
 .btn:focus-visible { outline: 3px solid var(--leaf-300); outline-offset: 2px; }
@@ -681,7 +680,6 @@ body.is-chat-page .chat-card {
   background-image: none;
   color: var(--text);
   border-color: transparent;
-  transform: translateY(-1px);
 }
 .btn--ghost:active { transform: translateY(1px) scale(.98); }
 
@@ -813,6 +811,7 @@ html[data-theme="dark"] .card__head {
 .stat:nth-child(3)::before { background: linear-gradient(90deg, #9fd5ef, var(--sky-500)); }
 .stat:nth-child(4)::before { background: linear-gradient(90deg, #f5bfd2, var(--blossom-500)); }
 .stat:nth-child(5)::before { background: linear-gradient(90deg, #d6bdf5, var(--berry-500)); }
+/* 统计卡保留悬停上浮（用户明确要求），其余组件一律不位移 */
 .stat:hover {
   transform: translateY(-3px) rotate(-.35deg);
   border-color: var(--primary-border);
@@ -1217,7 +1216,7 @@ html[data-theme="dark"] .badge--tag {
 }
 .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge--click { appearance: none; font-family: inherit; cursor: pointer; }
-.badge--click:hover { filter: brightness(.96); transform: translateY(-1px); }
+.badge--click:hover { filter: brightness(.96); }
 /* 模型亲和标记：橙色星星叠在模型徽章右上角 */
 .affinity-star {
   position: absolute;
@@ -1250,6 +1249,18 @@ code, .code {
   color: var(--bark-700);
 }
 html[data-theme="dark"] code, html[data-theme="dark"] .code { color: var(--leaf-300); }
+
+/* 可点击复制的短标识（渠道 ID 等）：外观沿用 .code，只补按钮语义和悬停反馈。
+   复制本身走 app.js 的 [data-copy] 委托，不用单独绑事件。 */
+.code--copy {
+  appearance: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.55;
+  cursor: pointer;
+}
+.code--copy:hover { border-color: var(--border-strong); filter: brightness(.97); }
 
 /* ---------- 表单 ---------- */
 .field { margin-bottom: 14px; }
@@ -2681,7 +2692,6 @@ html[data-theme="dark"] .chart-tip { background: #33251a; border-color: #0d130c;
 html[data-theme="dark"] .model-card { border-top-color: var(--leaf-600); }
 html[data-theme="dark"] .model-card:has(.model-card__type.is-channel) { border-top-color: #4f8fb5; }
 .model-card:hover {
-  transform: translateY(-3px) rotate(-.3deg);
   border-color: var(--primary-border);
 }
 .model-card:active { transform: translateY(-1px) scale(.99); }
@@ -3716,7 +3726,6 @@ html[data-theme="dark"] .chat-conv__item:hover { background: var(--surface-hover
 }
 .chat-to-bottom:hover {
   background-image: linear-gradient(180deg, var(--leaf-300), var(--leaf-500));
-  transform: translateY(-1px);
 }
 .chat-to-bottom:active { transform: translateY(2px); }
 .chat-to-bottom:focus-visible { outline: 3px solid var(--leaf-300); outline-offset: 2px; }
