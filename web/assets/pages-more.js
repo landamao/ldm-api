@@ -4795,21 +4795,21 @@
             </div>
           </div>
         </div>
-        ${tokens.length ? `
-        <div class="filter-bar">
-          <div class="filter-bar__leads">
-            <span class="muted fs-12" id="token-count"></span>
-          </div>
-          <div class="filter-bar__batch" id="tk-batch" style="${tokenListState.multi ? '' : 'display:none'}">
-            <span class="muted fs-12" id="token-multi-count">已选 ${tokenListState.selected.size} 个</span>
-            <button class="filter-chip" id="tk-enable">${icon('play', 13)}启用</button>
-            <button class="filter-chip" id="tk-disable">${icon('pause', 13)}禁用</button>
-            <button class="filter-chip filter-chip--danger" id="tk-del">${icon('trash', 13)}删除</button>
-          </div>
-          <button class="filter-chip filter-chip--toggle" id="tk-multi" style="${tokenListState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
-          <button class="filter-chip filter-chip--toggle filter-chip--ghost" id="tk-exit" style="${tokenListState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
-        </div>` : ''}
         <div class="card tokens-card">
+          ${tokens.length ? `
+          <div class="filter-bar">
+            <div class="filter-bar__leads">
+              <span class="muted fs-12" id="token-count"></span>
+            </div>
+            <div class="filter-bar__batch" id="tk-batch" style="${tokenListState.multi ? '' : 'display:none'}">
+              <span class="muted fs-12" id="token-multi-count">已选 ${tokenListState.selected.size} 个</span>
+              <button class="filter-chip" id="tk-enable">${icon('play', 13)}启用</button>
+              <button class="filter-chip" id="tk-disable">${icon('pause', 13)}禁用</button>
+              <button class="filter-chip filter-chip--danger" id="tk-del">${icon('trash', 13)}删除</button>
+            </div>
+            <button class="filter-chip filter-chip--toggle" id="tk-multi" style="${tokenListState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
+            <button class="filter-chip filter-chip--toggle filter-chip--ghost" id="tk-exit" style="${tokenListState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
+          </div>` : ''}
           <div id="token-list"></div>
         </div>`;
 

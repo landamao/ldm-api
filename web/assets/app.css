@@ -1029,7 +1029,7 @@ table.tbl--logs thead th { color: var(--text); }
   #recent-logs .tbl--logs td:nth-child(7) { display: none; }
 }
 
-/* 列表页：工具条平铺在页面背景上，卡片吃掉剩下的高度 */
+/* 列表页：卡片（顶部工具条 + 表格）撑满内容区 */
 .list-page {
   height: 100%;
   min-height: 0;
@@ -4228,16 +4228,21 @@ html[data-theme="dark"] .provider-chip.is-on { color: var(--leaf-300); }
 html[data-theme="dark"] .provider-chip__count { background: rgba(255, 255, 255, .1); }
 html[data-theme="dark"] .provider-chip.is-on .provider-chip__count { color: var(--leaf-300); background: rgba(255, 255, 255, .12); }
 
-/* 列表页工具条（搜索 / 多选）：同样直接平铺在页面背景上，
-   胶囊形态对齐模型广场的提供商筛选，不套卡片也不画分隔线 */
+/* 列表容器内的工具条（搜索 / 多选 / 批量操作）：收进卡片顶部，
+   跟表格共用一张卡，底部用一条木线把工具条和表头分开 */
 .filter-bar {
   position: relative;
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  /* 最小高度 = 上下 12 + 按钮 30 + 底部分隔线 2，令牌页只有一行计数时
+     「多选」按钮不会比工具条还高、被挤到贴着下边缘 */
+  min-height: 56px;
   /* 右侧留出「多选 / 退出多选」的位置，它绝对定位钉在这儿 */
-  padding: 0 108px 14px 0;
+  padding: 12px 122px 12px 14px;
+  border-bottom: 2px solid var(--card-line);
 }
 /* 搜索框（和计数）这一块吃掉剩余宽度，把批量按钮顶到右边；
    自己不许折行：空间不够时宁可挤窄搜索框，也把整行留给批量按钮换行 */
@@ -4259,8 +4264,8 @@ html[data-theme="dark"] .provider-chip.is-on .provider-chip__count { color: var(
 /* 多选 / 退出多选：绝对定位钉在工具条右上角，两个状态共用一个位置 */
 .filter-chip--toggle {
   position: absolute;
-  right: 0;
-  top: 0;
+  right: 14px;
+  top: 12px;
   min-width: 100px;
   justify-content: center;
 }
@@ -4516,7 +4521,7 @@ html[data-theme="dark"] .backup-result__head { color: var(--leaf-300); }
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: start;
     gap: 8px;
-    padding: 0 0 14px;
+    padding: 12px 14px;
   }
   .filter-bar__leads {
     grid-column: 1 / -1;

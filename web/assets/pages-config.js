@@ -362,30 +362,30 @@
 
       root.innerHTML = `
         <div class="list-page">
-          <div class="filter-bar">
-            <div class="filter-bar__leads">
-              <div class="search" style="flex:0 1 240px;min-width:150px">
-                <span class="search__icon">${icon('search', 15)}</span>
-                <input class="input" id="channel-search" placeholder="搜索渠道 ID、名称或地址…" value="${esc(channelListState.keyword)}">
-              </div>
-              <div class="search" style="flex:0 1 190px;min-width:140px">
-                <span class="search__icon">${icon('search', 15)}</span>
-                <input class="input" id="channel-model-search" placeholder="搜索模型名…" value="${esc(channelListState.modelKeyword)}">
-              </div>
-              <span class="muted fs-12" id="channel-filter-count" style="margin-left:auto${channelListState.multi ? ';display:none' : ''}"></span>
-            </div>
-            <div class="filter-bar__batch" id="ch-batch" style="${channelListState.multi ? '' : 'display:none'}">
-              <span class="muted fs-12" id="channel-multi-count">已选 ${channelListState.selected.size} 个</span>
-              <button class="filter-chip" id="ch-enable">${icon('play', 13)}启用</button>
-              <button class="filter-chip" id="ch-disable">${icon('pause', 13)}禁用</button>
-              <button class="filter-chip" id="ch-test">${icon('zap', 13)}测试</button>
-              <button class="filter-chip" id="ch-cooldown">${icon('refresh', 13)}清除冷却</button>
-              <button class="filter-chip filter-chip--danger" id="ch-del">${icon('trash', 13)}删除</button>
-            </div>
-            <button class="filter-chip filter-chip--toggle" id="ch-multi" style="${channelListState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
-            <button class="filter-chip filter-chip--toggle filter-chip--ghost" id="ch-exit" style="${channelListState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
-          </div>
           <div class="card channels-card">
+            <div class="filter-bar">
+              <div class="filter-bar__leads">
+                <div class="search" style="flex:0 1 240px;min-width:150px">
+                  <span class="search__icon">${icon('search', 15)}</span>
+                  <input class="input" id="channel-search" placeholder="搜索渠道 ID、名称或地址…" value="${esc(channelListState.keyword)}">
+                </div>
+                <div class="search" style="flex:0 1 190px;min-width:140px">
+                  <span class="search__icon">${icon('search', 15)}</span>
+                  <input class="input" id="channel-model-search" placeholder="搜索模型名…" value="${esc(channelListState.modelKeyword)}">
+                </div>
+                <span class="muted fs-12" id="channel-filter-count" style="margin-left:auto${channelListState.multi ? ';display:none' : ''}"></span>
+              </div>
+              <div class="filter-bar__batch" id="ch-batch" style="${channelListState.multi ? '' : 'display:none'}">
+                <span class="muted fs-12" id="channel-multi-count">已选 ${channelListState.selected.size} 个</span>
+                <button class="filter-chip" id="ch-enable">${icon('play', 13)}启用</button>
+                <button class="filter-chip" id="ch-disable">${icon('pause', 13)}禁用</button>
+                <button class="filter-chip" id="ch-test">${icon('zap', 13)}测试</button>
+                <button class="filter-chip" id="ch-cooldown">${icon('refresh', 13)}清除冷却</button>
+                <button class="filter-chip filter-chip--danger" id="ch-del">${icon('trash', 13)}删除</button>
+              </div>
+              <button class="filter-chip filter-chip--toggle" id="ch-multi" style="${channelListState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
+              <button class="filter-chip filter-chip--toggle filter-chip--ghost" id="ch-exit" style="${channelListState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
+            </div>
             <div id="channel-table"></div>
             ${channelHintDismissed() ? '' : `<div class="alert alert--pink mt-16" id="channel-hint" style="margin:0 14px 14px">
               ${icon('info', 15)}<div>
@@ -2197,26 +2197,26 @@
 
       root.innerHTML = `
         <div class="list-page">
-          <div class="filter-bar">
-            <div class="filter-bar__leads">
-              <div class="search" style="flex:0 1 320px;min-width:170px">
-                <span class="search__icon">${icon('search', 15)}</span>
-                <input class="input" id="model-search" placeholder="搜索模型 ID…" value="${esc(modelState.keyword)}">
-              </div>
-              <span class="muted fs-12" id="filter-count" style="margin-left:auto${modelState.multi ? ';display:none' : ''}"></span>
-            </div>
-            <div class="filter-bar__batch" id="m-batch" style="${modelState.multi ? '' : 'display:none'}">
-              <span class="muted fs-12" id="multi-count">已选 ${modelState.selected.size} 个</span>
-              <button class="filter-chip" id="m-enable">${icon('play', 13)}启用</button>
-              <button class="filter-chip" id="m-disable">${icon('pause', 13)}禁用</button>
-              <button class="filter-chip" id="m-provider">${icon('box', 13)}设置提供商</button>
-              <button class="filter-chip" id="m-cooldown">${icon('refresh', 13)}清除冷却</button>
-              <button class="filter-chip filter-chip--danger" id="m-del">${icon('trash', 13)}删除</button>
-            </div>
-            <button class="filter-chip filter-chip--toggle" id="btn-multi" style="${modelState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
-            <button class="filter-chip filter-chip--toggle filter-chip--ghost" id="m-exit" style="${modelState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
-          </div>
           <div class="card models-card">
+            <div class="filter-bar">
+              <div class="filter-bar__leads">
+                <div class="search" style="flex:0 1 320px;min-width:170px">
+                  <span class="search__icon">${icon('search', 15)}</span>
+                  <input class="input" id="model-search" placeholder="搜索模型 ID…" value="${esc(modelState.keyword)}">
+                </div>
+                <span class="muted fs-12" id="filter-count" style="margin-left:auto${modelState.multi ? ';display:none' : ''}"></span>
+              </div>
+              <div class="filter-bar__batch" id="m-batch" style="${modelState.multi ? '' : 'display:none'}">
+                <span class="muted fs-12" id="multi-count">已选 ${modelState.selected.size} 个</span>
+                <button class="filter-chip" id="m-enable">${icon('play', 13)}启用</button>
+                <button class="filter-chip" id="m-disable">${icon('pause', 13)}禁用</button>
+                <button class="filter-chip" id="m-provider">${icon('box', 13)}设置提供商</button>
+                <button class="filter-chip" id="m-cooldown">${icon('refresh', 13)}清除冷却</button>
+                <button class="filter-chip filter-chip--danger" id="m-del">${icon('trash', 13)}删除</button>
+              </div>
+              <button class="filter-chip filter-chip--toggle" id="btn-multi" style="${modelState.multi ? 'display:none' : ''}">${icon('check', 13)}多选</button>
+              <button class="filter-chip filter-chip--toggle filter-chip--ghost" id="m-exit" style="${modelState.multi ? '' : 'display:none'}">${icon('x', 13)}退出多选</button>
+            </div>
             <div id="model-table"></div>
           </div>
         </div>`;
