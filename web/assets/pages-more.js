@@ -5281,7 +5281,7 @@
           <option value="">全部渠道</option>
         </select>
         <select class="select" id="f-token" style="width:auto;min-width:118px;max-width:176px">
-          <option value="">全部密钥</option>
+          <option value="">全部令牌</option>
         </select>
         <select class="select" id="f-status" style="width:auto;min-width:104px">
           <option value="">全部状态</option>
@@ -5374,7 +5374,7 @@
             const name = c.name || channelName[c.id];
             return name ? `${c.id}（${name}）` : c.id;
           });
-          fillSelect(q('#f-token'), '全部密钥', facets.tokens || [],
+          fillSelect(q('#f-token'), '全部令牌', facets.tokens || [],
             (t) => t.name || tokenName[t.id] || t.id);
         }
         syncFilterState();
