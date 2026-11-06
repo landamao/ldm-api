@@ -36,7 +36,7 @@ chmod +x ldmapi-linux-amd64
 
 ```
   ╭──────────────────────────────────────────────────────────────╮
-  │  🐱 懒大猫 API   v1.27.3                                     │
+  │  🐱 懒大猫 API   v1.27.4                                     │
   │                                                              │
   │  控制台     http://127.0.0.1:6700                            │
   │  API 地址   http://127.0.0.1:6700/v1                         │
@@ -356,7 +356,7 @@ CIDR 网段（如 `10.0.0.0/8`）和 IPv4 尾部通配（如 `192.168.1.*`）。
 | **模型管理** | 批量添加渠道模型、编排自定义模型的路由、设置/批量设置提供商、调整能力参数，并可对任意模型一键测试 |
 | **令牌管理** | 创建 API 密钥，设置额度、有效期、模型白名单、来源 IP 白名单 |
 | **调用日志** | 每一次请求的完整记录：模型、渠道、耗时、首字时间、Token 用量、输出速度、思考长度、状态码、来源 IP |
-| **系统设置** | 站点名称、主题、日志保留策略、运行信息、备份导出、修改管理密码 |
+| **系统设置** | 站点名称与副标题（显示在侧边栏牌匾和浏览器标题）、主题、日志保留策略、运行信息、备份导出、修改管理密码 |
 
 界面默认使用 **浅色 + 森林木色** 主题，也可以在左下角切换到深色主题。
 
@@ -615,7 +615,7 @@ Windows 产物的图标和版本信息来自 `assets/ldmapi.ico`，由 `go-winre
 go install github.com/tc-hib/go-winres@latest
 go-winres simply --arch amd64,arm64 --icon assets/ldmapi.ico \
   --product-name "懒大猫 API" --file-description "懒大猫 API - 模型聚合网关" \
-  --product-version 1.27.3 --file-version 1.27.3 --original-filename ldmapi.exe
+  --product-version 1.27.4 --file-version 1.27.4 --original-filename ldmapi.exe
 ```
 
 修改前端时不必重新编译，让程序直接从磁盘读取前端资源即可：

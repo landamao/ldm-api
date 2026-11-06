@@ -160,6 +160,44 @@
     link.href = url;
   }
 
+  // ---------- 站点名称 / 副标题 ----------
+  const DEFAULT_SITE_NAME = '懒大猫 API';
+
+  // 侧边栏品牌牌匾 + 浏览器标题一起刷。副标题没填就整行不占位，
+  // 浏览器标题也只留站点名称——不编一个默认副标题顶上。
+  function applyBrand(name, subtitle) {
+    const nm = String(name == null ? '' : name).trim() || DEFAULT_SITE_NAME;
+    const sub = String(subtitle == null ? '' : subtitle).trim();
+
+    // 牌匾里只放得下一百来像素，长名字 / 长副标题必然被省略号截断。
+    // 只有真截断才挂气泡看全（短名字一悬停就冒气泡反而吵）；
+    // 每次刷新先把上一轮的气泡痕迹清掉，改短之后不该继续挂着。
+    const bindClip = (el, text) => {
+      if (!el) return;
+      el.classList.remove('chart-name--clip');
+      el.removeAttribute('tabindex');
+      el.removeAttribute('data-tip');
+      el.removeAttribute('data-tip-cls');
+      if (!text || el.scrollWidth <= el.clientWidth + 1) return;
+      el.classList.add('chart-name--clip');
+      el.tabIndex = 0; // 键盘也能 Tab 到，气泡跟着焦点弹
+      Tip.attach(el, { className: 'chart-tip--name' });
+    };
+
+    const nameEl = document.getElementById('brand-name');
+    if (nameEl) nameEl.textContent = nm;
+    bindClip(nameEl, nm);
+
+    const subEl = document.getElementById('brand-sub');
+    if (subEl) {
+      subEl.textContent = sub;
+      subEl.hidden = !sub; // 留空：整行不占位
+      bindClip(subEl, sub);
+    }
+
+    document.title = sub ? nm + ' · ' + sub : nm;
+  }
+
   // ---------- 图标 ----------
   const ICONS = {
     dashboard: '<path d="M3 3h7v7H3zM14 3h7v4h-7zM14 11h7v10h-7zM3 14h7v7H3z"/>',
@@ -1507,7 +1545,7 @@
     isCoarsePointer: COARSE_POINTER, REPO_URL,
     tip: Tip,
     badge, statusBadge, emptyState, loadingBlock, switchEl, capBadges, fmtContext, colorBadge, copyBadge, tagHue,
-    Theme, State, routeParam, applyLogo,
+    Theme, State, routeParam, applyLogo, applyBrand,
     registerPage(name, def) { PAGES[name] = def; },
     PAGES: null,
     route: null,
@@ -1553,7 +1591,8 @@
           <div class="sidebar__brand">
             <div class="brand__logo">🐱</div>
             <div class="brand__text">
-              <div class="brand__name" id="brand-name">懒大猫 API</div>
+              <div class="brand__name" id="brand-name">${DEFAULT_SITE_NAME}</div>
+              <div class="brand__sub" id="brand-sub" hidden></div>
             </div>
             <a class="brand__github" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" title="GitHub 仓库" aria-label="GitHub 仓库">${githubIcon(16)}</a>
           </div>
@@ -1792,14 +1831,12 @@
     State.me = me;
     State.settings = me.settings || {};
     const s = State.settings;
-    if (s.site_name) {
-      document.title = s.site_name + ' · API 网关';
-    }
     const hint = me.default_password || sessionStorage.getItem('ldmapi.defaultpwd');
     // 进到管理端就把登录页的「无颗粒」开关摘掉
     document.body.classList.remove('is-login-page');
     renderShell();
-    if (s.site_name) document.getElementById('brand-name').textContent = s.site_name;
+    // 站点名称 / 副标题：牌匾和浏览器标题一起刷（副标题留空就不显示）
+    applyBrand(s.site_name, s.site_subtitle);
     applyLogo(State.settings.logo);
     if (hint) {
       setTimeout(() => {

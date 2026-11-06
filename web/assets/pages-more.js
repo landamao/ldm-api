@@ -5827,6 +5827,7 @@
               <div class="field">
                 <label class="field__label">副标题</label>
                 <input class="input" id="s-sub" value="${esc(settings.site_subtitle || '')}" placeholder="模型聚合网关">
+                <div class="field__hint">留空则不显示，浏览器标题也只留站点名称。</div>
               </div>
               <div class="field">
                 <label class="field__label">站点图标</label>
@@ -6044,8 +6045,8 @@
           });
           Toast.success('设置已保存');
           window.LDM.applyLogo(q('#s-logo').value.trim());
-          document.getElementById('brand-name').textContent = q('#s-name').value.trim() || '懒大猫 API';
-          document.title = (q('#s-name').value.trim() || '懒大猫 API') + ' · API 网关';
+          // 牌匾和浏览器标题立刻跟着变，不用刷新
+          window.LDM.applyBrand(q('#s-name').value.trim(), q('#s-sub').value.trim());
         } catch (e) {
           Toast.error(e.message, '保存失败');
         } finally {
