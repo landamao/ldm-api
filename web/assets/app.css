@@ -2572,6 +2572,17 @@ html[data-theme="dark"] .route-item__idx { color: var(--leaf-300); }
 }
 .toast__msg code { font-size: 12px; }
 
+/* 手机端提示条按内容收窄：host 被 left/right 钉满屏了，靠右对齐才不会被拉成整屏宽 */
+@media (max-width: 900px) {
+  .toast-host { align-items: flex-end; }
+  .toast {
+    width: fit-content;
+    max-width: 100%;
+    min-width: min(250px, 100%);
+  }
+  .toast__title { overflow-wrap: anywhere; }
+}
+
 /* ---------- 登录页：林间小屋门口 ---------- */
 .login-page {
   min-height: 100vh;
