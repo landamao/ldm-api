@@ -166,6 +166,191 @@
   }
 
   // ======================================================================
+  // 调用日志表：看板「最近调用」和调用日志页共用这一份
+  // ======================================================================
+  // 两个页面渲染的必须是同一张表——同一批列、同一套可复制徽章、同样的点击行为。
+  // 以前各写一份，改了一边就漏另一边：看板的模型 / 渠道 / IP 是只读徽章，
+  // 悬停还会多冒一个名称气泡，窄屏又被 CSS 把 IP 列整列藏掉（手机上右滑都看不到）。
+  // 现在列、徽章、按钮全部只在这里定义，两边只管传格式化和数据。
+  //
+  // opts:
+  //   num      数字格式化（看板跟页面单位设置走，日志页跟 K/M 开关走）
+  //   channel  (l) => 渠道显示名（日志页用当前渠道配置反查，看板用日志里记的名字）
+  const LOG_TABLE_HEAD = `<thead><tr>
+    <th>时间</th><th>请求模型</th><th>渠道</th><th>上游模型</th><th>令牌</th>
+    <th>输入</th><th>输出</th><th>速度</th><th>总计</th><th>耗时</th>
+    <th>来源 IP</th><th>状态</th>
+  </tr></thead>`;
+
+  // Key 显示：#N 备注，没备注时明说，免得看着像漏了数据。
+  function keyLabel(a) {
+    if (!a.key_masked) return '—';
+    const idx = `#${a.key_index || 1}`;
+    return a.key_note ? `${idx} ${a.key_note}` : `${idx}（无备注）`;
+  }
+
+  function attemptBadge(a) {
+    const ok = a.status_code > 0 && a.status_code < 400 && !a.error;
+    const softFail = a.status_code > 0 && a.status_code < 400 && !!a.error;
+    return ok ? badge('成功', 'green') : softFail ? badge(String(a.status_code), 'amber') : badge(String(a.status_code || '失败'), 'red');
+  }
+
+  function showKeyRetryHistory(l, group) {
+    const rows = group.attempts.map((a, i) => `<tr>
+        <td class="muted num">${i + 1}</td>
+        <td class="mono" style="white-space:nowrap">${esc(a.upstream_model || '—')}</td>
+        <td style="white-space:nowrap">${a.key_masked
+          ? `<span style="position:relative;display:inline-block">${colorBadge(keyLabel(a), 'badge--xs')}${a.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
+          : '<span class="muted">—</span>'}</td>
+        <td>${attemptBadge(a)}</td>
+        <td class="right num">${esc(fmtDuration(a.latency_ms))}</td>
+        <td class="fs-12" style="white-space:pre-wrap;word-break:break-word;min-width:320px">${a.error ? esc(a.error) : '<span class="muted">—</span>'}</td>
+      </tr>`).join('');
+    openModal({
+      title: 'Key 重试信息',
+      desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 渠道 <span class="mono">${esc(group.label)}</span> · 上游模型 <span class="mono">${esc(group.upstream)}</span> · 共 ${group.attempts.length} 次尝试`,
+      size: 'xl',
+      top: true,
+      body: `<div class="table-wrap" style="border:none;border-radius:0">
+        <table class="tbl">
+          <thead><tr>
+            <th style="width:40px">#</th><th>上游模型</th><th>Key</th>
+            <th>状态码</th><th class="right">耗时</th><th style="width:52%">错误信息</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`,
+      footer: `<div class="spacer"></div><button class="btn" data-close>关闭</button>`,
+    });
+  }
+
+  // 重试历史：按「渠道 + 上游模型」聚合，同一路由内的多次 Key 尝试再下钻。
+  function showRetryHistory(l) {
+    const attempts = l.attempts || [];
+    const groups = [];
+    const byRoute = new Map();
+    attempts.forEach((a) => {
+      const id = a.channel_id || '';
+      const routeKey = id + '\u0000' + (a.upstream_model || '');
+      let g = byRoute.get(routeKey);
+      if (!g) {
+        g = {
+          label: id ? `${id}${a.channel_name ? '（' + a.channel_name + '）' : ''}` : '—',
+          upstream: a.upstream_model || '—',
+          attempts: [],
+          keyIds: new Set(),
+        };
+        byRoute.set(routeKey, g);
+        groups.push(g);
+      }
+      g.attempts.push(a);
+      if (a.key_masked) g.keyIds.add(`${a.key_index || 1}|${a.key_masked}`);
+    });
+    const rows = groups.map((g, i) => {
+      const last = g.attempts[g.attempts.length - 1];
+      const totalMs = g.attempts.reduce((n, a) => n + (a.latency_ms || 0), 0);
+      const canDrill = g.keyIds.size > 1;
+      return `<tr>
+        <td class="muted num">${i + 1}</td>
+        <td class="mono" style="white-space:nowrap">${esc(g.label)}</td>
+        <td class="mono fs-12" style="white-space:nowrap">${esc(g.upstream)}</td>
+        <td class="num">${g.attempts.length}</td>
+        <td>${attemptBadge(last)}</td>
+        <td class="right num">${esc(fmtDuration(totalMs))}</td>
+        <td class="fs-12" style="white-space:pre-wrap;word-break:break-word;min-width:300px">${last.error ? esc(last.error) : '<span class="muted">—</span>'}</td>
+        <td>${canDrill
+          ? `<button type="button" class="badge badge--amber badge--click" data-key-retry="${i}" title="查看该渠道模型的 Key 重试明细">${icon('refresh', 11)}Key 重试 ${g.attempts.length - 1}</button>`
+          : '<span class="muted">—</span>'}</td>
+      </tr>`;
+    }).join('');
+    const finalOK = logOK(l);
+    openModal({
+      title: '渠道重试信息',
+      desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 共 ${groups.length} 条路由 · ${finalOK ? '最终成功' : '最终失败'}`,
+      size: 'xl',
+      body: attempts.length ? `<div class="table-wrap" style="border:none;border-radius:0">
+        <table class="tbl">
+          <thead><tr>
+            <th style="width:40px">#</th><th style="min-width:160px">渠道</th><th>上游模型</th>
+            <th class="right">尝试</th><th>最终状态</th><th class="right">耗时</th><th style="width:40%">最后错误</th><th>Key 重试</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>` : emptyState('没有尝试明细', '这条日志产生于旧版本，没有记录每次重试的明细。', '', 'refresh'),
+      footer: `<div class="spacer"></div><button class="btn" data-close>关闭</button>`,
+      onMount(mo) {
+        mo.body.querySelectorAll('[data-key-retry]').forEach((btn) => {
+          btn.onclick = () => showKeyRetryHistory(l, groups[Number(btn.dataset.keyRetry)]);
+        });
+      },
+    });
+  }
+
+  // 一行的渲染。徽章一律用 copyBadge（点一下就复制、有 toast），
+  // 不再给 title——只有「不给气泡就看不全」的内容才弹气泡。
+  function logRowHtml(l, idx, o) {
+    const num = o.num;
+    const sub = (html) => `<div class="log-sub">${html}</div>`;
+    // 次要指标（缓存读 / 思考 / 首字）在数值下面另起一行，小一号灰字。
+    const reasoning = l.reasoning_tokens
+      ? `思考 ${num(l.reasoning_tokens)}`
+      : (l.reasoning_chars ? `思考 ${num(l.reasoning_chars)} 字` : '');
+    // 亲和星标在上游模型上：它代表本次实际走的那条路由（渠道 + 上游模型）。
+    const modelStar = l.affinity
+      ? `<span class="affinity-star" title="${affinityTitle(l)}">${AFFINITY_STAR}</span>`
+      : '';
+    return `<tr>
+      <td class="nowrap fs-12">${esc(fmtTime(l.time))}</td>
+      <td>
+        <div class="flex-center gap-6">
+          ${copyBadge(l.model_id, { label: '模型' })}
+          ${l.stream ? '<span class="badge badge--blue" title="客户端请求了流式输出（请求体里 stream: true）">流式</span>' : ''}
+          ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看渠道重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
+        </div>
+      </td>
+      <td class="fs-12">
+        ${l.channel_id
+          ? `<div class="log-route">${copyBadge(o.channel(l), { label: '渠道', copy: l.channel_id })}${l.key_masked
+            ? `<span class="log-star-wrap">${colorBadge(keyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
+            : ''}</div>`
+          : '<span class="muted">未命中渠道</span>'}
+      </td>
+      <td class="fs-12">${l.upstream_model
+        ? `<span class="log-star-wrap">${upstreamModelBadge(l, (t) => copyBadge(t, { label: '上游模型' }))}${modelStar}</span>`
+        : '<span class="muted">—</span>'}</td>
+      <td class="fs-12">${copyBadge(l.token_name, { label: '令牌' })}</td>
+      <td class="num">${num(l.prompt_tokens)}${l.usage_estimate ? ' <span class="muted fs-12" title="上游未上报用量，Token 数为网关估算">(估算)</span>' : ''}${l.cached_tokens ? sub(`缓存读 ${num(l.cached_tokens)}`) : ''}</td>
+      <td class="num">${num(l.completion_tokens)}${l.output_estimate ? ' <span class="muted fs-12" title="上游未上报输出用量，按响应正文长度估算">(估算)</span>' : ''}${reasoning ? sub(reasoning) : ''}</td>
+      <td class="num">${l.tokens_per_sec
+        ? `<span title="输出 tokens / 生成耗时，按流式请求上游的记录计算（首块内容到末块内容）">${l.tokens_per_sec.toFixed(1)} t/s</span>`
+        : '<span class="muted">—</span>'}</td>
+      <td class="num">${num(l.total_tokens)}</td>
+      <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
+      <td class="fs-12">${copyBadge(l.ip, { label: 'IP ' })}</td>
+      <td>${logSoft(l)
+        ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || 200)}</button>`
+        : (logOK(l)
+          ? '<span class="badge badge--green">成功</span>'
+          : `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || '失败')}</button>`)}</td>
+    </tr>`;
+  }
+
+  // 整个表（表头 + 行）也在这里出，免得两边列顺序 / 列数各走各的。
+  // 外层滚动容器由各页面自己套：日志页要吸顶 + 定高，看板是卡片里的全宽表。
+  const logTableHtml = (items, o) => `<table class="tbl tbl--logs">${LOG_TABLE_HEAD}
+    <tbody>${items.map((l, i) => logRowHtml(l, i, o)).join('')}</tbody></table>`;
+
+  // 表格渲染完把「重试历史 / 错误详情」两个入口绑上，两个页面都一样。
+  function bindLogRows(host, items) {
+    host.querySelectorAll('[data-attempts]').forEach((btn) => {
+      btn.onclick = () => showRetryHistory(items[Number(btn.dataset.attempts)]);
+    });
+    host.querySelectorAll('[data-log-error]').forEach((btn) => {
+      btn.onclick = () => showLogError(items[Number(btn.dataset.logError)]);
+    });
+  }
+
+  // ======================================================================
   // 数据看板
   // ======================================================================
   // 看板的时间区间和调用日志保持一致：预设下拉 + 起止时间输入。
@@ -974,77 +1159,23 @@
         rankList(dom.tokenRank, breakdown.tokens || [], { nameWidth: 200, fmt: fmtDash });
       }
 
-      // 渠道格里的写法跟调用日志页一致：渠道名在上，用到多 Key 时下面再补一行 #N 备注。
+      // 渠道格跟调用日志页完全一致：徽章点一下复制渠道 ID，用到多 Key 时下面再补一行 #N 备注。
       const dashChannelLabel = (l) => (l.channel_id || '') + (l.channel_name ? `（${l.channel_name}）` : '');
-      const dashKeyLabel = (l) => {
-        if (!l.key_masked) return '—';
-        const idx = `#${l.key_index || 1}`;
-        return l.key_note ? `${idx} ${l.key_note}` : `${idx}（无备注）`;
-      };
 
       function paintLogs() {
         // 重绘会换掉标记节点，气泡跟着收掉，别让它悬在旧位置上
         window.LDM.tip.hide();
         if (!dashData.logs) return;
         const items = (dashData.logs && dashData.logs.items) || [];
-        // 次要指标（缓存读 / 思考 / 首字）在数值下面另起一行，小一号灰字
-        const sub = (html) => `<div class="log-sub">${html}</div>`;
+        // 表和行都走共用的 logTableHtml：列、徽章、点击行为跟调用日志页是同一份，
+        // 不会再出现「看板点了没反应、悬停多一个气泡、手机上 IP 列没了」这种事。
         dom.recent.innerHTML = items.length
-          ? `<div class="table-wrap table-wrap--flush">
-              <table class="tbl tbl--logs">
-                <thead><tr>
-                  <th>时间</th><th>请求模型</th><th>渠道</th><th>上游模型</th>
-                  <th>输入</th><th>输出</th><th>速度</th><th>总计</th><th>耗时</th>
-                  <th>来源 IP</th><th>状态</th>
-                </tr></thead>
-                <tbody>${items.map((l, idx) => {
-                  // 亲和星标跟着实际走的那条路由（渠道 + 上游模型）走
-                  const modelStar = l.affinity
-                    ? `<span class="affinity-star" title="${affinityTitle(l)}">${AFFINITY_STAR}</span>`
-                    : '';
-                  const reasoning = l.reasoning_tokens
-                    ? `思考 ${fmtDash(l.reasoning_tokens)}`
-                    : (l.reasoning_chars ? `思考 ${fmtDash(l.reasoning_chars)} 字` : '');
-                  return `<tr>
-                  <td class="nowrap fs-12">${esc(fmtTime(l.time))}</td>
-                  <td>
-                    <div class="flex-center gap-6">
-                      ${colorBadge(l.model_id)}
-                      ${l.stream ? '<span class="badge badge--blue" title="客户端请求了流式输出（请求体里 stream: true）">流式</span>' : ''}
-                      ${l.retries ? `<span class="badge badge--amber" title="本次请求发生过 ${l.retries} 次渠道重试，详细过程见调用日志">${icon('refresh', 11)}重试 ${l.retries}</span>` : ''}
-                    </div>
-                  </td>
-                  <td class="fs-12">
-                    ${l.channel_id
-                      ? `<div class="log-route">${colorBadge(dashChannelLabel(l))}${l.key_masked
-                        ? `<span class="log-star-wrap">${colorBadge(dashKeyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
-                        : ''}</div>`
-                      : '<span class="muted">未命中渠道</span>'}
-                  </td>
-                  <td class="fs-12">${l.upstream_model
-                    ? `<span class="log-star-wrap">${upstreamModelBadge(l, (t) => colorBadge(t))}${modelStar}</span>`
-                    : '<span class="muted">—</span>'}</td>
-                  <td class="num">${fmtDash(l.prompt_tokens)}${l.usage_estimate ? ' <span class="muted fs-12" title="上游未上报用量，Token 数为网关估算">(估算)</span>' : ''}${l.cached_tokens ? sub(`缓存读 ${fmtDash(l.cached_tokens)}`) : ''}</td>
-                  <td class="num">${fmtDash(l.completion_tokens)}${l.output_estimate ? ' <span class="muted fs-12" title="上游未上报输出用量，按响应正文长度估算">(估算)</span>' : ''}${reasoning ? sub(reasoning) : ''}</td>
-                  <td class="num">${l.tokens_per_sec
-                    ? `<span title="输出 tokens / 生成耗时，按流式请求上游的记录计算（首块内容到末块内容）">${l.tokens_per_sec.toFixed(1)} t/s</span>`
-                    : '<span class="muted">—</span>'}</td>
-                  <td class="num">${fmtDash(l.total_tokens)}</td>
-                  <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
-                  <td class="fs-12">${colorBadge(l.ip)}</td>
-                  <td>${logSoft(l)
-                    ? `<button type="button" class="badge badge--amber badge--click" data-recent-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || 200)}</button>`
-                    : (logOK(l)
-                      ? '<span class="badge badge--green">成功</span>'
-                      : `<button type="button" class="badge badge--red badge--click" data-recent-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || '失败')}</button>`)}</td>
-                </tr>`;
-                }).join('')}</tbody>
-              </table>
-            </div>`
+          ? `<div class="table-wrap table-wrap--flush">${logTableHtml(items, {
+            num: fmtDash,
+            channel: dashChannelLabel,
+          })}</div>`
           : emptyState('还没有调用记录', '通过 API 调用任意模型后，这里会显示实时统计。', '', 'logs');
-        dom.recent.querySelectorAll('[data-recent-error]').forEach((btn) => {
-          btn.onclick = () => showLogError(items[Number(btn.dataset.recentError)]);
-        });
+        bindLogRows(dom.recent, items);
       }
 
       // 单位切换只影响数字格式，重画看板上的所有数值区域即可；
@@ -5576,127 +5707,15 @@
       q('#page-prev').onclick = () => turnPage(-1);
       q('#page-next').onclick = () => turnPage(1);
 
-      // 重试历史分两层：先按渠道聚合（模型 → 渠道），渠道内试过多个 Key 时
-      // 再下钻（渠道 → Key）。Key 备注在调度时随日志落库，不反查当前配置。
-      function keyLabel(a) {
-        if (!a.key_masked) return '—';
-        const idx = `#${a.key_index || 1}`;
-        return a.key_note ? `${idx} ${a.key_note}` : `${idx}（无备注）`;
-      }
-
-      function attemptBadge(a) {
-        const ok = a.status_code > 0 && a.status_code < 400 && !a.error;
-        const softFail = a.status_code > 0 && a.status_code < 400 && !!a.error;
-        return ok ? badge('成功', 'green') : softFail ? badge(String(a.status_code), 'amber') : badge(String(a.status_code || '失败'), 'red');
-      }
-
-      function showKeyRetryHistory(l, group) {
-        const rows = group.attempts.map((a, i) => `<tr>
-            <td class="muted num">${i + 1}</td>
-            <td class="mono" style="white-space:nowrap">${esc(a.upstream_model || '—')}</td>
-            <td style="white-space:nowrap">${a.key_masked
-              ? `<span style="position:relative;display:inline-block">${colorBadge(keyLabel(a), 'badge--xs')}${a.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
-              : '<span class="muted">—</span>'}</td>
-            <td>${attemptBadge(a)}</td>
-            <td class="right num">${esc(fmtDuration(a.latency_ms))}</td>
-            <td class="fs-12" style="white-space:pre-wrap;word-break:break-word;min-width:320px">${a.error ? esc(a.error) : '<span class="muted">—</span>'}</td>
-          </tr>`).join('');
-        openModal({
-          title: 'Key 重试信息',
-          desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 渠道 <span class="mono">${esc(group.label)}</span> · 上游模型 <span class="mono">${esc(group.upstream)}</span> · 共 ${group.attempts.length} 次尝试`,
-          size: 'xl',
-          top: true,
-          body: `<div class="table-wrap" style="border:none;border-radius:0">
-            <table class="tbl">
-              <thead><tr>
-                <th style="width:40px">#</th><th>上游模型</th><th>Key</th>
-                <th>状态码</th><th class="right">耗时</th><th style="width:52%">错误信息</th>
-              </tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>`,
-          footer: `<div class="spacer"></div><button class="btn" data-close>关闭</button>`,
-        });
-      }
-
-      function showRetryHistory(l) {
-        const attempts = l.attempts || [];
-        // 按「渠道 + 上游模型」聚合，保持第一次出现的顺序。同一渠道的不同上游
-        // 模型分别成行；同一条路由内的多次 Key 尝试才合并，再按不同 Key 的数量下钻。
-        const groups = [];
-        const byRoute = new Map();
-        attempts.forEach((a) => {
-          const id = a.channel_id || '';
-          const routeKey = id + '\u0000' + (a.upstream_model || '');
-          let g = byRoute.get(routeKey);
-          if (!g) {
-            g = {
-              label: id ? `${id}${a.channel_name ? '（' + a.channel_name + '）' : ''}` : '—',
-              upstream: a.upstream_model || '—',
-              attempts: [],
-              keyIds: new Set(),
-            };
-            byRoute.set(routeKey, g);
-            groups.push(g);
-          }
-          g.attempts.push(a);
-          if (a.key_masked) g.keyIds.add(`${a.key_index || 1}|${a.key_masked}`);
-        });
-        const rows = groups.map((g, i) => {
-          const last = g.attempts[g.attempts.length - 1];
-          const totalMs = g.attempts.reduce((n, a) => n + (a.latency_ms || 0), 0);
-          const canDrill = g.keyIds.size > 1;
-          return `<tr>
-            <td class="muted num">${i + 1}</td>
-            <td class="mono" style="white-space:nowrap">${esc(g.label)}</td>
-            <td class="mono fs-12" style="white-space:nowrap">${esc(g.upstream)}</td>
-            <td class="num">${g.attempts.length}</td>
-            <td>${attemptBadge(last)}</td>
-            <td class="right num">${esc(fmtDuration(totalMs))}</td>
-            <td class="fs-12" style="white-space:pre-wrap;word-break:break-word;min-width:300px">${last.error ? esc(last.error) : '<span class="muted">—</span>'}</td>
-            <td>${canDrill
-              ? `<button type="button" class="badge badge--amber badge--click" data-key-retry="${i}" title="查看该渠道模型的 Key 重试明细">${icon('refresh', 11)}Key 重试 ${g.attempts.length - 1}</button>`
-              : '<span class="muted">—</span>'}</td>
-          </tr>`;
-        }).join('');
-        const finalOK = logOK(l);
-        openModal({
-          title: '渠道重试信息',
-          desc: `模型 <span class="mono">${esc(l.model_id || '—')}</span> · 共 ${groups.length} 条路由 · ${finalOK ? '最终成功' : '最终失败'}`,
-          size: 'xl',
-          body: attempts.length ? `<div class="table-wrap" style="border:none;border-radius:0">
-            <table class="tbl">
-              <thead><tr>
-                <th style="width:40px">#</th><th style="min-width:160px">渠道</th><th>上游模型</th>
-                <th class="right">尝试</th><th>最终状态</th><th class="right">耗时</th><th style="width:40%">最后错误</th><th>Key 重试</th>
-              </tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>` : emptyState('没有尝试明细', '这条日志产生于旧版本，没有记录每次重试的明细。', '', 'refresh'),
-          footer: `<div class="spacer"></div><button class="btn" data-close>关闭</button>`,
-          onMount(mo) {
-            mo.body.querySelectorAll('[data-key-retry]').forEach((btn) => {
-              btn.onclick = () => showKeyRetryHistory(l, groups[Number(btn.dataset.keyRetry)]);
-            });
-          },
-        });
-      }
+      // 重试历史和 Key 下钻的两个弹窗已提到模块顶部（showRetryHistory /
+      // showKeyRetryHistory），看板里点重试徽章走的是同一份实现。
 
       let lastItems = null; // null 表示最近一次加载失败，切换单位时保持当前内容
-      // 开启「单位」后把 token 数缩写为 K / M / B，悬停仍显示精确值
+      // 开启「单位」后把 token 数缩写为 K / M / B，悬停仍显示精确值。
+      // 「(估算)」标记在共用的 logRowHtml 里跟着数值一起出，这里只管格式。
       const tok = (n) => (logUnit.on
         ? `<span title="${fmtInt(n)}">${fmtUnit(n)}</span>`
         : fmtInt(n));
-      // 上游没有上报用量时网关会估算，标一次即可（输入 / 输出 / 总计是同一份用量），
-      // 放在「输入」上不额外占宽：那一格本来就有一行缓存明细。
-      const estMark = (l) => (l.usage_estimate
-        ? ' <span class="muted fs-12" title="上游未上报用量，Token 数为网关估算">(估算)</span>'
-        : '');
-      // 只有输出是估的（上游报了输入、没报输出）时，标记挂在输出列，
-      // 免得让人以为输入也是估出来的。
-      const outEstMark = (l) => (l.output_estimate
-        ? ' <span class="muted fs-12" title="上游未上报输出用量，按响应正文长度估算">(估算)</span>'
-        : '');
 
       function renderTable() {
         // 重绘会换掉标记节点，气泡跟着收掉，别让它悬在旧位置上
@@ -5715,72 +5734,13 @@
           host.innerHTML = emptyState('没有符合条件的日志', emptyDesc, '', 'logs');
           return;
         }
-        host.innerHTML = `<div class="table-wrap table-scroll" style="border:none;border-radius:0">
-          <table class="tbl tbl--logs">
-            <thead><tr>
-              <th>时间</th><th>请求模型</th><th>渠道</th><th>上游模型</th><th>令牌</th>
-              <th>输入</th>
-              <th>输出</th>
-              <th>速度</th>
-              <th>总计</th>
-              <th>耗时</th>
-              <th>来源 IP</th><th>状态</th>
-            </tr></thead>
-            <tbody>${items.map((l, idx) => {
-              // 亲和星标在「上游模型」上：它代表本次实际走的那条路由
-              // （渠道 + 上游模型），直接调用渠道模型时也一样。
-              const modelStar = l.affinity
-                ? `<span class="affinity-star" title="${affinityTitle(l)}">${AFFINITY_STAR}</span>`
-                : '';
-              // 次要指标（缓存读 / 思考 / 首字）在数值下面另起一行，小一号灰字。
-              // 表格整体不换行，窗口放不下时由卡片左右滚动；只有这几个数值格是两行。
-              const sub = (html) => `<div class="log-sub">${html}</div>`;
-              const reasoning = l.reasoning_tokens
-                ? `思考 ${tok(l.reasoning_tokens)}`
-                : (l.reasoning_chars ? `思考 ${tok(l.reasoning_chars)} 字` : '');
-              return `<tr>
-              <td class="nowrap fs-12">${esc(fmtTime(l.time))}</td>
-              <td>
-                <div class="flex-center gap-6">
-                  ${copyBadge(l.model_id, { label: '模型' })}
-                  ${l.stream ? '<span class="badge badge--blue" title="客户端请求了流式输出（请求体里 stream: true）">流式</span>' : ''}
-                  ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看渠道重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
-                </div>
-              </td>
-              <td class="fs-12">
-                ${l.channel_id
-                  ? `<div class="log-route">${copyBadge(channelLabel(l.channel_id), { label: '渠道', copy: l.channel_id })}${l.key_masked
-                    ? `<span class="log-star-wrap">${colorBadge(keyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
-                    : ''}</div>`
-                  : '<span>未命中渠道</span>'}
-              </td>
-              <td class="fs-12">${l.upstream_model
-                ? `<span class="log-star-wrap">${upstreamModelBadge(l, (t) => copyBadge(t, { label: '上游模型' }))}${modelStar}</span>`
-                : '<span class="muted">—</span>'}</td>
-              <td class="fs-12">${copyBadge(l.token_name, { label: '令牌' })}</td>
-              <td class="num">${tok(l.prompt_tokens)}${estMark(l)}${l.cached_tokens ? sub(`缓存读 ${tok(l.cached_tokens)}`) : ''}</td>
-              <td class="num">${tok(l.completion_tokens)}${outEstMark(l)}${reasoning ? sub(reasoning) : ''}</td>
-              <td class="num">${l.tokens_per_sec
-                ? `<span title="输出 tokens / 生成耗时，按流式请求上游的记录计算（首块内容到末块内容）">${l.tokens_per_sec.toFixed(1)} t/s</span>`
-                : '<span class="muted">—</span>'}</td>
-              <td class="num">${tok(l.total_tokens)}</td>
-              <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
-              <td class="fs-12">${copyBadge(l.ip, { label: 'IP ' })}</td>
-              <td>${logSoft(l)
-                ? `<button type="button" class="badge badge--amber badge--click" data-log-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || 200)}</button>`
-                : (logOK(l)
-                  ? '<span class="badge badge--green">成功</span>'
-                  : `<button type="button" class="badge badge--red badge--click" data-log-error="${idx}" data-tip="${esc(l.error || '')}">${esc(l.status_code || '失败')}</button>`)}</td>
-            </tr>`;
-            }).join('')}</tbody>
-          </table>
-        </div>`;
-        host.querySelectorAll('[data-attempts]').forEach((btn) => {
-          btn.onclick = () => showRetryHistory(items[Number(btn.dataset.attempts)]);
-        });
-        host.querySelectorAll('[data-log-error]').forEach((btn) => {
-          btn.onclick = () => showLogError(items[Number(btn.dataset.logError)]);
-        });
+        // 表和行都走共用的 logTableHtml：和看板「最近调用」是同一张表、同一套徽章，
+        // 点模型 / 渠道 / 令牌 / IP 都能直接复制，重试徽章点开也是同一份重试历史。
+        host.innerHTML = `<div class="table-wrap table-scroll table-wrap--flush">${logTableHtml(items, {
+          num: tok,
+          channel: (l) => channelLabel(l.channel_id),
+        })}</div>`;
+        bindLogRows(host, items);
       }
 
       async function load() {

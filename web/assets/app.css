@@ -1064,19 +1064,11 @@ table.tbl--logs thead th { color: var(--text); }
   background-image: linear-gradient(var(--primary-soft), var(--primary-soft));
 }
 
-/* 看板「最近调用」是一张嵌在卡片里的全宽表：内边距比日志页再收一点，
-   窗口窄下来时先收起旁证信息（来源 IP / 速度），剩下的列能整表放下，
-   右侧固定的状态列不会压在耗时上。 */
+/* 看板「最近调用」是一张嵌在卡片里的全宽表：内边距比日志页再收一点。
+   列和调用日志页完全一致，窗口 / 手机放不下时就在卡片里左右滚动——
+   不再按宽度隐藏「速度」「来源 IP」，那是两套表各走各的根源。 */
 #recent-logs .tbl--logs th,
 #recent-logs .tbl--logs td { padding-left: 6px; padding-right: 6px; }
-@media (max-width: 1420px) {
-  #recent-logs .tbl--logs th:nth-child(10),
-  #recent-logs .tbl--logs td:nth-child(10) { display: none; }
-}
-@media (max-width: 1300px) {
-  #recent-logs .tbl--logs th:nth-child(7),
-  #recent-logs .tbl--logs td:nth-child(7) { display: none; }
-}
 
 /* 列表页：卡片（顶部工具条 + 表格）撑满内容区 */
 .list-page {
