@@ -1846,6 +1846,20 @@
       root.classList.add('content__inner--fill');
       root.innerHTML = `
         <div class="card chat-card" id="chat-card">
+          <!-- 顶栏把手：桌面端只当定位容器（把手各自贴左上 / 右上角），
+               手机端整条搬进顶栏木牌右端，排成一行「> < +」 -->
+          <div class="chat-bar" id="chat-bar">
+            <div class="chat-bar__pair">
+              <!-- 侧栏收起后贴边留一个把手，方便再拉出来 -->
+              <button class="chat-edge chat-edge--left" id="chat-conv-open" type="button" title="展开对话列表" aria-label="展开对话列表" hidden>${icon('chevronRight', 16)}</button>
+              <button class="chat-edge chat-edge--right" id="chat-side-open" type="button" title="展开模型配置" aria-label="展开模型配置" hidden>${icon('chevronLeft', 16)}</button>
+            </div>
+            <!-- 新建对话：桌面上跟着「展开对话列表」的把手走，排在它右边 -->
+            <button class="chat-edge chat-edge--new" id="chat-conv-edge-new" type="button" title="新建对话" aria-label="新建对话" hidden>${icon('plus', 15)}</button>
+            <!-- 配置栏收起时，垃圾桶陪在展开把手下面：面板展开时底部本来就有清空按钮；
+                 手机端整块不出现，清空入口只留配置栏底部那一个 -->
+            <button class="chat-edge chat-edge--sideclear" id="chat-side-edge-clear" type="button" title="清空当前对话" aria-label="清空当前对话" hidden>${icon('trash', 14)}</button>
+          </div>
           <div class="chat-layout" id="chat-layout">
             <div class="chat-side-scrim" id="chat-side-scrim"></div>
             <div class="chat-conv-scrim" id="chat-conv-scrim"></div>
@@ -1996,17 +2010,13 @@
           </div>
           <input type="file" id="chat-image-input" accept="image/*" multiple hidden>
           <input type="file" id="chat-file-input" multiple hidden>
-          <!-- 侧栏收起后贴边留一个把手，方便再拉出来 -->
-          <button class="chat-edge chat-edge--left" id="chat-conv-open" type="button" title="展开对话列表" aria-label="展开对话列表" hidden>${icon('chevronRight', 16)}</button>
-          <!-- 列表收起时陪在展开把手旁边的新建按钮，点一下直接开新对话 -->
-          <button class="chat-edge chat-edge--new" id="chat-conv-edge-new" type="button" title="新建对话" aria-label="新建对话" hidden>${icon('plus', 15)}</button>
-          <button class="chat-edge chat-edge--right" id="chat-side-open" type="button" title="展开模型配置" aria-label="展开模型配置" hidden>${icon('chevronLeft', 16)}</button>
-          <!-- 配置栏收起时，垃圾桶陪在展开把手下面：面板展开时底部本来就有清空按钮 -->
-          <button class="chat-edge chat-edge--sideclear" id="chat-side-edge-clear" type="button" title="清空当前对话" aria-label="清空当前对话" hidden>${icon('trash', 14)}</button>
         </div>`;
 
       const card = root.querySelector('#chat-card');
       const layout = root.querySelector('#chat-layout');
+      // 顶栏那排把手：桌面上挂在卡片里当定位容器，手机上整条搬进顶栏木牌
+      const chatBar = root.querySelector('#chat-bar');
+      const topbarActions = document.getElementById('topbar-actions');
       // 左侧对话列表
       const convList = root.querySelector('#chat-conv-list');
       const convNew = root.querySelector('#chat-conv-new');
@@ -4676,6 +4686,8 @@
       const setSideOpen = (on) => {
         if (isNarrow()) {
           layout.classList.toggle('is-settings-open', on);
+          // 两个抽屉同时开只会叠成一团，开一边就把另一边收掉
+          if (on) layout.classList.remove('is-conv-open');
         } else {
           layout.classList.toggle('is-settings-collapsed', !on);
           try { localStorage.setItem(SIDE_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
@@ -4686,6 +4698,7 @@
       const setConvOpen = (on) => {
         if (isNarrow()) {
           layout.classList.toggle('is-conv-open', on);
+          if (on) layout.classList.remove('is-settings-open');
         } else {
           layout.classList.toggle('is-conv-collapsed', !on);
           try { localStorage.setItem(CONV_KEY, on ? '1' : '0'); } catch (e) { /* 忽略配额错误 */ }
@@ -4694,27 +4707,44 @@
       };
       // 侧栏收起后，边缘留一个把手把面板再拉出来
       const syncEdges = () => {
-        const convClosed = isNarrow()
-          ? !layout.classList.contains('is-conv-open')
-          : layout.classList.contains('is-conv-collapsed');
-        const sideClosed = isNarrow()
-          ? !layout.classList.contains('is-settings-open')
-          : layout.classList.contains('is-settings-collapsed');
+        // 手机顶栏才是这排按钮的家：整条 chat-bar 挂进顶栏操作区；
+        // 桌面上顶栏是藏起来的，挂回卡片里继续当定位容器
+        if (isNarrow()) {
+          if (chatBar.parentElement !== topbarActions) topbarActions.appendChild(chatBar);
+        } else if (chatBar.parentElement !== card) {
+          card.insertBefore(chatBar, layout);
+        }
+        // 手机顶栏的三个按钮常驻（左右展开随时可点，加号随时新建），
+        // 位置由 CSS 排成两行；垃圾桶清空键手机上整块不出现
+        if (isNarrow()) {
+          convOpen.hidden = false;
+          convEdgeNew.hidden = false;
+          sideOpen.hidden = false;
+          sideEdgeClear.hidden = true;
+          return;
+        }
+        const convClosed = layout.classList.contains('is-conv-collapsed');
+        const sideClosed = layout.classList.contains('is-settings-collapsed');
         convOpen.hidden = !convClosed;
         convEdgeNew.hidden = !convClosed;
         sideOpen.hidden = !sideClosed;
         // 配置栏收起时才在右边缘显示垃圾桶；展开时底部有清空按钮
         sideEdgeClear.hidden = !sideClosed;
       };
+      // 窄屏下顶栏的把手是开关：面板已经开着就再点一下收起
+      const toggleConvOpen = () => setConvOpen(isNarrow() ? !layout.classList.contains('is-conv-open') : true);
+      const toggleSideOpen = () => setSideOpen(isNarrow() ? !layout.classList.contains('is-settings-open') : true);
       sideClose.onclick = () => setSideOpen(false);
-      sideOpen.onclick = () => setSideOpen(true);
+      sideOpen.onclick = toggleSideOpen;
       sideScrim.onclick = () => setSideOpen(false);
       convCollapse.onclick = () => setConvOpen(false);
-      convOpen.onclick = () => setConvOpen(true);
+      convOpen.onclick = toggleConvOpen;
       // 收起状态边缘的新建按钮：直接开新对话，不用先把列表拉出来
       convEdgeNew.onclick = () => {
         if (convMulti.on) exitConvMulti();
         createSession();
+        // 手机上新对话要能立刻看见，抽屉开着先收起
+        if (isNarrow()) setConvOpen(false);
       };
       convScrim.onclick = () => setConvOpen(false);
       // 桌面 / 窄屏来回切换时，把手的显隐要跟着走
@@ -4989,6 +5019,8 @@
       const onLeave = () => {
         if (routeObserver) routeObserver.disconnect();
         window.removeEventListener('resize', syncEdges);
+        // 挂在顶栏里的那排把手不是本页的 DOM，切页时要自己收走
+        if (chatBar.parentElement && chatBar.parentElement !== card) chatBar.remove();
         if (chatStore.view === view) chatStore.view = null;
         const run = chatStore.run;
         if (run && run.view === view) {

@@ -4030,6 +4030,14 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; }
 .chat-chip--custom[hidden] { display: none; }
 
 /* 侧栏收起后，边缘留一个把手把面板再拉出来 */
+.chat-bar {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  /* 容器铺满整张卡片，只用来定位把手，不能挡住对话区的拖拽 / 点选 */
+  pointer-events: none;
+}
+.chat-bar .chat-edge { pointer-events: auto; }
 .chat-edge {
   position: absolute;
   top: 12px;
@@ -4128,10 +4136,47 @@ html[data-theme="dark"] .chat-to-bottom { color: #10200a; }
     transition: opacity .18s ease;
   }
   .chat-layout.is-settings-open .chat-side-scrim { opacity: 1; pointer-events: auto; }
+  /* 手机：聊天页的把手整条搬进顶栏木牌里（见 pages-more.js 的 syncEdges），
+     就一行「> < +」贴在木牌右端——左右展开 + 新建对话；
+     垃圾桶清空键手机上不出现，清空入口只留右侧配置栏底部那一个 */
+  body.is-chat-page .topbar { padding-right: 18px; }
+  body.is-chat-page #topbar-actions {
+    flex: 0 0 auto;
+    overflow: visible;
+    align-items: center;
+  }
+  .chat-bar {
+    position: static;
+    inset: auto;
+    z-index: auto;
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .chat-bar__pair { display: flex; gap: 6px; }
+  /* 顶栏里的把手不再贴边，交给这一行 flex 排 */
+  .chat-edge { position: static; }
+  /* 压在木头牌上就别用卡片的实白底，奶白半透 + 木色描边才对味 */
+  .topbar .chat-edge {
+    background: rgba(255, 248, 228, .62);
+    border-color: var(--edge-wood);
+    color: #4a3120;
+  }
+  .topbar .chat-edge:hover { background: #fff8e4; border-color: #9a6a2f; color: #2f1f12; }
+  html[data-theme="dark"] .topbar .chat-edge {
+    background: rgba(255, 232, 196, .1);
+    border-color: rgba(255, 232, 196, .32);
+    color: #f1e2c8;
+  }
+  html[data-theme="dark"] .topbar .chat-edge:hover {
+    background: rgba(255, 232, 196, .2);
+    border-color: rgba(255, 232, 196, .5);
+    color: #fff6e6;
+  }
+  .chat-edge--sideclear { display: none; }
   /* 窄屏顶栏横向可滚动，模型下拉别把整行撑爆 */
   .chat-top__model { min-width: 110px; max-width: 180px; }
-  /* 手机左上 / 右上各有一个抽屉把手，第一条消息别被压在把手底下 */
-  .chat-log { padding-top: 48px; }
   /* 桌面上顶栏一直是收起的，但窄屏只有顶栏里有「打开导航」的汉堡按钮，
      聊天页要是把顶栏藏了，手机上就再也点不进左边那排页面了 —— 窄屏留出来 */
   body.is-chat-page .topbar { display: flex; }
