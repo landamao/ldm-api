@@ -573,6 +573,50 @@ func (s *Store) ForEachLog(fn func(Log) error) error {
 	})
 }
 
+// ForEachLogRange 按时间倒序（最新的在前）遍历 [start, end] 内的日志。
+// start <= 0 表示不限起点，end <= 0 表示不限终点。fn 返回 false 时提前结束。
+// 日志 key 是反序时间戳，越往后越早，所以遇到早于 start 的记录可以直接停扫，
+// 按区间取数不用把整个日志桶翻一遍。
+func (s *Store) ForEachLogRange(start, end int64, fn func(Log) bool) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bLogs).Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var l Log
+			if err := json.Unmarshal(v, &l); err != nil {
+				continue // 跳过损坏记录，不影响其余日志
+			}
+			if start > 0 && l.Time < start {
+				break
+			}
+			if end > 0 && l.Time > end {
+				continue
+			}
+			if !fn(l) {
+				break
+			}
+		}
+		return nil
+	})
+}
+
+// EarliestLog 返回最早一条日志的时间（毫秒）。没有日志时 ok 为 false。
+// 日志 key 是反序时间戳，游标最后一条就是最早的一条。
+func (s *Store) EarliestLog() (ms int64, ok bool, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		_, v := tx.Bucket(bLogs).Cursor().Last()
+		if v == nil {
+			return nil
+		}
+		var l Log
+		if err := json.Unmarshal(v, &l); err != nil {
+			return nil
+		}
+		ms, ok = l.Time, true
+		return nil
+	})
+	return ms, ok, err
+}
+
 // ---------- Stats ----------
 
 func hourKey(h int64) []byte {

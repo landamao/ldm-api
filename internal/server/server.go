@@ -118,6 +118,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/stats/overview", s.admin(s.statsOverview))
 	mux.HandleFunc("GET /api/stats/series", s.admin(s.statsSeries))
 	mux.HandleFunc("GET /api/stats/breakdown", s.admin(s.statsBreakdown))
+	mux.HandleFunc("GET /api/usage", s.admin(s.usageReport))
+	mux.HandleFunc("GET /api/usage/facets", s.admin(s.usageFacets))
 
 	// ---- 设置 ----
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)

@@ -201,6 +201,7 @@
   // ---------- 图标 ----------
   const ICONS = {
     dashboard: '<path d="M3 3h7v7H3zM14 3h7v4h-7zM14 11h7v10h-7zM3 14h7v7H3z"/>',
+    usage: '<path d="M4 20V11M10 20V4M16 20v-6M22 20H2"/>',
     channels: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="1.6"/><circle cx="16" cy="12" r="1.6"/><circle cx="10" cy="18" r="1.6"/>',
     models: '<path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M3 7l9 5 9-5M12 22V12"/>',
     plaza: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
@@ -1558,6 +1559,7 @@
   const NAV = [
     { group: '总览' },
     { id: 'dashboard', name: '数据看板', icon: 'dashboard' },
+    { id: 'usage', name: '用量分析', icon: 'usage' },
     { id: 'plaza', name: '模型广场', icon: 'plaza' },
     { id: 'chat', name: '在线聊天', icon: 'chat' },
     { group: '配置' },

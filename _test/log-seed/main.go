@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"strings"
 	"time"
 
 	"ldmapi/internal/store"
@@ -45,8 +46,17 @@ func main() {
 		modelIDs = append(modelIDs, m.ID)
 	}
 	chIDs := make([]string, 0, len(channels))
+	// 渠道里配置的上游模型名才是日志里的 UpstreamModel。以前这里直接拿模型 ID
+	// 顶上，会造出「渠道/模型」这种带前缀的假上游名，用量页按上游模型分组时就乱了。
+	type chModel struct {
+		chID, chName, upstream string
+	}
+	var pairs []chModel
 	for _, c := range channels {
 		chIDs = append(chIDs, c.ID)
+		for _, name := range c.Models {
+			pairs = append(pairs, chModel{chID: c.ID, chName: c.Name, upstream: name})
+		}
 	}
 	tokID, tokName := "seed-token", "演示密钥"
 	if len(tokens) > 0 {
@@ -58,6 +68,16 @@ func main() {
 		ts := now.Add(-time.Duration(i) * 7 * time.Minute).UnixMilli()
 		mid := modelIDs[rand.Intn(len(modelIDs))]
 		cid := chIDs[rand.Intn(len(chIDs))]
+		upstream := mid
+		chName := cid
+		if len(pairs) > 0 {
+			p := pairs[rand.Intn(len(pairs))]
+			cid, chName, upstream = p.chID, p.chName, p.upstream
+			// 一部分记录把模型名写成大写，验证用量页的大小写归一化
+			if i%7 == 0 {
+				upstream = strings.ToUpper(upstream)
+			}
+		}
 		fail := rand.Intn(10) == 0
 		code := 200
 		errMsg := ""
@@ -78,8 +98,8 @@ func main() {
 			TokenName:        tokName,
 			ModelID:          mid,
 			ChannelID:        cid,
-			ChannelName:      cid,
-			UpstreamModel:    mid,
+			ChannelName:      chName,
+			UpstreamModel:    upstream,
 			ResponseModel:    respModel,
 			Endpoint:         "/v1/chat/completions",
 			PromptTokens:     pt,
