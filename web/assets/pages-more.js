@@ -304,7 +304,6 @@
       <td>
         <div class="flex-center gap-6">
           ${copyBadge(l.model_id, { label: '模型' })}
-          ${l.source === 'test' ? '<span class="badge badge--wood">测试</span>' : ''}
           ${l.stream ? '<span class="badge badge--blue" title="客户端请求了流式输出（请求体里 stream: true）">流式</span>' : ''}
           ${l.retries ? `<button type="button" class="badge badge--amber badge--click" data-attempts="${idx}" title="点击查看渠道重试历史">${icon('refresh', 11)}重试 ${l.retries}</button>` : ''}
         </div>

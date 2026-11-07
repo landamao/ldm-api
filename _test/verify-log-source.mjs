@@ -55,12 +55,12 @@ await page.waitForTimeout(2000);
 
 const firstRow = page.locator('.tbl--logs tbody tr').first();
 const rowText = (await firstRow.innerText()).replace(/\s+/g, ' ');
-check(rowText.includes('测试'), `最新日志带「测试」徽章：${rowText.slice(0, 90)}`);
 check(rowText.includes(MODEL), `最新日志的模型是 ${MODEL}`);
-check((await firstRow.locator('.badge--wood').count()) === 1, '「测试」徽章只有一枚');
-// 令牌列：测试没有令牌身份，应显示占位符
+// 模型名旁边不再挂「测试」木牌，和模型管理里的测试一样只看令牌列
+check((await firstRow.locator('.badge--wood').count()) === 0, '模型名旁不再有「测试」木牌');
+// 令牌列：测试没有真实令牌，统一写「模型测试」
 const tokenCell = (await firstRow.locator('td').nth(4).innerText()).trim();
-check(tokenCell === '—', `令牌列显示占位符（实际 ${JSON.stringify(tokenCell)}）`);
+check(tokenCell === '模型测试', `令牌列显示「模型测试」（实际 ${JSON.stringify(tokenCell)}）`);
 // 状态列：这一条应当成功
 check((await firstRow.locator('.badge--green').count()) >= 1, '状态列显示成功');
 await page.screenshot({ path: `${SHOT}/log-source-logs.png` });

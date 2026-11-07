@@ -211,8 +211,8 @@ func TestChannelModelTestWritesLog(t *testing.T) {
 	if l.ChannelID != "c" || l.ChannelName != "测试渠道" {
 		t.Errorf("渠道字段不对: %+v", l)
 	}
-	if l.TokenID != "" || l.TokenName != "" {
-		t.Errorf("测试没有令牌身份，令牌列应为空: %+v", l)
+	if l.TokenID != store.TestTokenID || l.TokenName != store.TestTokenName {
+		t.Errorf("测试的令牌列应写「%s」: %+v", store.TestTokenName, l)
 	}
 	if l.StatusCode != http.StatusOK || l.Error != "" || l.Failed() {
 		t.Errorf("成功的测试应记成 200: %+v", l)

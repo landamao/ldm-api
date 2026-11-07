@@ -480,12 +480,19 @@ type Log struct {
 	AsContent bool `json:"as_content,omitempty"`
 	// Source 标记日志的来源：空表示网关转发的真实调用，
 	// LogSourceTest 表示后台「渠道测试」里点某个模型跑的一次连通性测试。
-	// 测试没有令牌身份、不写统计，日志页单独用「测试」徽章标出来。
+	// 测试不写统计，令牌列写「模型测试」（见 TestTokenName）。
 	Source string `json:"source,omitempty"`
 }
 
 // LogSourceTest 是渠道模型测试产生的日志来源标记。
 const LogSourceTest = "test"
+
+// 后台测试产生的那条日志用的伪令牌身份。测试是后台发起的，没有真实令牌，
+// 渠道测试和模型测试两处都写这一份，日志的令牌列统一显示「模型测试」。
+const (
+	TestTokenID   = "modeltest"
+	TestTokenName = "模型测试"
+)
 
 // Failed 是日志的失败判定，日志筛选、统计与模型成功率共用同一口径：
 // 状态码 >= 400，或响应中途出错（如流式断开）。

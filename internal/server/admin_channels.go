@@ -1041,12 +1041,15 @@ func probeUsage(raw []byte) upstream.Usage {
 }
 
 // recordProbeLog 把「渠道里的模型测试」写进调用日志。
-// 测试没有令牌身份（令牌列留空），来源标成 test，日志页会显示「测试」徽章。
+// 令牌列写「模型测试」，和模型管理里的测试完全一致——测试没有真实令牌身份，
+// 但日志里得看得出这条是后台测出来的，所以给一个固定的伪令牌名。
 // 只写日志不写统计：测试失败不该拉低渠道成功率，也不该算进看板的调用量。
 func (s *Server) recordProbeLog(r *http.Request, ch store.Channel, model string, res probeResult) {
 	entry := store.Log{
 		ID:               randomHex(8),
 		Time:             time.Now().UnixMilli(),
+		TokenID:          store.TestTokenID,
+		TokenName:        store.TestTokenName,
 		ModelID:          model,
 		ChannelID:        ch.ID,
 		ChannelName:      ch.Name,

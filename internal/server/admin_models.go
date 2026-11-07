@@ -724,7 +724,7 @@ func (s *Server) testModel(w http.ResponseWriter, r *http.Request) {
 	body, _ := json.Marshal(payload)
 
 	rec := httptest.NewRecorder()
-	source := store.Token{ID: "modeltest", Name: "模型测试"}
+	source := store.Token{ID: store.TestTokenID, Name: store.TestTokenName}
 	relayReq := &relay.Request{
 		Token:  source,
 		Path:   "/v1/chat/completions",
