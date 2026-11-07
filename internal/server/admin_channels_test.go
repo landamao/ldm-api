@@ -161,6 +161,143 @@ func TestTestChannelModelRequest(t *testing.T) {
 	}
 }
 
+// 渠道里测某个模型是一次真实的上游调用，要留一条日志让「刚才那次测试报了什么」可回溯；
+// 但它没有令牌身份，也不该混进看板统计（测试失败不能拉低渠道成功率）。
+func TestChannelModelTestWritesLog(t *testing.T) {
+	var hits []upstreamHit
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		hits = append(hits, upstreamHit{Key: r.Header.Get("Authorization"), Path: r.URL.Path, Model: body.Model})
+		w.Header().Set("Content-Type", "application/json")
+		if body.Model == "broken" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":{"message":"model is gone"}}`))
+			return
+		}
+		w.Write([]byte(`{"id":"cmpl-1","model":"m1","choices":[{"message":{"content":"hi"}}],` +
+			`"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}`))
+	}))
+	defer up.Close()
+
+	s, st := newTestServer(t, "ct-log")
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: "c", Name: "测试渠道", Type: store.ChannelOpenAI, BaseURL: up.URL, Enabled: true,
+		APIKey: "sk-live", Models: []string{"m1"}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, out := callChannelTest(s, "c", `{"model":"m1"}`); out["ok"] != true {
+		t.Fatalf("测试应通过: %v", out)
+	}
+	logs, total, err := st.QueryLogs(store.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(logs) != 1 {
+		t.Fatalf("测模型应写入一条日志，实际 total=%d len=%d", total, len(logs))
+	}
+	l := logs[0]
+	if l.Source != store.LogSourceTest {
+		t.Errorf("日志来源应标成测试: %q", l.Source)
+	}
+	if l.ModelID != "m1" || l.UpstreamModel != "m1" || l.ResponseModel != "m1" {
+		t.Errorf("模型字段不对: %+v", l)
+	}
+	if l.ChannelID != "c" || l.ChannelName != "测试渠道" {
+		t.Errorf("渠道字段不对: %+v", l)
+	}
+	if l.TokenID != "" || l.TokenName != "" {
+		t.Errorf("测试没有令牌身份，令牌列应为空: %+v", l)
+	}
+	if l.StatusCode != http.StatusOK || l.Error != "" || l.Failed() {
+		t.Errorf("成功的测试应记成 200: %+v", l)
+	}
+	if l.PromptTokens != 7 || l.CompletionTokens != 2 || l.TotalTokens != 9 {
+		t.Errorf("应带上游上报的用量: %+v", l)
+	}
+	if l.Endpoint != "/v1/chat/completions" || l.IP == "" {
+		t.Errorf("应记录请求路径与来源 IP: %+v", l)
+	}
+	// 单 Key 渠道不记 Key 序号，和正式调用保持一致。
+	if l.KeyIndex != 0 || l.KeyMasked != "" {
+		t.Errorf("单 Key 渠道不该带 Key 信息: %+v", l)
+	}
+
+	// 失败的测试同样留痕，上游状态码和原因都要能点开看。
+	if _, out := callChannelTest(s, "c", `{"model":"broken"}`); out["ok"] != false {
+		t.Fatalf("上游 500 应判失败: %v", out)
+	}
+	logs, total, err = st.QueryLogs(store.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("失败的测试也要写日志，实际 total=%d", total)
+	}
+	failed := logs[0] // 倒序写入，最新在前
+	if failed.StatusCode != http.StatusInternalServerError || !failed.Failed() {
+		t.Errorf("失败测试应记上游状态码: %+v", failed)
+	}
+	if !strings.Contains(failed.Error, "model is gone") {
+		t.Errorf("日志应保留上游错误原文: %q", failed.Error)
+	}
+
+	// 测试只写日志，不进统计：看板里的请求数不该被测试刷高。
+	buckets, err := st.RangeStats(now-3600000, time.Now().UnixMilli()+3600000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 0 {
+		t.Errorf("测试不应写入统计桶: %+v", buckets)
+	}
+}
+
+// 多 Key 渠道测模型：日志要记下最终生效的 Key 和逐个尝试的明细，
+// 否则「第几个 Key 挂了」只能靠猜。
+func TestChannelModelTestLogsKeyAttempts(t *testing.T) {
+	var hits []upstreamHit
+	up := fakeUpstream(t, &hits, "sk-good")
+	defer up.Close()
+	s, st := newTestServer(t, "ct-log-keys")
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: "c", Type: store.ChannelOpenAI, BaseURL: up.URL, Enabled: true,
+		APIKeys: []store.ChannelKey{{Key: "sk-bad", Note: "旧"}, {Key: "sk-good", Note: "新"}},
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, out := callChannelTest(s, "c", `{"model":"m1"}`); out["ok"] != true {
+		t.Fatalf("第 2 个 Key 可用时测试应通过: %v", out)
+	}
+	logs, _, err := st.QueryLogs(store.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("应写入一条日志，实际 %d", len(logs))
+	}
+	l := logs[0]
+	if l.KeyIndex != 2 || l.KeyMasked != maskKey("sk-good") || l.KeyNote != "新" {
+		t.Errorf("应记录最终生效的 Key: %+v", l)
+	}
+	if l.Retries != 1 || len(l.Attempts) != 2 {
+		t.Fatalf("两个 Key 逐个尝试应记为 1 次重试: retries=%d attempts=%d", l.Retries, len(l.Attempts))
+	}
+	if l.Attempts[0].StatusCode != http.StatusUnauthorized || l.Attempts[0].KeyIndex != 1 {
+		t.Errorf("第一次尝试应记在前一个 Key 上: %+v", l.Attempts[0])
+	}
+	if l.Attempts[1].StatusCode != http.StatusOK || !strings.HasSuffix(l.Attempts[1].UpstreamModel, "m1") {
+		t.Errorf("最后一次尝试应是成功的那个 Key: %+v", l.Attempts[1])
+	}
+}
+
 // 新建渠道（POST）只创建、不覆盖：ID 已被占用时返回 409，
 // 已有渠道的名称、接口地址、密钥和模型都必须保持原样。
 func TestCreateChannelRejectsDuplicateID(t *testing.T) {

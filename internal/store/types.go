@@ -478,7 +478,14 @@ type Log struct {
 	// AsContent 表示这次响应是错误覆写里的「覆写为正文」：调用方收到的是
 	// 200 正常回复，日志按成功记录（前端显示黄色 200），Error 仍保留内部原因。
 	AsContent bool `json:"as_content,omitempty"`
+	// Source 标记日志的来源：空表示网关转发的真实调用，
+	// LogSourceTest 表示后台「渠道测试」里点某个模型跑的一次连通性测试。
+	// 测试没有令牌身份、不写统计，日志页单独用「测试」徽章标出来。
+	Source string `json:"source,omitempty"`
 }
+
+// LogSourceTest 是渠道模型测试产生的日志来源标记。
+const LogSourceTest = "test"
 
 // Failed 是日志的失败判定，日志筛选、统计与模型成功率共用同一口径：
 // 状态码 >= 400，或响应中途出错（如流式断开）。

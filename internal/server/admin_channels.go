@@ -733,9 +733,13 @@ func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	model := strings.TrimSpace(req.Model)
 	if model != "" {
-		writeOK(w, probeWithKeys(ch, req.KeyIndex, func(c store.Channel) probeResult {
+		res := probeWithKeys(ch, req.KeyIndex, func(c store.Channel) probeResult {
 			return s.probeModelOnce(c, model)
-		}))
+		})
+		// 测模型就是一次真实的上游调用，写进调用日志才能回溯「刚才那次测试到底报了什么」。
+		// 只写日志不写统计：测试失败不该拉低渠道成功率，也不该算进看板的调用量。
+		s.recordProbeLog(r, ch, model, res)
+		writeOK(w, res)
 		return
 	}
 	if req.Mode == "list" {
@@ -752,6 +756,57 @@ type probeResult struct {
 	Models  []string `json:"models,omitempty"`
 	// Content 是模型对话测试成功时上游回复的文本摘要，供前端展示。
 	Content string `json:"content,omitempty"`
+
+	// 下面这些字段只用于把「测某个模型」写进调用日志，不序列化给前端
+	// （名字不导出，encoding/json 会直接跳过）。
+	path          string         // 实际请求的上游路径
+	statusCode    int            // 上游返回的状态码；0 表示请求没发出去或没收到响应
+	upstreamModel string         // 本次测的模型名，日志的上游模型列用它
+	usage         upstream.Usage // 上游上报的 token 用量，未上报时为零值
+	responseModel string         // 上游响应里回显的模型名
+	keyIndex      int            // 本次生效的 Key 序号（从 1 开始），无 Key 渠道为 0
+	keyMasked     string         // 本次生效的 Key 掩码
+	keyNote       string         // 本次生效的 Key 备注
+	tries         []store.LogAttempt // 多 Key 逐个尝试的明细，单 Key 或指定 Key 时为空
+}
+
+// attemptErr 返回这次探测的失败原因，成功时为空。
+// 日志的 Error 字段只装内部原因，前端的「状态」按钮点开就是它。
+func (r probeResult) attemptErr() string {
+	if r.OK {
+		return ""
+	}
+	return truncateErr(r.Message)
+}
+
+// logAttempt 把一次探测转成日志里的「尝试明细」，用于多 Key 逐个试的场景。
+func (r probeResult) logAttempt(ch store.Channel) store.LogAttempt {
+	return store.LogAttempt{
+		ChannelID:     ch.ID,
+		ChannelName:   ch.Name,
+		UpstreamModel: r.upstreamModel,
+		KeyIndex:      r.keyIndex,
+		KeyMasked:     r.keyMasked,
+		KeyNote:       r.keyNote,
+		StatusCode:    r.statusCode,
+		LatencyMs:     r.Latency,
+		Error:         r.attemptErr(),
+	}
+}
+
+// stampKey 把本次探测用的是哪个 Key 记进结果，供日志的 Key 列和重试明细使用。
+// 单 Key 渠道不记录（和正式调用的日志保持一致，不显示「#1」这种噪音），
+// 无 Key 渠道（不带认证头）同样不记录。
+func stampKey(res probeResult, list []store.ChannelKey, i int, key string) probeResult {
+	if key == "" || len(list) < 2 {
+		return res
+	}
+	res.keyIndex = i + 1
+	res.keyMasked = maskKey(key)
+	if i < len(list) {
+		res.keyNote = list[i].Note
+	}
+	return res
 }
 
 // probeChannel 逐个尝试渠道的 Key，任意一个可用即返回成功。
@@ -766,12 +821,14 @@ func (s *Server) probeChannel(ch store.Channel) probeResult {
 // 否则按渠道的调度规则取 Key 集合，逐个尝试到第一个可用为止。
 func probeWithKeys(ch store.Channel, keyIndex *int, probe func(store.Channel) probeResult) probeResult {
 	keys := ch.Keys()
+	// KeyList 比 Keys 多带备注，日志里要按序号标出用的是哪一个 Key。
+	list := ch.KeyList()
 	if keyIndex != nil {
 		idx := *keyIndex
 		if idx < 0 || idx >= len(keys) {
 			return probeResult{OK: false, Message: fmt.Sprintf("Key 序号超出范围（该渠道共 %d 个 Key）", len(keys))}
 		}
-		return probe(ch.WithKey(keys[idx]))
+		return stampKey(probe(ch.WithKey(keys[idx])), list, idx, keys[idx])
 	}
 	if !ch.MultiKeyEnabled() && len(keys) > 1 {
 		// 多 Key 模式关闭时只测第一个 Key，与调度行为保持一致。
@@ -783,21 +840,25 @@ func probeWithKeys(ch store.Channel, keyIndex *int, probe func(store.Channel) pr
 	start := time.Now()
 	tried := 0
 	var last probeResult
+	tries := make([]store.LogAttempt, 0, len(keys))
 	for i, key := range keys {
 		// Key 很多且全部超时时，避免管理端请求无限拖长：整体最多探测 1 分钟。
 		if tried > 0 && time.Since(start) > time.Minute {
 			break
 		}
 		tried++
-		res := probe(ch.WithKey(key))
+		res := stampKey(probe(ch.WithKey(key)), list, i, key)
+		tries = append(tries, res.logAttempt(ch))
 		if res.OK {
 			if len(keys) > 1 {
 				res.Message = fmt.Sprintf("%s（第 %d/%d 个 Key 可用）", res.Message, i+1, len(keys))
 			}
+			res.tries = tries
 			return res
 		}
 		last = res
 	}
+	last.tries = tries
 	if len(keys) > 1 {
 		if tried < len(keys) {
 			last.Message = fmt.Sprintf("已尝试 %d/%d 个 Key 均不可用：%s", tried, len(keys), last.Message)
@@ -912,24 +973,104 @@ func (s *Server) probeModelOnce(ch store.Channel, model string) probeResult {
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, upstream.JoinURL(base, path, ch.ShouldAppendV1()), strings.NewReader(string(body)))
 	if err != nil {
-		return probeResult{OK: false, Message: err.Error(), Latency: time.Since(start).Milliseconds()}
+		return probeResult{OK: false, path: path, upstreamModel: model, Message: err.Error(), Latency: time.Since(start).Milliseconds()}
 	}
 	upstream.Get(ch.Type).Auth(req, ch)
 	resp, err := client.Do(req)
 	if err != nil {
-		return probeResult{OK: false, Message: "请求失败: " + err.Error(), Latency: time.Since(start).Milliseconds()}
+		return probeResult{OK: false, path: path, upstreamModel: model, Message: "请求失败: " + err.Error(), Latency: time.Since(start).Milliseconds()}
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return probeResult{OK: false, Message: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateErr(string(raw))),
+		return probeResult{OK: false, path: path, upstreamModel: model, statusCode: resp.StatusCode,
+			Message: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateErr(string(raw))),
 			Latency: time.Since(start).Milliseconds()}
 	}
 	content := extractReplyText(raw)
 	if ch.Type == store.ChannelGemini {
 		content = extractGeminiReplyText(raw, content)
 	}
-	return probeResult{OK: true, Message: "模型 " + model + " 可用", Latency: time.Since(start).Milliseconds(), Content: content}
+	return probeResult{OK: true, path: path, upstreamModel: model, statusCode: resp.StatusCode,
+		Message: "模型 " + model + " 可用", Latency: time.Since(start).Milliseconds(), Content: content,
+		usage: probeUsage(raw), responseModel: upstream.ResponseModel(raw)}
+}
+
+// probeUsage 从上游非流式响应体里读 token 用量，三种协议的字段位置不同：
+// OpenAI 用 usage.prompt_tokens / completion_tokens，
+// Anthropic 用 usage.input_tokens / output_tokens，
+// Gemini 用 usageMetadata.promptTokenCount / candidatesTokenCount。
+// 上游没上报时返回零值，日志里就显示 0。
+func probeUsage(raw []byte) upstream.Usage {
+	var probe struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+			InputTokens      int `json:"input_tokens"`
+			OutputTokens     int `json:"output_tokens"`
+		} `json:"usage"`
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			TotalTokenCount      int `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return upstream.Usage{}
+	}
+	u := upstream.Usage{
+		PromptTokens:     probe.Usage.PromptTokens,
+		CompletionTokens: probe.Usage.CompletionTokens,
+		TotalTokens:      probe.Usage.TotalTokens,
+	}
+	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
+		// Anthropic 用 input/output 命名，没有 total 字段。
+		u.PromptTokens = probe.Usage.InputTokens
+		u.CompletionTokens = probe.Usage.OutputTokens
+	}
+	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
+		u.PromptTokens = probe.UsageMetadata.PromptTokenCount
+		u.CompletionTokens = probe.UsageMetadata.CandidatesTokenCount
+		u.TotalTokens = probe.UsageMetadata.TotalTokenCount
+	}
+	if u.TotalTokens == 0 {
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	}
+	return u
+}
+
+// recordProbeLog 把「渠道里的模型测试」写进调用日志。
+// 测试没有令牌身份（令牌列留空），来源标成 test，日志页会显示「测试」徽章。
+// 只写日志不写统计：测试失败不该拉低渠道成功率，也不该算进看板的调用量。
+func (s *Server) recordProbeLog(r *http.Request, ch store.Channel, model string, res probeResult) {
+	entry := store.Log{
+		ID:               randomHex(8),
+		Time:             time.Now().UnixMilli(),
+		ModelID:          model,
+		ChannelID:        ch.ID,
+		ChannelName:      ch.Name,
+		UpstreamModel:    res.upstreamModel,
+		ResponseModel:    res.responseModel,
+		Endpoint:         res.path,
+		KeyIndex:         res.keyIndex,
+		KeyMasked:        res.keyMasked,
+		KeyNote:          res.keyNote,
+		PromptTokens:     res.usage.PromptTokens,
+		CompletionTokens: res.usage.CompletionTokens,
+		TotalTokens:      res.usage.TotalTokens,
+		LatencyMs:        res.Latency,
+		StatusCode:       res.statusCode,
+		Error:            res.attemptErr(),
+		IP:               clientIP(r),
+		Source:           store.LogSourceTest,
+	}
+	// 多 Key 逐个尝试的明细照搬正式调用的写法，日志里能点开看重试历史。
+	if n := len(res.tries); n > 1 {
+		entry.Retries = n - 1
+		entry.Attempts = res.tries
+	}
+	_ = s.store.AppendLog(entry)
 }
 
 // extractGeminiReplyText 从 Gemini 直连格式（candidates[].content.parts）里取回复文本，
