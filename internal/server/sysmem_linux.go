@@ -30,3 +30,20 @@ func totalSystemMemory() uint64 {
 	}
 	return 0
 }
+
+// processMemory 返回当前进程实际驻留的物理内存（RSS，字节），获取失败时返回 0。
+func processMemory() uint64 {
+	data, err := os.ReadFile("/proc/self/statm")
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 2 {
+		return 0
+	}
+	pages, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return pages * uint64(os.Getpagesize())
+}

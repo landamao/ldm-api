@@ -148,15 +148,23 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	st, _ := s.store.GetSettings()
 	counts, _ := s.store.Stats()
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
+	usage := processMemory()
+	if usage == 0 {
+		// 系统接口不可用时退回运行时申请总量，别在页面上显示 0 B。
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		usage = mem.Sys
+	}
 	writeOK(w, map[string]any{
-		"logged_in":          true,
-		"version":            s.Version,
-		"started_at":         s.StartedAt.UnixMilli(),
-		"uptime_seconds":     int64(time.Since(s.StartedAt).Seconds()),
-		"system":             systemName(),
-		"memory_bytes":       mem.Sys,
+		"logged_in":      true,
+		"version":        s.Version,
+		"started_at":     s.StartedAt.UnixMilli(),
+		"uptime_seconds": int64(time.Since(s.StartedAt).Seconds()),
+		"system":         systemName(),
+		// 进程在系统里实际占用的物理内存（Windows 工作集 / Linux RSS），
+		// 和任务管理器里看到的数字一个口径；不使用 MemStats.Sys —— 那是
+		// 向系统申请过的总量，只增不减，看着像峰值。
+		"memory_bytes":       usage,
 		"memory_total_bytes": totalSystemMemory(),
 		"default_password":   s.CheckPassword(DefaultPassword),
 		"counts":             counts,
