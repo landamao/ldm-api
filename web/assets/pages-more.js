@@ -200,7 +200,7 @@
         <td class="muted num">${i + 1}</td>
         <td class="mono" style="white-space:nowrap">${esc(a.upstream_model || '—')}</td>
         <td style="white-space:nowrap">${a.key_masked
-          ? `<span style="position:relative;display:inline-block">${colorBadge(keyLabel(a), 'badge--xs')}${a.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
+          ? `<span style="position:relative;display:inline-block">${colorBadge(keyLabel(a), 'badge--xs')}${a.key_affinity ? `<span class="affinity-star affinity-star--sm" data-tip="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
           : '<span class="muted">—</span>'}</td>
         <td>${attemptBadge(a)}</td>
         <td class="right num">${esc(fmtDuration(a.latency_ms))}</td>
@@ -297,7 +297,7 @@
       : (l.reasoning_chars ? `思考 ${num(l.reasoning_chars)} 字` : '');
     // 亲和星标在上游模型上：它代表本次实际走的那条路由（渠道 + 上游模型）。
     const modelStar = l.affinity
-      ? `<span class="affinity-star" title="${affinityTitle(l)}">${AFFINITY_STAR}</span>`
+      ? `<span class="affinity-star" data-tip="${affinityTitle(l)}">${AFFINITY_STAR}</span>`
       : '';
     return `<tr>
       <td class="nowrap fs-12">${esc(fmtTime(l.time))}</td>
@@ -311,7 +311,7 @@
       <td class="fs-12">
         ${l.channel_id
           ? `<div class="log-route">${copyBadge(o.channel(l), { label: '渠道', copy: l.channel_id })}${l.key_masked
-            ? `<span class="log-star-wrap">${colorBadge(keyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" title="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
+            ? `<span class="log-star-wrap">${colorBadge(keyLabel(l), 'badge--xs')}${l.key_affinity ? `<span class="affinity-star affinity-star--sm" data-tip="${KEY_AFFINITY_TITLE}">${AFFINITY_STAR}</span>` : ''}</span>`
             : ''}</div>`
           : '<span class="muted">未命中渠道</span>'}
       </td>
@@ -322,7 +322,7 @@
       <td class="num">${num(l.prompt_tokens)}${l.usage_estimate ? ' <span class="muted fs-12" title="上游未上报用量，Token 数为网关估算">(估算)</span>' : ''}${l.cached_tokens ? sub(`缓存读 ${num(l.cached_tokens)}`) : ''}</td>
       <td class="num">${num(l.completion_tokens)}${l.output_estimate ? ' <span class="muted fs-12" title="上游未上报输出用量，按响应正文长度估算">(估算)</span>' : ''}${reasoning ? sub(reasoning) : ''}</td>
       <td class="num">${l.tokens_per_sec
-        ? `<span title="输出 tokens / 生成耗时，按流式请求上游的记录计算（首块内容到末块内容）">${l.tokens_per_sec.toFixed(1)} t/s</span>`
+        ? `<span data-tip="输出 tokens / 生成耗时，按流式请求上游的记录计算（首块内容到末块内容）">${l.tokens_per_sec.toFixed(1)} t/s</span>`
         : '<span class="muted">—</span>'}</td>
       <td class="num">${num(l.total_tokens)}</td>
       <td class="num">${esc(fmtDuration(l.latency_ms))}${l.first_byte_ms ? sub(`首字 ${esc(fmtDuration(l.first_byte_ms))}`) : ''}</td>
@@ -1315,7 +1315,7 @@
             <div class="model-card__head">
               ${avatar}
               <div style="min-width:0;flex:1">
-                <div class="model-card__name" title="${esc(m.id)}">${esc(m.id)}</div>
+                <div class="model-card__name" data-tip="${esc(m.id)}" data-tip-cls="chart-tip--name">${esc(m.id)}</div>
                 <div class="model-card__type ${isCustom ? 'is-custom' : 'is-channel'}">${isCustom ? '自定义' : '渠道'}</div>
                 <div class="model-card__sub">${provider ? `${esc(provider.name)}` : '未设置提供商'}</div>
               </div>
@@ -1326,7 +1326,7 @@
               ${window.LDM.capBadges(m.caps, { showNeg: true })}
               ${(m.tags || []).map((t) => badge(t, 'gray')).join('')}
             </div>
-            ${isCustom && m.routes && m.routes.length ? `<div class="fs-12 muted truncate" style="font-family:var(--mono)" title="${esc(m.routes.map((r) => r.model_id).join(' → '))}">
+            ${isCustom && m.routes && m.routes.length ? `<div class="fs-12 muted truncate" style="font-family:var(--mono)" data-tip="${esc(m.routes.map((r) => r.model_id).join(' → '))}">
               ${esc(m.routes.map((r) => r.model_id).join(' → '))}</div>` : ''}
             ${!isCustom && m.source ? `<div class="fs-12 muted">来源：${esc(m.source)}</div>` : ''}
             <div class="model-card__foot">
@@ -5746,7 +5746,7 @@
       // 开启「单位」后把 token 数缩写为 K / M / B，悬停仍显示精确值。
       // 「(估算)」标记在共用的 logRowHtml 里跟着数值一起出，这里只管格式。
       const tok = (n) => (logUnit.on
-        ? `<span title="${fmtInt(n)}">${fmtUnit(n)}</span>`
+        ? `<span data-tip="${fmtInt(n)}">${fmtUnit(n)}</span>`
         : fmtInt(n));
 
       function renderTable() {

@@ -250,12 +250,12 @@
         </div>
       </td>
       <td>${c.name
-        ? `<span class="truncate" style="display:block;max-width:240px" title="${esc(c.name)}">${esc(c.name)}</span>`
+        ? `<span class="truncate" style="display:block;max-width:240px" data-tip="${esc(c.name)}">${esc(c.name)}</span>`
         : '<span class="muted">—</span>'}</td>
       <td>${badge(typeLabel(c.type), typeTone(c.type))}${multiKeyOn && keyCount > 1
-        ? ` <span class="badge badge--gray" title="${esc(keyTip)}">${keyCount} Keys</span>`
+        ? ` <span class="badge badge--gray" data-tip="${esc(keyTip)}">${keyCount} Keys</span>`
         : ''}</td>
-      <td><span class="muted fs-12 truncate" style="display:block;max-width:170px" title="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
+      <td><span class="muted fs-12 truncate" style="display:block;max-width:170px" data-tip="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
       <td>
         <div class="badge-group">
           ${names.slice(0, 4).map((m) => `<button type="button" class="badge badge--click mono" data-copy="${esc(m)}" data-copy-label="模型名 ">${esc(m)}</button>`).join('')}
@@ -871,7 +871,7 @@
     const modelRowHtml = (m) => `
       <div class="ct-row" data-mrow="${esc(m)}">
         <input type="checkbox" data-msel aria-label="选择 ${esc(m)}">
-        <span class="code ct-row__name" title="${esc(m)}">${esc(m)}</span>
+        <span class="code ct-row__name" data-tip="${esc(m)}">${esc(m)}</span>
         <span class="ct-row__res" data-res>${PENDING}</span>
         <button class="btn btn--sm" data-tbtn title="测试该模型" aria-label="测试 ${esc(m)}">${icon('zap', 12)}测试</button>
         <button class="btn btn--sm btn--icon ct-row__del" data-dbtn title="从渠道移除该模型" aria-label="从渠道移除 ${esc(m)}">${icon('trash', 13)}</button>
@@ -951,11 +951,11 @@
             return `<span class="badge badge--green"><span class="dot"></span>通过</span>`
               + `<span class="fs-12 muted">${res.latency || 0}ms</span>`
               + (res.content
-                ? `<span class="ct-reply" title="${esc(res.content)}">回复：${esc(truncate(res.content, 48))}</span>`
+                ? `<span class="ct-reply" data-tip="${esc(res.content)}" data-tip-cls="chart-tip--name">回复：${esc(truncate(res.content, 48))}</span>`
                 : '');
           }
           return `<span class="badge badge--red"><span class="dot"></span>失败</span>`
-            + `<span class="ct-err" title="${esc(res.message || '未知错误')}">${esc(truncate(res.message || '未知错误', 90))}</span>`;
+            + `<span class="ct-err" data-tip="${esc(res.message || '未知错误')}" data-tip-cls="chart-tip--name">${esc(truncate(res.message || '未知错误', 90))}</span>`;
         };
         // signal 用于「停止测试」：中断后 fetch 立刻抛 AbortError，
         // 用 aborted 标记区分「真的失败」和「用户主动停掉」，避免误报失败结果。
@@ -2521,7 +2521,7 @@
       if (m.routes && m.routes.length) {
         // 完整链路直接铺开，宽度不够由 CSS 省略号截断，完整内容放 title
         const chain = m.routes.map((r) => r.model_id).join(' → ');
-        sourceHtml = `<div class="truncate" style="max-width:320px;font-family:var(--mono);font-size:11.5px" title="${esc(chain)}">${esc(chain)}</div>`;
+        sourceHtml = `<div class="truncate" style="max-width:320px;font-family:var(--mono);font-size:11.5px" data-tip="${esc(chain)}">${esc(chain)}</div>`;
       } else if (m.status === 'custom_content') {
         sourceHtml = badge('始终返回内容', 'green');
       } else {
@@ -2529,7 +2529,7 @@
       }
     } else {
       const ch = channels.find((c) => c.id === m.channel_id);
-      sourceHtml = `<div class="truncate" style="max-width:230px" title="${esc(m.channel_id + (ch && ch.name ? '（' + ch.name + '）' : ''))}">`
+      sourceHtml = `<div class="truncate" style="max-width:230px" data-tip="${esc(m.channel_id + (ch && ch.name ? '（' + ch.name + '）' : ''))}">`
         + `<span class="code">${esc(m.channel_id)}</span>${ch && ch.name ? `<span class="muted fs-12">${esc(ch.name)}</span>` : ''}</div>`;
     }
 

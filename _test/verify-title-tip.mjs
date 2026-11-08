@@ -1,6 +1,7 @@
-// 统一气泡：全站原生 title 被接管后的回归。
-// 桌面：悬停带 title 的元素 → 冒气泡显示同一段文字；原生 title 已摘掉；移开收起。
-// 手机：点一下带 title 的元素 → 气泡出现且不出屏；点空白收起。
+// 统一气泡：只认 data-tip，title 交还浏览器原生。
+// 桌面：带 title 的元素悬停不弹自绘气泡、title 原封不动（原生 tooltip 接管）；
+//       带 data-tip 的元素悬停照常弹气泡、移开收起。
+// 手机：点一下带 data-tip 的元素 → 气泡出现且不出屏；点空白收起。
 // 用法：node _test/verify-title-tip.mjs（默认 6821 端口的已跑起来的服务）
 import { chromium } from 'playwright-core';
 
@@ -49,10 +50,12 @@ const pin = (page, sel) => page.evaluate((s) => {
   if (!el) return null;
   window.__tipTarget = el;
   const r = el.getBoundingClientRect();
-  return { title: el.getAttribute('title'), x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  return {
+    title: el.getAttribute('title'),
+    tip: el.getAttribute('data-tip'),
+    x: r.x + r.width / 2, y: r.y + r.height / 2,
+  };
 }, sel);
-
-const targetTitle = (page) => page.evaluate(() => window.__tipTarget.getAttribute('title'));
 
 // ---------- 桌面 ----------
 console.log('\n[桌面 1440]');
@@ -65,68 +68,74 @@ const dpage = await login(dctx);
 await dpage.goto(BASE + '/#/channels', { waitUntil: 'domcontentloaded' });
 await dpage.waitForTimeout(1600);
 
-// 渠道名：带 title 的截断文本，不会触发任何操作
-const box = await pin(dpage, '.channels-card td span[title]');
-ok(!!box && !!box.title, `找到一个带 title 的元素（${box && box.title}）`);
+// 被截断的渠道名：显式 data-tip，照常弹自绘气泡
+const box = await pin(dpage, '.channels-card td span[data-tip]');
+ok(!!box && !!box.tip, `找到带 data-tip 的元素（${box && box.tip}）`);
 await dpage.mouse.move(box.x, box.y);
 await dpage.waitForTimeout(320);
 const d1 = await tipOn(dpage);
-ok(!!d1, '悬停后弹出气泡');
-ok(d1 && d1.text === box.title, `气泡文字就是原 title（${d1 && d1.text}）`);
+ok(!!d1, '悬停 data-tip 元素弹出气泡');
+ok(d1 && d1.text === box.tip, `气泡文字就是 data-tip（${d1 && d1.text}）`);
 ok(d1 && d1.left >= 0 && d1.right <= d1.vw && d1.top >= 0 && d1.bottom <= d1.vh, '气泡完整落在视口里');
 ok(d1 && d1.pe === 'none', '普通文字气泡不吃鼠标事件', d1 && d1.pe);
-ok((await targetTitle(dpage)) === null, '原生 title 已摘掉，不会同时冒原生气泡');
 await dpage.screenshot({ path: `${SHOT}/title-tip-desktop.png`, clip: { x: 0, y: 100, width: 1440, height: 420 } });
 
 await dpage.mouse.move(20, 700);
 await dpage.waitForTimeout(320);
 ok(!(await tipOn(dpage)), '鼠标移开后气泡收起');
 
-// 带文字的操作按钮：title 只是把功能重说一遍（「测试」/「测试连通性」），不弹
+// 只有 title 的按钮：不弹自绘气泡，title 保留（交还浏览器原生 tooltip）
 const btnBox = await dpage.evaluate(() => {
   const el = document.querySelector('.channels-card [data-act="test"]');
   if (!el) return null;
   const r = el.getBoundingClientRect();
   return { x: r.x + r.width / 2, y: r.y + r.height / 2, title: el.getAttribute('title'), text: el.textContent.trim() };
 });
+ok(!!btnBox && !!btnBox.title, `找到带 title 的按钮（${btnBox && btnBox.title}）`);
 if (btnBox && btnBox.title) {
   await dpage.mouse.move(btnBox.x, btnBox.y);
-  await dpage.waitForTimeout(320);
-  ok(!(await tipOn(dpage)), `带文字的按钮不弹功能说明（${btnBox.text} / ${btnBox.title}）`);
+  await dpage.waitForTimeout(400);
+  ok(!(await tipOn(dpage)), `带 title 的按钮不弹自绘气泡（${btnBox.text} / ${btnBox.title}）`);
   const left = await dpage.evaluate(() => {
     const el = document.querySelector('.channels-card [data-act="test"]');
     return el ? el.getAttribute('title') : 'gone';
   });
-  ok(left === null, '这类 title 连原生 tooltip 一起摘掉');
+  ok(left === btnBox.title, 'title 原封不动，交给浏览器原生提示', left);
+  await dpage.mouse.move(20, 700);
+  await dpage.waitForTimeout(200);
 }
 
-// 纯图标按钮（没有文字）：同样不弹——「清空当前对话」这类说明比原生气泡还吵
+// 纯图标按钮同理：title 保留、自绘气泡不出现
 const iconBox = await dpage.evaluate(() => {
   const el = document.querySelector('.channels-card [data-act="del"]');
-  if (!el || el.textContent.trim()) return null;
+  if (!el) return null;
   const r = el.getBoundingClientRect();
-  return { x: r.x + r.width / 2, y: r.y + r.height / 2, title: el.getAttribute('title') };
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2, title: el.getAttribute('title'), text: el.textContent.trim() };
 });
 if (iconBox) {
   await dpage.mouse.move(iconBox.x, iconBox.y);
-  await dpage.waitForTimeout(320);
-  const iconTip = await tipOn(dpage);
-  ok(!iconTip, `纯图标按钮也不弹功能说明（${iconBox.title}）`);
+  await dpage.waitForTimeout(400);
+  ok(!(await tipOn(dpage)), `纯图标按钮不弹自绘气泡，走原生 title（${iconBox.title}）`);
+  const left = await dpage.evaluate(() => {
+    const el = document.querySelector('.channels-card [data-act="del"]');
+    return el ? el.getAttribute('title') : 'gone';
+  });
+  ok(left === iconBox.title, '纯图标按钮的 title 也保留', left);
   await dpage.mouse.move(20, 700);
   await dpage.waitForTimeout(320);
 }
 ok((await dpage.locator('.chart-tip.is-on').count()) === 0, '收起后节点也摘掉了');
 
-// 长帮助文本：问号按钮
+// 长帮助文本：问号按钮（data-tip）
 await dpage.goto(BASE + '/#/models', { waitUntil: 'domcontentloaded' });
 await dpage.waitForTimeout(1500);
-// 长帮助文本：现插一个节点，顺带验证「运行期新加的 DOM 也能被接管」
 const LONG = '开启后对话类请求一律以流式请求上游：客户端要流式时正常透传，客户端要非流式时由网关流式收完再按非流式返回。这样超时时间按「两段输出之间的空档」生效，上游迟迟不吐字、或者吐一半卡住，都能快速失败并切到下一条路由。';
+// 运行期新插一个 data-tip 节点：新 DOM 也要能被委托接管
 await dpage.evaluate((text) => {
   const d = document.createElement('div');
   d.id = 'tip-probe';
   d.textContent = '长文本探测';
-  d.title = text;
+  d.setAttribute('data-tip', text);
   d.style.cssText = 'position:fixed;left:620px;top:320px;z-index:9999;padding:6px 10px;background:#fff;border-radius:6px';
   document.body.appendChild(d);
 }, LONG);
@@ -170,13 +179,13 @@ const mpage = await login(mctx);
 await mpage.goto(BASE + '/#/channels', { waitUntil: 'domcontentloaded' });
 await mpage.waitForTimeout(1800);
 
-const mbox = await pin(mpage, '.channels-card td span[title]');
+const mbox = await pin(mpage, '.channels-card td span[data-tip]');
 if (mbox) {
   await mpage.touchscreen.tap(mbox.x, mbox.y);
   await mpage.waitForTimeout(320);
   const m1 = await tipOn(mpage);
   ok(!!m1, '手机上点一下弹出气泡');
-  ok(m1 && m1.text === mbox.title, `手机上气泡文字正确（${m1 && m1.text}）`);
+  ok(m1 && m1.text === mbox.tip, `手机上气泡文字正确（${m1 && m1.text}）`);
   ok(m1 && m1.left >= 0 && m1.right <= m1.vw, '手机气泡没有超出屏幕', m1 && `${m1.left}..${m1.right}/${m1.vw}`);
   await mpage.screenshot({ path: `${SHOT}/title-tip-mobile.png` });
 
@@ -191,7 +200,7 @@ if (mbox) {
   await mpage.waitForTimeout(320);
   ok(!(await tipOn(mpage)), '手机再点同一个元素收起');
 } else {
-  ok(false, '手机渠道页没找到带 title 的元素');
+  ok(false, '手机渠道页没找到带 data-tip 的元素');
 }
 
 await browser.close();

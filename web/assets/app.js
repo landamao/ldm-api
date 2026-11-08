@@ -840,9 +840,10 @@
   })();
 
   // ---------- 统一气泡提示 ----------
-  // 全站所有「鼠标悬停 / 触屏点一下」才出现的提示都走这一套，手感只有一个：
-  //  · 原生 title 属性被接管——原生气泡手机上没有，桌面上又慢又改不了样式
-  //  · 图表图例里被省略号截断的模型名、日志里的上游模型卡片复用同一个气泡
+  // 只服务「不弹气泡就看不全」的地方，由元素自己写 data-tip 声明：
+  // 被省略号截断的名字、问号里的整段帮助、图例统计、错误摘要、精确数值……
+  // 其余元素的 title / 说明文字保持浏览器原生 tooltip——全局接管太重，
+  // 「测试」「添加附件」这类短提示原生就够用，没必要全站换一套皮。
   // 桌面悬停弹出、键盘 Tab 弹出、触屏点一下弹出（再点一下 / 点别处 / Esc / 切页收起）。
   // 气泡挂 body 上 fixed 定位——表格和卡片都会裁内容；滚动时跟着锚点走，
   // 手机上点完常有惯性滚动，直接收起会像「点了没反应」。
@@ -939,9 +940,6 @@
       else el.removeAttribute('aria-label');
       if (opts.html != null) el.innerHTML = opts.html;
       else el.textContent = String(opts.text == null ? '' : opts.text);
-      // 卡片类气泡里的小徽章自己带 title，原生 tooltip 在气泡里冒出来很脏，
-      // 一并读走；委托那边会跳过气泡内部的元素，不会套娃弹气泡。
-      Array.prototype.forEach.call(el.querySelectorAll('[title]'), readTip);
       el.style.pointerEvents = opts.interactive ? 'auto' : '';
       el.classList.add('is-on');
       anchor = a;
@@ -968,34 +966,11 @@
       timer = setTimeout(() => { timer = 0; hide(); }, wait);
     }
 
-    // ---- 原生 title 接管 ----
-    // 按钮 / 链接上的 title 一律不弹：图标或文字已经把功能说清楚了，鼠标每划过一次
-    // 就冒一个「清空当前对话」「测试连通性」，比原生气泡还吵。这类 title 连原生
-    // tooltip 一起摘掉。
-    // 还会弹的只有「不给气泡就看不全」的信息：被截断的名字、问号里的整段帮助、
-    // 图例统计、错误摘要……问号和图例这类按钮用 data-tip 显式声明，绕过这条过滤。
-    function wantsTip(el) {
-      return el.tagName !== 'BUTTON' && el.tagName !== 'A';
-    }
-
-    // 第一次要显示时把 title 读走存进 data-tip，顺手给纯图标元素补一个无障碍名称。
-    function readTip(el) {
-      const raw = el.getAttribute('title');
-      if (raw == null) return el.dataset.tip || '';
-      // 不管弹不弹，原生 title 一律摘掉：慢、丑，手机上还按不出来
-      el.removeAttribute('title');
-      if (!raw) return '';
-      if (!wantsTip(el)) {
-        if (!el.hasAttribute('aria-label') && !(el.textContent || '').trim()) el.setAttribute('aria-label', raw);
-        return '';
-      }
-      el.dataset.tip = raw;
-      if (!el.hasAttribute('aria-label') && !(el.textContent || '').trim()) el.setAttribute('aria-label', raw);
-      return raw;
-    }
-
+    // ---- 只认 data-tip ----
+    // 显式声明才弹：模板里写 data-tip="…"，或运行期用 LDM.tip.attach 挂上。
+    // 没写 data-tip 的元素一概不管，鼠标悬停走浏览器原生 tooltip。
     function optsFor(el) {
-      const text = readTip(el);
+      const text = (el.getAttribute('data-tip') || '').trim();
       if (!text) return null;
       return { text, className: el.dataset.tipCls || '', pinned: false };
     }
@@ -1017,7 +992,7 @@
       const t = e.target;
       if (!t || !t.closest) return;
       if (box && box.contains(t)) { clearTimer(); return; }
-      const a = t.closest('[title], [data-tip]');
+      const a = t.closest('[data-tip]');
       if (!a) {
         // 鼠标还在锚点自己身上（比如从徽章文字移到徽章里的图标）不算离开——
         // 否则每动一下就挂个延时关闭，气泡看着就是「显示一会儿就没了」
@@ -1050,7 +1025,7 @@
       if (box && box.contains(t)) return;
       // 文本类输入框点进去就忙着打字，说明气泡挡在下面反而碍事（开关类的照弹）
       if (t.matches && t.matches('input:not([type=checkbox]):not([type=radio]), textarea')) return;
-      const a = t.closest('[title], [data-tip]');
+      const a = t.closest('[data-tip]');
       if (!a) return;
       const opts = optsFor(a);
       if (opts) show(a, opts);
@@ -1064,7 +1039,7 @@
       const t = e.target;
       if (!t || !t.closest) return;
       if (box && box.contains(t)) return; // 气泡里的复制按钮自己处理
-      const a = t.closest('[title], [data-tip]');
+      const a = t.closest('[data-tip]');
       if (!a) {
         // 只收自己管的那些气泡，别把别的卡片（如日志里的上游模型）顺手关掉
         if (anchor && anchor.hasAttribute('data-tip')) hide();
