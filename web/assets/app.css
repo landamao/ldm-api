@@ -1766,6 +1766,7 @@ html[data-theme="dark"] .ldm-opt__check { color: var(--leaf-300); }
 }
 .body-edit__path,
 .body-cond__path,
+.input.body-edit__target,
 .input.body-edit__value-input,
 .input.body-cond__value-input {
   height: 32px;
@@ -1792,8 +1793,16 @@ html[data-theme="dark"] .ldm-opt__check { color: var(--leaf-300); }
 .textarea.body-edit__value-input { min-height: 54px; }
 .textarea.body-cond__value-input { min-height: 44px; }
 .body-edit__row { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px; align-items: start; }
-/* 「类型 + 值」与下面的覆盖开关之间留出间距：缺这层 flex 时 label 是行内元素，
-   会紧贴上一行，开关轨道看起来和输入框黏在一起。 */
+/* 移动字段：源路径在头部，这一行只填目标路径，列宽与头部一致好对齐 */
+.body-edit__move {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+.body-edit__move[hidden] { display: none; }
+.body-edit__move-label { font-size: 12px; color: var(--text-3); }
+/* 设置字段的「类型 + 值」一行；「不覆盖」开关在卡片层级，设置和移动共用。 */
 .body-edit__set { display: flex; flex-direction: column; gap: 10px; }
 .body-edit__set[hidden] { display: none; }
 .body-edit__keep .switch__label { font-size: 12px; }
@@ -1851,6 +1860,7 @@ html[data-theme="dark"] .ldm-opt__check { color: var(--leaf-300); }
 @media (max-width: 640px) {
   .body-edit__head { grid-template-columns: 104px minmax(0, 1fr) auto; }
   .body-edit__row { grid-template-columns: 88px minmax(0, 1fr); }
+  .body-edit__move { grid-template-columns: 104px minmax(0, 1fr); }
   .body-cond {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
     /* 手机上「比较方式 + 值类型」并排，值单独占一行 */

@@ -78,6 +78,9 @@ const (
 	BodyEditPatch = "patch"
 	// BodyEditDelete 删除字段：路径不存在时忽略。
 	BodyEditDelete = "delete"
+	// BodyEditMove 移动字段：把源路径的值搬到目标路径，并删掉源字段。
+	// 源字段不存在时忽略；目标已有值时看 KeepOrigin 决定覆盖还是整条跳过。
+	BodyEditMove = "move"
 )
 
 // 请求体修改的值类型，只影响后台回填和校验，转发时按原始 JSON 写入。
@@ -120,19 +123,23 @@ type BodyEditCondition struct {
 	PassMissingKey bool `json:"pass_missing_key,omitempty"`
 }
 
-// BodyEdit 是转发前对 JSON 请求体的一条修改：删除字段或设置字段。
+// BodyEdit 是转发前对 JSON 请求体的一条修改：删除字段、设置字段或移动字段。
 type BodyEdit struct {
-	// Mode 是 set 或 delete。
+	// Mode 是 set / patch / delete / move。
 	Mode string `json:"mode"`
 	// Path 是 JSON 路径，用点号分隔层级，数组用数字下标（支持负数）。
 	// 例如 temperature、messages.0.role、tools.-1.function.name；
-	// 字段名本身带点号时用 \. 转义。
+	// 字段名本身带点号时用 \. 转义。move 时是源字段路径。
 	Path string `json:"path"`
+	// Target 是 move 的目标字段路径，语法与 Path 相同，其余模式为空。
+	// 例如把 reasoning_effort 搬到 chat_template_kwargs.reasoning_effort。
+	Target string `json:"target,omitempty"`
 	// ValueType 是设置值的类型：string / number / boolean / json。
 	ValueType string `json:"value_type,omitempty"`
 	// Value 是要写入的值，按原样保存 JSON。
 	Value json.RawMessage `json:"value,omitempty"`
 	// KeepOrigin 为 true 时，客户端已经带了同名字段就不覆盖。
+	// move 时含义是目标路径已有值就不搬（源字段保持在原位）。
 	KeepOrigin bool `json:"keep_origin,omitempty"`
 	// Conditions 是执行条件，按 Logic 组合后决定这条修改是否生效。
 	Conditions []BodyEditCondition `json:"conditions,omitempty"`

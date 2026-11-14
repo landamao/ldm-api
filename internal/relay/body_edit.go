@@ -179,6 +179,38 @@ func setEditValue(root any, segs []editPathSeg, val any) (any, error) {
 	return m, nil
 }
 
+// pruneEmptyParents 把变空的父对象逐层删掉，返回新的根。
+//
+// 移动字段会把源字段摘走、删除字段会把它删掉，如果它原本是父对象里最后一个键，
+// 父对象就成了 {"a": {}}。这种空壳对上游没有任何意义，有些严格的上游还会直接
+// 400，所以顺手清掉；删掉一层后它自己的父级也可能变空，继续往上清。
+//
+// 只清对象键，不动数组元素：删除数组元素会让后面的下标整体前移，
+// 把同一次请求里后续规则的目标路径全部错位，代价比留一个空壳大得多。
+func pruneEmptyParents(root any, segs []editPathSeg) any {
+	// 源本身就是顶层字段时没有父级可清。
+	if len(segs) < 2 {
+		return root
+	}
+	parent := segs[:len(segs)-1]
+	if parent[len(parent)-1].isIdx {
+		return root
+	}
+	cur, exists := getEditValue(root, parent)
+	if !exists {
+		return root
+	}
+	m, ok := cur.(map[string]any)
+	if !ok || len(m) > 0 {
+		return root
+	}
+	next, removed, err := deleteEditValue(root, parent)
+	if err != nil || !removed {
+		return root
+	}
+	return pruneEmptyParents(next, parent)
+}
+
 // deleteEditValue 删除路径上的字段，返回新的根。
 // 第二个返回值表示是否真的删掉了内容；路径不存在时原样返回。
 func deleteEditValue(root any, segs []editPathSeg) (any, bool, error) {
@@ -429,6 +461,9 @@ func ApplyBodyEdits(body []byte, edits []store.BodyEdit) ([]byte, bool, error) {
 				continue
 			}
 			obj, _ = next.(map[string]any)
+			// 删完变空的父对象一起清掉，和移动字段保持一致：
+			// 空对象对上游没有意义，还可能被严格的接口判成非法参数。
+			obj, _ = pruneEmptyParents(obj, segs).(map[string]any)
 			changed = true
 		case store.BodyEditSet, store.BodyEditPatch:
 			_, exists := getEditValue(obj, segs)
@@ -451,6 +486,44 @@ func ApplyBodyEdits(body []byte, edits []store.BodyEdit) ([]byte, bool, error) {
 				continue
 			}
 			obj, _ = next.(map[string]any)
+			changed = true
+		case store.BodyEditMove:
+			targets, err := parseEditPath(edit.Target)
+			if err != nil {
+				continue
+			}
+			val, exists := getEditValue(obj, segs)
+			// 源字段不存在就没有可搬的值，跳过而不是凭空造一个。
+			if !exists {
+				continue
+			}
+			// 勾了「目标已有值不覆盖」时整条跳过：只删源不写目标会让值彻底丢掉，
+			// 原地不动比悄悄删掉更符合预期。
+			if edit.KeepOrigin {
+				if _, has := getEditValue(obj, targets); has {
+					continue
+				}
+			}
+			// 先删源再写目标：目标可能是源的子路径（a 搬到 a.b），
+			// 顺序反过来会把刚写进去的值又删掉。
+			next, removed, err := deleteEditValue(obj, segs)
+			if err != nil || !removed {
+				continue
+			}
+			obj, _ = next.(map[string]any)
+			// 源是父对象里最后一个键时父对象会剩成空壳（{"a": {}}），
+			// 一起清掉：空对象对上游没有意义，还可能被严格的接口判成非法参数。
+			obj, _ = pruneEmptyParents(obj, segs).(map[string]any)
+			written, err := setEditValue(obj, targets, val)
+			if err != nil {
+				// 目标写不进去（例如负数下标越界）时把源值放回原位，
+				// 别让一条配置有误的规则把字段吃掉。
+				if restore, rerr := setEditValue(obj, segs, val); rerr == nil {
+					obj, _ = restore.(map[string]any)
+				}
+				continue
+			}
+			obj, _ = written.(map[string]any)
 			changed = true
 		}
 	}
@@ -508,8 +581,22 @@ func NormalizeBodyEdits(edits []store.BodyEdit) ([]store.BodyEdit, error) {
 			if mode == store.BodyEditSet {
 				next.KeepOrigin = edit.KeepOrigin
 			}
+		case store.BodyEditMove:
+			target := strings.TrimSpace(edit.Target)
+			if target == "" {
+				return nil, fmt.Errorf("%s：移动字段要填目标路径", label)
+			}
+			if _, err := parseEditPath(target); err != nil {
+				return nil, fmt.Errorf("%s：目标路径有误：%s", label, err.Error())
+			}
+			if target == path {
+				return nil, fmt.Errorf("%s：目标路径不能和源路径相同", label)
+			}
+			// 移动不需要值：搬过去的永远是请求体里现有的内容。
+			next.Target = target
+			next.KeepOrigin = edit.KeepOrigin
 		default:
-			return nil, fmt.Errorf("%s：不支持的修改方式“%s”，只能是 set / patch / delete", label, edit.Mode)
+			return nil, fmt.Errorf("%s：不支持的修改方式“%s”，只能是 set / patch / delete / move", label, edit.Mode)
 		}
 
 		for j, cond := range edit.Conditions {

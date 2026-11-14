@@ -1470,8 +1470,8 @@
   }
 
   // ---------- 渠道「请求体修改」编辑器 ----------
-  // 一条规则：{mode, path, value_type, value, keep_origin, conditions[], logic}
-  // 只做删除字段和设置字段两种操作，条件与 new-api 的参数覆盖一致。
+  // 一条规则：{mode, path, target, value_type, value, keep_origin, conditions[], logic}
+  // 支持删除字段、设置字段、修改字段和移动字段四种操作，条件与 new-api 的参数覆盖一致。
   const BODY_EDIT_COND_MODES = [
     ['full', '等于'], ['prefix', '前缀'], ['suffix', '后缀'], ['contains', '包含'],
     ['gt', '大于'], ['gte', '大于等于'], ['lt', '小于'], ['lte', '小于等于'],
@@ -1622,7 +1622,6 @@
 
   function bodyEditCard(edit) {
     const e = edit || {};
-    const isDelete = e.mode === 'delete';
     const card = document.createElement('div');
     card.className = 'body-edit';
     card.setAttribute('data-body-edit', '');
@@ -1635,8 +1634,10 @@
     mode.className = 'select body-edit__mode';
     mode.innerHTML = '<option value="set">设置字段</option>'
       + '<option value="patch">修改字段</option>'
+      + '<option value="move">移动字段</option>'
       + '<option value="delete">删除字段</option>';
-    mode.value = isDelete ? 'delete' : (e.mode === 'patch' ? 'patch' : 'set');
+    mode.value = e.mode === 'delete' ? 'delete'
+      : (e.mode === 'move' ? 'move' : (e.mode === 'patch' ? 'patch' : 'set'));
 
     const path = document.createElement('input');
     path.className = 'input mono body-edit__path';
@@ -1652,6 +1653,22 @@
     del.innerHTML = icon('trash', 13);
 
     head.append(mode, path, del);
+
+    // 移动字段：源路径在头部，这里填搬到哪里
+    const moveArea = document.createElement('div');
+    moveArea.className = 'body-edit__move';
+
+    const moveLabel = document.createElement('span');
+    moveLabel.className = 'body-edit__move-label';
+    moveLabel.textContent = '移动到';
+
+    const target = document.createElement('input');
+    target.className = 'input mono body-edit__target';
+    target.placeholder = '目标字段路径，例如 chat_template_kwargs.reasoning_effort';
+    target.value = e.target || '';
+    target.spellcheck = false;
+
+    moveArea.append(moveLabel, target);
 
     // 设置字段：类型 + 值 + 是否覆盖
     const setArea = document.createElement('div');
@@ -1673,11 +1690,12 @@
     keep.innerHTML = '<input type="checkbox"><span class="switch__track"></span>'
       + '<span class="switch__label">已有同名字段不覆盖</span>';
     keep.querySelector('input').checked = e.keep_origin === true;
+    const keepLabel = keep.querySelector('.switch__label');
 
     const setRow = document.createElement('div');
     setRow.className = 'body-edit__row';
     setRow.append(typeSel, valueWrap);
-    setArea.append(setRow, keep);
+    setArea.append(setRow);
 
     // 条件：折叠区，标题上带条数
     const condBox = document.createElement('div');
@@ -1729,12 +1747,16 @@
 
     condBox.append(toggle, condBody);
 
-    card.append(head, setArea, condBox);
+    card.append(head, setArea, moveArea, keep, condBox);
 
     const syncMode = () => {
-      setArea.hidden = mode.value === 'delete';
-      // 「已有同名字段不覆盖」只对设置字段有意义：修改字段本身就是「客户端带了才改」。
-      keep.hidden = mode.value !== 'set';
+      const m = mode.value;
+      setArea.hidden = m === 'delete' || m === 'move';
+      moveArea.hidden = m !== 'move';
+      // 「不覆盖」只对设置和移动有意义：修改字段本身就是「客户端带了才改」，
+      // 删除则没有值需要保护。
+      keep.hidden = m !== 'set' && m !== 'move';
+      keepLabel.textContent = m === 'move' ? '目标已有值不覆盖' : '已有同名字段不覆盖';
     };
     syncMode();
     mode.onchange = syncMode;
@@ -1783,7 +1805,7 @@
     if (!has && !empty) {
       const tip = document.createElement('div');
       tip.className = 'body-edits__empty';
-      tip.textContent = '还没有规则。点击右上角「添加规则」删除或设置请求体字段。';
+      tip.textContent = '还没有规则。点击右上角「添加规则」设置、移动、修改或删除请求体字段。';
       host.append(tip);
     }
   }
@@ -1796,7 +1818,13 @@
       const path = card.querySelector('.body-edit__path').value.trim();
       if (!path) throw new Error(`第 ${i + 1} 条规则还没有填字段路径`);
       const item = { mode, path };
-      if (mode !== 'delete') {
+      if (mode === 'move') {
+        const target = card.querySelector('.body-edit__target').value.trim();
+        if (!target) throw new Error(`第 ${i + 1} 条规则还没有填「移动到」的目标路径`);
+        item.target = target;
+        // 移动只需要一个开关：目标已有值时是否覆盖。
+        item.keep_origin = card.querySelector('.body-edit__keep input').checked;
+      } else if (mode !== 'delete') {
         const type = card.querySelector('select.body-edit__type').value;
         const input = card.querySelector('.body-edit__value-input');
         item.value_type = type;
@@ -1856,16 +1884,21 @@
     const arr = Array.isArray(parsed) ? parsed
       : (parsed && Array.isArray(parsed.body_edits) ? parsed.body_edits : null);
     if (!arr) throw new Error('需要一个规则数组，或包含 body_edits 数组的对象');
-    const modes = ['set', 'patch', 'delete'];
+    const modes = ['set', 'patch', 'move', 'delete'];
     return arr.map((it, i) => {
       const n = i + 1;
       if (!it || typeof it !== 'object' || Array.isArray(it)) throw new Error(`第 ${n} 条必须是对象`);
       const mode = String(it.mode || 'set').toLowerCase();
-      if (!modes.includes(mode)) throw new Error(`第 ${n} 条的 mode 只能是 set / patch / delete`);
+      if (!modes.includes(mode)) throw new Error(`第 ${n} 条的 mode 只能是 set / patch / move / delete`);
       const path = typeof it.path === 'string' ? it.path.trim() : '';
       if (!path) throw new Error(`第 ${n} 条缺少 path`);
       const edit = { mode, path };
-      if (mode !== 'delete') {
+      if (mode === 'move') {
+        const target = typeof it.target === 'string' ? it.target.trim() : '';
+        if (!target) throw new Error(`第 ${n} 条缺少 target`);
+        edit.target = target;
+        edit.keep_origin = it.keep_origin === true;
+      } else if (mode !== 'delete') {
         if (it.value === undefined) throw new Error(`第 ${n} 条缺少 value`);
         const type = String(it.value_type || 'json').toLowerCase();
         if (!BODY_EDIT_VALUE_TYPES.some(([v]) => v === type)) {
@@ -1971,7 +2004,9 @@
     const hint = document.createElement('div');
     hint.className = 'field__hint';
     hint.innerHTML = '规则按从上到下的顺序执行，只作用于 JSON 请求体。'
-      + '设置字段：没带就补上；修改字段：只有客户端传了才改；删除字段：没有就忽略。'
+      + '设置字段：没带就补上；修改字段：只有客户端传了才改；'
+      + '移动字段：把源字段的值搬到目标路径并删掉源字段；删除字段：没有就忽略。'
+      + '移动或删除后变空的对象会一并清掉。'
       + '路径用点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写 <code>a\\.b</code>。';
 
     wrap.append(toolbar, visual, jsonBox, hint);
@@ -2005,7 +2040,7 @@
 
     return openModal({
       title: '请求体修改',
-      desc: '设置、修改或删除转发到上游的 JSON 请求体字段，可以加条件。改完点「保存规则」，再随渠道一起保存。',
+      desc: '设置、修改、移动或删除转发到上游的 JSON 请求体字段，可以加条件。改完点「保存规则」，再随渠道一起保存。',
       size: 'xl',
       // 叠在渠道编辑弹窗上面：Esc 和各层按钮只关最上面这层
       top: true,
@@ -2095,7 +2130,9 @@
     const keyCooldownStatusHelpText = `支持单个状态码或区间，逗号分隔，例如 400-430、401,403,429。命中后该 Key 进入失败冷却；未命中的状态码不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。超时、连接失败、断流、空响应不冷却 Key。留空表示任何状态码都不冷却 Key；点击「填入模板」填入 ${DEFAULT_KEY_COOLDOWN_STATUS}。`;
     const bodyEditHelpText = `转发到上游之前修改 JSON 请求体。
       设置字段：客户端没带就加上；勾选「已有同名字段不覆盖」时只补缺，客户端自己传了就不动它。
-      删除字段：路径不存在时直接忽略。
+      修改字段：只有客户端已经传了这个字段才改，没传就跳过。
+      移动字段：把「字段路径」的值搬到「移动到」，并删掉原字段——例如 reasoning_effort 搬到 chat_template_kwargs.reasoning_effort。源字段不存在时跳过；勾选「目标已有值不覆盖」时目标已有值就整条跳过，源字段留在原位。搬走某个对象里最后一个键时，空掉的父对象会一起删掉。
+      删除字段：路径不存在时直接忽略；删完变空的父对象会一起删掉。
       路径用点号分层，数组写数字下标（-1 表示最后一项），字段名本身带点号时写成 a\\.b。
       条件可选：读请求体里另一个字段，按「等于 / 前缀 / 后缀 / 包含 / 大于 / 大于等于 / 小于 / 小于等于」比较，命中才执行这条修改；多条条件可以选「任一满足」或「全部满足」，字段不存在默认不算命中，可以单独勾「字段不存在也算满足」，也可以勾「取反」。
       等于按类型严格比较（字符串 "5" 不等于数字 5）；前缀 / 后缀 / 包含按文本比较，数字和布尔会先转成文字（数字 12 当成 "12"，布尔 true 当成 "true"）；大于 / 小于两边都必须是数字。
@@ -2300,9 +2337,12 @@
             return;
           }
           const chips = bodyEditsDraft.slice(0, BODY_EDIT_SUMMARY_MAX).map((e) => {
-            const verb = e.mode === 'delete' ? '删除' : (e.mode === 'patch' ? '修改' : '设置');
-            const tone = e.mode === 'delete' ? 'gray' : (e.mode === 'patch' ? 'blue' : 'wood');
-            return badge(`${verb} ${e.path}`, tone);
+            const verb = e.mode === 'delete' ? '删除'
+              : (e.mode === 'patch' ? '修改' : (e.mode === 'move' ? '移动' : '设置'));
+            const tone = e.mode === 'delete' ? 'gray'
+              : (e.mode === 'patch' ? 'blue' : (e.mode === 'move' ? 'violet' : 'wood'));
+            const to = e.mode === 'move' && e.target ? ` → ${e.target}` : '';
+            return badge(`${verb} ${e.path}${to}`, tone);
           });
           if (bodyEditsDraft.length > BODY_EDIT_SUMMARY_MAX) {
             chips.push(`<span class="muted fs-12">+${bodyEditsDraft.length - BODY_EDIT_SUMMARY_MAX}</span>`);
@@ -2319,7 +2359,9 @@
         $('#f-body-edit-help').onclick = () => {
           openHelpModal('请求体修改', `
             <div style="margin-bottom:8px"><b>设置字段</b>：客户端没带就加上；勾选「已有同名字段不覆盖」时只补缺，客户端自己传了就不动它。</div>
-            <div style="margin-bottom:8px"><b>删除字段</b>：路径不存在时直接忽略。</div>
+            <div style="margin-bottom:8px"><b>修改字段</b>：只有客户端已经传了这个字段才改，没传就跳过。</div>
+            <div style="margin-bottom:8px"><b>移动字段</b>：把「字段路径」的值搬到「移动到」，并删掉原字段，例如 <code>reasoning_effort</code> 搬到 <code>chat_template_kwargs.reasoning_effort</code>。源字段不存在时跳过；勾选「目标已有值不覆盖」时，目标已有值就整条跳过，源字段留在原位。搬走某个对象里最后一个键时，空掉的父对象会一起删掉（逐层往上清），不会留下 <code>{"a": {}}</code> 这种空壳。</div>
+            <div style="margin-bottom:8px"><b>删除字段</b>：路径不存在时直接忽略；删完变空的父对象会一起删掉（逐层往上清）。</div>
             <div style="margin-bottom:8px"><b>路径</b>：点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写成 <code>a\\.b</code>。</div>
             <div style="margin-bottom:8px"><b>条件</b>：读请求体里另一个字段，按「等于 / 前缀 / 后缀 / 包含 / 大于 / 大于等于 / 小于 / 小于等于」比较，命中才执行这条修改。多条条件可以选「任一满足」或「全部满足」；字段不存在默认不算命中，可以单独勾「字段不存在也算满足」，也可以勾「取反」。</div>
             <div style="margin-bottom:8px"><b>比较方式与类型</b>：「等于」按类型严格比较，字符串 <code>"5"</code> 不等于数字 <code>5</code>；「前缀 / 后缀 / 包含」按文本比较，数字和布尔会先转成文字（数字 <code>12</code> 当成 <code>"12"</code>、布尔 <code>true</code> 当成 <code>"true"</code>、对象和数组用紧凑 JSON），所以数字选前缀也能匹配；「大于 / 小于」两边都必须是数字。</div>

@@ -607,3 +607,334 @@ func TestNormalizeBodyEditsPatch(t *testing.T) {
 		t.Error("修改字段没填值应当报错")
 	}
 }
+
+// TestApplyBodyEditsMove 移动字段：把源路径的值搬到目标路径，源字段消失。
+func TestApplyBodyEditsMove(t *testing.T) {
+	// 顶层搬到嵌套对象
+	body := []byte(`{"model":"m","reasoning_effort":"max","temperature":0.7}`)
+	edits := mustEdits(t, []store.BodyEdit{
+		{Mode: "move", Path: "reasoning_effort", Target: "chat_template_kwargs.reasoning_effort"},
+	})
+	out, changed, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("应当有改动")
+	}
+	got := bodyEditJSON(t, out)
+	if _, exists := got["reasoning_effort"]; exists {
+		t.Errorf("源字段应被删除：%v", got)
+	}
+	kwargs, ok := got["chat_template_kwargs"].(map[string]any)
+	if !ok || kwargs["reasoning_effort"] != "max" {
+		t.Errorf("值应搬到目标路径：%v", got["chat_template_kwargs"])
+	}
+	if got["model"] != "m" {
+		t.Errorf("同级的其他字段不应受影响：%v", got)
+	}
+
+	// 反向：嵌套对象搬回顶层，数字原样保留
+	body = []byte(`{"chat_template_kwargs":{"reasoning_effort":1024,"keep":true}}`)
+	edits = mustEdits(t, []store.BodyEdit{
+		{Mode: "move", Path: "chat_template_kwargs.reasoning_effort", Target: "reasoning_effort"},
+	})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	if got["reasoning_effort"].(json.Number).String() != "1024" {
+		t.Errorf("值应原样搬到顶层：%v", got["reasoning_effort"])
+	}
+	kwargs = got["chat_template_kwargs"].(map[string]any)
+	if _, exists := kwargs["reasoning_effort"]; exists {
+		t.Errorf("嵌套里的源字段应被删除：%v", kwargs)
+	}
+	if kwargs["keep"] != true {
+		t.Errorf("同层的其他字段不应受影响：%v", kwargs)
+	}
+}
+
+// TestApplyBodyEditsMoveTarget 目标已有值时的覆盖策略，以及源不存在的情况。
+func TestApplyBodyEditsMoveTarget(t *testing.T) {
+	body := []byte(`{"a":"new","b":{"a":"old"}}`)
+
+	// 默认覆盖目标
+	edits := mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "a", Target: "b.a"}})
+	out, _, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := bodyEditJSON(t, out)
+	if _, exists := got["a"]; exists {
+		t.Errorf("源字段应被删除：%v", got)
+	}
+	if got["b"].(map[string]any)["a"] != "new" {
+		t.Errorf("目标已有值时应被覆盖：%v", got["b"])
+	}
+
+	// 勾了「目标已有值不覆盖」：整条规则跳过，源和目标都留在原位
+	edits = mustEdits(t, []store.BodyEdit{
+		{Mode: "move", Path: "a", Target: "b.a", KeepOrigin: true},
+	})
+	out, changed, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Errorf("目标已有值且不覆盖时不应改动请求体：%s", out)
+	}
+	got = bodyEditJSON(t, out)
+	if got["a"] != "new" || got["b"].(map[string]any)["a"] != "old" {
+		t.Errorf("源和目标都应保持原样：%v", got)
+	}
+
+	// 目标不存在时「不覆盖」也照常搬过去
+	edits = mustEdits(t, []store.BodyEdit{
+		{Mode: "move", Path: "a", Target: "c.a", KeepOrigin: true},
+	})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	if got["c"].(map[string]any)["a"] != "new" {
+		t.Errorf("目标不存在时应正常搬运：%v", got["c"])
+	}
+
+	// 源字段不存在：跳过，不凭空造字段
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "nope.x", Target: "c.x"}})
+	out, changed, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Errorf("源字段不存在时不应改动：%s", out)
+	}
+}
+
+// TestApplyBodyEditsMoveWriteFails 目标路径写不进去时要把源值放回去，别吃掉字段。
+func TestApplyBodyEditsMoveWriteFails(t *testing.T) {
+	body := []byte(`{"a":1,"list":[]}`)
+	edits := mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "a", Target: "list.-3"}})
+	out, changed, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Errorf("目标越界时不应算改动：%s", out)
+	}
+	got := bodyEditJSON(t, out)
+	if got["a"].(json.Number).String() != "1" {
+		t.Errorf("源字段应被放回原位：%v", got)
+	}
+}
+
+// TestApplyBodyEditsMovePrunesEmptyParents 搬走父对象里最后一个键时，
+// 空的父对象要跟着删掉，并且逐层往上清。
+func TestApplyBodyEditsMovePrunesEmptyParents(t *testing.T) {
+	// 单层：搬走唯一的子键后 a 变空，整个删掉
+	body := []byte(`{"a":{"b":"max"},"model":"m"}`)
+	edits := mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "a.b", Target: "x.y"}})
+	out, _, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := bodyEditJSON(t, out)
+	if _, exists := got["a"]; exists {
+		t.Errorf("空掉的父对象应被删除：%v", got["a"])
+	}
+	if got["x"].(map[string]any)["y"] != "max" {
+		t.Errorf("值应搬到目标路径：%v", got["x"])
+	}
+	if got["model"] != "m" {
+		t.Errorf("无关字段不应受影响：%v", got)
+	}
+
+	// 连锁：删掉 c 后 a.b 空、a 也跟着空，两层都要清掉
+	body = []byte(`{"a":{"b":{"c":"max"}}}`)
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "a.b.c", Target: "x"}})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	if _, exists := got["a"]; exists {
+		t.Errorf("连续变空的父级应逐层删除：%v", got)
+	}
+	if got["x"] != "max" {
+		t.Errorf("值应搬到目标路径：%v", got)
+	}
+
+	// 父对象里还有别的键时不能删
+	body = []byte(`{"a":{"b":"max","d":1}}`)
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "a.b", Target: "x"}})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	a, ok := got["a"].(map[string]any)
+	if !ok || len(a) != 1 || a["d"].(json.Number).String() != "1" {
+		t.Errorf("没搬空的父对象应保留其余键：%v", got["a"])
+	}
+
+	// 父级是数组元素时只清字段、不删元素：删元素会让后面的下标整体前移
+	body = []byte(`{"messages":[{"content":"hi","role":"user"}],"x":{}}`)
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "messages.0.content", Target: "x.y"}})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	msgs := got["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("数组元素不应被删除：%v", msgs)
+	}
+	if _, exists := msgs[0].(map[string]any)["content"]; exists {
+		t.Errorf("源字段应被删除：%v", msgs[0])
+	}
+	if msgs[0].(map[string]any)["role"] != "user" {
+		t.Errorf("同级的其他键不应受影响：%v", msgs[0])
+	}
+}
+
+// TestApplyBodyEditsDeletePrunesEmptyParents 删除字段后父对象变空时同样逐层清掉，
+// 和移动字段保持一致。
+func TestApplyBodyEditsDeletePrunesEmptyParents(t *testing.T) {
+	// 单层：删掉唯一的子键后 a 变空，整个删掉
+	body := []byte(`{"a":{"b":"max"},"model":"m"}`)
+	edits := mustEdits(t, []store.BodyEdit{{Mode: "delete", Path: "a.b"}})
+	out, _, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := bodyEditJSON(t, out)
+	if _, exists := got["a"]; exists {
+		t.Errorf("空掉的父对象应被删除：%v", got["a"])
+	}
+	if got["model"] != "m" {
+		t.Errorf("无关字段不应受影响：%v", got)
+	}
+
+	// 连锁：c 删掉后 a.b 空、a 也空，两层一起清
+	body = []byte(`{"a":{"b":{"c":"max"}}}`)
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "delete", Path: "a.b.c"}})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got = bodyEditJSON(t, out); len(got) != 0 {
+		t.Errorf("连续变空的父级应逐层删除，实际 %v", got)
+	}
+
+	// 父对象里还有别的键时不能删
+	body = []byte(`{"a":{"b":"max","d":1}}`)
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "delete", Path: "a.b"}})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	a, ok := got["a"].(map[string]any)
+	if !ok || len(a) != 1 || a["d"].(json.Number).String() != "1" {
+		t.Errorf("没删空的父对象应保留其余键：%v", got["a"])
+	}
+
+	// 父级是数组元素时只清字段、不删元素：删元素会让后面的下标整体前移
+	body = []byte(`{"messages":[{"content":"hi"}],"x":{}}`)
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "delete", Path: "messages.0.content"}})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	msgs := got["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("数组元素不应被删除：%v", msgs)
+	}
+	if len(msgs[0].(map[string]any)) != 0 {
+		t.Errorf("元素应变成空对象但保留在数组里：%v", msgs[0])
+	}
+}
+
+// TestApplyBodyEditsMoveWithinSameBranch 源和目标在同一分支上互相嵌套时，
+// 先删后写要能正确处理，不能被「清理空父级」打乱。
+func TestApplyBodyEditsMoveWithinSameBranch(t *testing.T) {
+	// 目标在源内部：顶层字段搬进以它命名的对象
+	body := []byte(`{"a":"max"}`)
+	edits := mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "a", Target: "a.b"}})
+	out, _, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := bodyEditJSON(t, out)
+	a, ok := got["a"].(map[string]any)
+	if !ok || a["b"] != "max" {
+		t.Errorf("值应下沉到 a.b：%v", got["a"])
+	}
+
+	// 目标是源的父级：子字段的值提上来覆盖整个父对象
+	body = []byte(`{"a":{"b":"max"}}`)
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "a.b", Target: "a"}})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	if got["a"] != "max" {
+		t.Errorf("父对象应被值本身替换：%v", got["a"])
+	}
+
+	// 同一父级内换键：a.b 搬到 a.c，a 不能因为中间的短暂空壳被删掉
+	body = []byte(`{"a":{"b":"max"}}`)
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "a.b", Target: "a.c"}})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	a, ok = got["a"].(map[string]any)
+	if !ok || a["c"] != "max" {
+		t.Errorf("同一父级内换键应成功：%v", got["a"])
+	}
+	if _, exists := a["b"]; exists {
+		t.Errorf("源字段应被删除：%v", a)
+	}
+}
+
+func TestNormalizeBodyEditsMove(t *testing.T) {
+	out, err := NormalizeBodyEdits([]store.BodyEdit{{
+		Mode: "MOVE", Path: " reasoning_effort ", Target: " chat_template_kwargs.reasoning_effort ",
+		ValueType: "string", Value: json.RawMessage(`"max"`), KeepOrigin: true,
+	}})
+	if err != nil {
+		t.Fatalf("移动字段不应报错：%v", err)
+	}
+	if out[0].Mode != store.BodyEditMove {
+		t.Errorf("模式应为 move，实际 %q", out[0].Mode)
+	}
+	if out[0].Path != "reasoning_effort" || out[0].Target != "chat_template_kwargs.reasoning_effort" {
+		t.Errorf("路径两端空格应被去掉：%+v", out[0])
+	}
+	if len(out[0].Value) != 0 || out[0].ValueType != "" {
+		t.Errorf("移动规则不应保留值和值类型：%+v", out[0])
+	}
+	if !out[0].KeepOrigin {
+		t.Errorf("「目标已有值不覆盖」应保留：%+v", out[0])
+	}
+
+	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "move", Path: "a"}}); err == nil {
+		t.Error("移动字段没填目标路径应当报错")
+	}
+	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "move", Path: "a", Target: " a "}}); err == nil {
+		t.Error("目标路径与源路径相同应当报错")
+	}
+	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "move", Path: "a", Target: "b..c"}}); err == nil {
+		t.Error("目标路径有错误层级应当报错")
+	}
+	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "copy", Path: "a", Target: "b"}}); err == nil {
+		t.Error("不支持的修改方式应当报错")
+	}
+}
