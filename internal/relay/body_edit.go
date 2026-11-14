@@ -262,15 +262,43 @@ func editNumber(v any) (float64, bool) {
 	return 0, false
 }
 
+// editStringOf 把任意 JSON 值转成用于「前缀 / 后缀 / 包含」比较的文本。
+// 这四种比较按字符串语义走：数字用原文（json.Number）、布尔是 true / false、
+// 对象和数组用紧凑 JSON，所以「数字 12 以 1 开头」「JSON 里含某段文字」都能命中。
+func editStringOf(v any) (string, bool) {
+	switch t := v.(type) {
+	case nil:
+		return "", false
+	case string:
+		return t, true
+	case json.Number:
+		return t.String(), true
+	case bool:
+		if t {
+			return "true", true
+		}
+		return "false", true
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	// 和请求体重写保持同一套转义规则，含 < > & 的 JSON 也能按原文匹配。
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return "", false
+	}
+	return strings.TrimRight(buf.String(), "\n"), true
+}
+
 // compareEditValues 按比较方式判断请求体里的值是否命中条件值。
-// 类型对不上时返回 false（例如用 contains 比较数字、用 gt 比较字符串）。
+// 「等于」按类型严格比较（字符串 "5" 不等于数字 5）；「前缀 / 后缀 / 包含」
+// 先把两边转成文本；「大于 / 小于」两边都必须是数字。
 func compareEditValues(have any, want any, mode string) bool {
 	switch mode {
 	case "", store.CondFull:
 		return equalEditValues(have, want)
 	case store.CondPrefix, store.CondSuffix, store.CondContains:
-		hs, hok := have.(string)
-		ws, wok := want.(string)
+		hs, hok := editStringOf(have)
+		ws, wok := editStringOf(want)
 		if !hok || !wok {
 			return false
 		}

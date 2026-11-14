@@ -492,3 +492,40 @@ func TestNormalizeCondValueType(t *testing.T) {
 		t.Error("不支持的值类型应当报错")
 	}
 }
+
+// TestCompareEditValuesStringModes 前缀 / 后缀 / 包含按字符串语义比较：
+// 数字、布尔、对象都能先转成文本再匹配，和 new-api 的口径一致。
+func TestCompareEditValuesStringModes(t *testing.T) {
+	cases := []struct {
+		name string
+		have any
+		want string
+		mode string
+		ok   bool
+	}{
+		{"数字前缀", json.Number("123"), `12`, store.CondPrefix, true},
+		{"数字后缀", json.Number("123"), `23`, store.CondSuffix, true},
+		{"数字包含", json.Number("123"), `2`, store.CondContains, true},
+		{"数字前缀不命中", json.Number("123"), `23`, store.CondPrefix, false},
+		{"布尔包含", true, `"ru"`, store.CondContains, true},
+		{"布尔前缀", false, `"fal"`, store.CondPrefix, true},
+		{"布尔前缀不命中", false, `"tru"`, store.CondPrefix, false},
+		{"对象包含", map[string]any{"type": "disabled"}, `"disabled"`, store.CondContains, true},
+		{"数组包含", []any{"a", "b"}, `"b"`, store.CondContains, true},
+		{"字符串照旧", "gpt-4o", `"gpt"`, store.CondPrefix, true},
+		{"全等仍按类型", json.Number("5"), `"5"`, store.CondFull, false},
+		{"全等数字", json.Number("5"), `5`, store.CondFull, true},
+		{"空值不参与文本匹配", nil, `""`, store.CondPrefix, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := decodeEditValue(json.RawMessage(tc.want))
+			if err != nil {
+				t.Fatalf("条件值解析失败：%v", err)
+			}
+			if got := compareEditValues(tc.have, want, tc.mode); got != tc.ok {
+				t.Errorf("期望 %v，实际 %v（have=%v want=%s mode=%s）", tc.ok, got, tc.have, tc.want, tc.mode)
+			}
+		})
+	}
+}

@@ -1491,6 +1491,8 @@
 
   function bodyEditValueInput(type, text, cls) {
     const klass = cls || 'body-edit__value-input';
+    // 多行扩大窗口用 aria-label 当标题，别只显示一个笼统的「编辑文本」。
+    const label = klass.indexOf('body-cond') >= 0 ? '比对值' : '值';
     if (type === 'boolean') {
       const sel = document.createElement('select');
       sel.className = 'select mono ' + klass;
@@ -1505,6 +1507,7 @@
       ta.placeholder = '{"type": "disabled"}';
       ta.value = text;
       ta.spellcheck = false;
+      ta.setAttribute('aria-label', label);
       return ta;
     }
     const inp = document.createElement('input');
@@ -1512,6 +1515,7 @@
     inp.placeholder = type === 'number' ? '例如 0.6' : '例如 always';
     inp.value = text;
     inp.spellcheck = false;
+    inp.setAttribute('aria-label', label);
     return inp;
   }
 
@@ -1929,6 +1933,7 @@
       删除字段：路径不存在时直接忽略。
       路径用点号分层，数组写数字下标（-1 表示最后一项），字段名本身带点号时写成 a\\.b。
       条件可选：读请求体里另一个字段，按「等于 / 前缀 / 后缀 / 包含 / 大于 / 大于等于 / 小于 / 小于等于」比较，命中才执行这条修改；多条条件可以选「任一满足」或「全部满足」，字段不存在默认不算命中，可以单独勾「字段不存在也算满足」，也可以勾「取反」。
+      等于按类型严格比较（字符串 "5" 不等于数字 5）；前缀 / 后缀 / 包含按文本比较，数字和布尔会先转成文字（数字 12 当成 "12"，布尔 true 当成 "true"）；大于 / 小于两边都必须是数字。
       只作用于 JSON 请求体（表单、语音二进制请求原样转发），字段名按上游协议书写。`;
 
     const body = `
@@ -2151,6 +2156,7 @@
             <div style="margin-bottom:8px"><b>删除字段</b>：路径不存在时直接忽略。</div>
             <div style="margin-bottom:8px"><b>路径</b>：点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写成 <code>a\\.b</code>。</div>
             <div style="margin-bottom:8px"><b>条件</b>：读请求体里另一个字段，按「等于 / 前缀 / 后缀 / 包含 / 大于 / 大于等于 / 小于 / 小于等于」比较，命中才执行这条修改。多条条件可以选「任一满足」或「全部满足」；字段不存在默认不算命中，可以单独勾「字段不存在也算满足」，也可以勾「取反」。</div>
+            <div style="margin-bottom:8px"><b>比较方式与类型</b>：「等于」按类型严格比较，字符串 <code>"5"</code> 不等于数字 <code>5</code>；「前缀 / 后缀 / 包含」按文本比较，数字和布尔会先转成文字（数字 <code>12</code> 当成 <code>"12"</code>、布尔 <code>true</code> 当成 <code>"true"</code>、对象和数组用紧凑 JSON），所以数字选前缀也能匹配；「大于 / 小于」两边都必须是数字。</div>
             <div style="margin-bottom:8px"><b>比对值也要选类型</b>：字符串、数字、布尔、JSON 各管各的——字符串 <code>"5"</code> 和数字 <code>5</code> 在比较时是两回事，保存时会校验填的内容和选的类型对不对得上。留空表示和 <code>null</code> 比较（配合「等于」使用）。</div>
             <div>只作用于 <b>JSON 请求体</b>，表单和语音二进制请求原样转发。字段名按上游协议书写：OpenAI 兼容渠道填 OpenAI 的字段，Anthropic / Gemini 渠道填各自协议的字段（协议转换之后才应用）。</div>
           `);

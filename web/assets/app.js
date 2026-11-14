@@ -1093,6 +1093,11 @@
 
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop' + (top ? ' modal-backdrop--top' : '');
+    // 弹窗会层层叠加（渠道编辑 → 请求体修改 → 文本扩大编辑），层级按打开顺序递增：
+    // 后开的一定压住先开的，也不会被右侧抽屉（150）盖住。
+    // 之前固定 100、少数传 top 的才 200，结果「扩大编辑」从弹窗里打开时跑到了后面。
+    // 抽屉是 150、图片灯箱 260、下拉 350、Toast 400，递增从 200 起不会越界。
+    backdrop.style.zIndex = String(200 + modalStack.length * 10);
     const sizeCls = size ? ' modal--' + size : '';
     const extraCls = cls ? ' ' + cls : '';
     backdrop.innerHTML =

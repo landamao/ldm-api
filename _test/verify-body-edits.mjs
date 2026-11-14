@@ -250,13 +250,32 @@ const r2 = page.locator(`${PANE} .body-edit`).nth(1);
 check(await r2.locator('select.body-edit__mode').inputValue() === 'delete', '删除模式回显');
 check(await r2.locator('.body-edit__set').isHidden(), '删除模式重新打开也不显示值区');
 
-// ---- 8) 值类型互转不丢内容 ----
+// ---- 8) 值类型互转不丢内容 + JSON 值的扩大编辑要浮在最上面 ----
 await setSelect(r1.locator('select.body-edit__type'), 'json');
-await page.waitForTimeout(100);
+await page.waitForTimeout(200);
 check(await r1.locator('.body-edit__value-input').inputValue() === '4096', '切到 JSON 时保留原文本');
+
+// 扩大编辑曾经因为固定 z-index 100 而躲到渠道/规则弹窗后面
+const expandBtn = r1.locator('.textarea-expand__btn');
+check(await expandBtn.count() === 1, 'JSON 值有多行扩大按钮');
+await expandBtn.click();
+await page.waitForSelector('.modal--expand', { timeout: 4000 });
+await page.waitForTimeout(300);
+const zorder = await page.evaluate(() => [...document.querySelectorAll('.modal-backdrop')]
+  .map((b) => Number(getComputedStyle(b).zIndex) || 0));
+console.log('  z-order:', JSON.stringify(zorder));
+check(zorder.length === 3, '三层弹窗叠加（渠道 / 规则 / 扩大编辑）', zorder);
+check(zorder[2] > zorder[1] && zorder[1] > zorder[0], '后开的弹窗层级更高', zorder);
+// 扩大窗口的内容要真的改到原输入框
+await page.fill('#ldm-expand-editor', '{"a": 1}');
+await page.click('.modal--expand [data-act=ok]');
+await page.waitForTimeout(400);
+check(await page.locator('.modal--expand').count() === 0, '扩大编辑窗口关闭');
+check(await r1.locator('.body-edit__value-input').inputValue() === '{"a": 1}', '扩大编辑的内容回写到值');
+
 await setSelect(r1.locator('select.body-edit__type'), 'string');
 await page.waitForTimeout(100);
-check(await r1.locator('.body-edit__value-input').inputValue() === '4096', '切回字符串仍保留文本');
+check(await r1.locator('.body-edit__value-input').inputValue() === '{"a": 1}', '切回字符串仍保留文本');
 await setSelect(r1.locator('select.body-edit__type'), 'number');
 
 // ---- 9) 值填错时拦在规则弹窗里 ----

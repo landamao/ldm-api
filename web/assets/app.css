@@ -2207,6 +2207,8 @@ html[data-theme="dark"] .tab.is-active { color: var(--leaf-300); }
      keyframes 只写 from，to 自动用 .modal-backdrop 自己的 background。 */
   animation: overlayFade .18s ease;
 }
+/* 叠加层级由 openModal 按打开顺序写进 inline style（200 / 210 / 220…），
+   这里只是没有 inline style 时的兜底，别在这里写死多层。 */
 .modal-backdrop--top { z-index: 200; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideUp { from { opacity: 0; transform: translateY(16px) scale(.97); } to { opacity: 1; transform: none; } }
