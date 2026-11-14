@@ -1469,6 +1469,444 @@
     });
   }
 
+  // ---------- 渠道「请求体修改」编辑器 ----------
+  // 一条规则：{mode, path, value_type, value, keep_origin, conditions[], logic}
+  // 只做删除字段和设置字段两种操作，条件与 new-api 的参数覆盖一致。
+  const BODY_EDIT_COND_MODES = [
+    ['full', '等于'], ['prefix', '前缀'], ['suffix', '后缀'], ['contains', '包含'],
+    ['gt', '大于'], ['gte', '大于等于'], ['lt', '小于'], ['lte', '小于等于'],
+  ];
+  const BODY_EDIT_VALUE_TYPES = [
+    ['string', '字符串'], ['number', '数字'], ['boolean', '布尔'], ['json', 'JSON'],
+  ];
+
+  // editValueText 把已保存的值还原成输入框文本。
+  function editValueText(type, v) {
+    if (v === undefined || v === null) return '';
+    if (type === 'json') return typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+    if (type === 'boolean') return v === true ? 'true' : 'false';
+    if (type === 'number') return String(v);
+    return typeof v === 'string' ? v : JSON.stringify(v);
+  }
+
+  function bodyEditValueInput(type, text, cls) {
+    const klass = cls || 'body-edit__value-input';
+    if (type === 'boolean') {
+      const sel = document.createElement('select');
+      sel.className = 'select mono ' + klass;
+      sel.innerHTML = '<option value="true">true</option><option value="false">false</option>';
+      sel.value = String(text).trim() === 'false' ? 'false' : 'true';
+      return sel;
+    }
+    if (type === 'json') {
+      const ta = document.createElement('textarea');
+      ta.className = 'textarea mono ' + klass;
+      ta.rows = 2;
+      ta.placeholder = '{"type": "disabled"}';
+      ta.value = text;
+      ta.spellcheck = false;
+      return ta;
+    }
+    const inp = document.createElement('input');
+    inp.className = 'input mono ' + klass;
+    inp.placeholder = type === 'number' ? '例如 0.6' : '例如 always';
+    inp.value = text;
+    inp.spellcheck = false;
+    return inp;
+  }
+
+  // inferCondValueType 给没有 value_type 的旧条件按值推断类型。
+  function inferCondValueType(v) {
+    if (typeof v === 'string') return 'string';
+    if (typeof v === 'number') return 'number';
+    if (typeof v === 'boolean') return 'boolean';
+    return 'json';
+  }
+
+  // readTypedValue 按声明的类型把输入框文本转成要提交的 JSON 值。
+  // allowEmpty 为 true 时空白表示 null（条件值允许为空，用来判断字段是不是 null）。
+  function readTypedValue(type, rawText, opts) {
+    const o = opts || {};
+    const text = String(rawText == null ? '' : rawText);
+    const label = o.label || '值';
+    if (type === 'number') {
+      const t = text.trim();
+      const n = Number(t);
+      if (!t || !Number.isFinite(n)) throw new Error(`${label}“${text}”不是数字`);
+      return n;
+    }
+    if (type === 'boolean') return text.trim() !== 'false';
+    if (type === 'json') {
+      if (!text.trim()) {
+        if (o.allowEmpty) return null;
+        throw new Error(`${label}还没有填`);
+      }
+      try { return JSON.parse(text); } catch (e) { throw new Error(`${label}不是合法的 JSON`); }
+    }
+    return text;
+  }
+
+  function bodyEditCondRow(cond) {
+    const c = cond || {};
+    const row = document.createElement('div');
+    row.className = 'body-cond';
+    row.setAttribute('data-body-cond', '');
+
+    const path = document.createElement('input');
+    path.className = 'input mono body-cond__path';
+    path.placeholder = '条件字段，例如 model';
+    path.value = c.path || '';
+    path.spellcheck = false;
+
+    const mode = document.createElement('select');
+    mode.className = 'select body-cond__mode';
+    mode.innerHTML = BODY_EDIT_COND_MODES
+      .map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+    mode.value = c.mode || 'full';
+
+    // 比对值也要声明类型：字符串 "5" 和数字 5 在比较时是两回事。
+    // 新建条件默认字符串；老数据没有类型字段时按值本身推断。
+    const valueType = BODY_EDIT_VALUE_TYPES.some(([v]) => v === c.value_type)
+      ? c.value_type
+      : (c.value === undefined ? 'string' : inferCondValueType(c.value));
+    const type = document.createElement('select');
+    type.className = 'select body-cond__type';
+    type.innerHTML = BODY_EDIT_VALUE_TYPES
+      .map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+    type.value = valueType;
+
+    const valueWrap = document.createElement('div');
+    valueWrap.className = 'body-cond__value';
+    valueWrap.append(bodyEditValueInput(valueType, editValueText(valueType, c.value), 'body-cond__value-input'));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn btn--sm btn--icon btn--danger body-cond__del';
+    del.title = '删除该条件';
+    del.setAttribute('aria-label', '删除该条件');
+    del.innerHTML = icon('trash', 12);
+
+    const flags = document.createElement('div');
+    flags.className = 'body-cond__flags';
+
+    const invertLabel = document.createElement('label');
+    const invert = document.createElement('input');
+    invert.type = 'checkbox';
+    invert.className = 'body-cond__invert';
+    invert.checked = c.invert === true;
+    invertLabel.append(invert, document.createTextNode('取反'));
+
+    const missLabel = document.createElement('label');
+    const miss = document.createElement('input');
+    miss.type = 'checkbox';
+    miss.className = 'body-cond__miss';
+    miss.checked = c.pass_missing_key === true;
+    missLabel.append(miss, document.createTextNode('字段不存在也算满足'));
+
+    type.onchange = () => {
+      // 换类型时保留已输入的文字，用户不必重敲。
+      const prev = valueWrap.querySelector('.body-cond__value-input');
+      valueWrap.replaceChildren(bodyEditValueInput(
+        type.value, prev ? prev.value : '', 'body-cond__value-input',
+      ));
+    };
+
+    flags.append(invertLabel, missLabel);
+    row.append(path, mode, type, valueWrap, del, flags);
+    return row;
+  }
+
+  function bodyEditCard(edit) {
+    const e = edit || {};
+    const isDelete = e.mode === 'delete';
+    const card = document.createElement('div');
+    card.className = 'body-edit';
+    card.setAttribute('data-body-edit', '');
+
+    // 头部：操作方式 + 字段路径 + 删除
+    const head = document.createElement('div');
+    head.className = 'body-edit__head';
+
+    const mode = document.createElement('select');
+    mode.className = 'select body-edit__mode';
+    mode.innerHTML = '<option value="set">设置字段</option><option value="delete">删除字段</option>';
+    mode.value = isDelete ? 'delete' : 'set';
+
+    const path = document.createElement('input');
+    path.className = 'input mono body-edit__path';
+    path.placeholder = '字段路径，例如 temperature 或 messages.0.role';
+    path.value = e.path || '';
+    path.spellcheck = false;
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn btn--sm btn--icon btn--danger body-edit__del';
+    del.title = '删除该规则';
+    del.setAttribute('aria-label', '删除该规则');
+    del.innerHTML = icon('trash', 13);
+
+    head.append(mode, path, del);
+
+    // 设置字段：类型 + 值 + 是否覆盖
+    const setArea = document.createElement('div');
+    setArea.className = 'body-edit__set';
+
+    const typeSel = document.createElement('select');
+    typeSel.className = 'select body-edit__type';
+    typeSel.innerHTML = BODY_EDIT_VALUE_TYPES
+      .map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+    const initType = BODY_EDIT_VALUE_TYPES.some(([v]) => v === e.value_type) ? e.value_type : 'string';
+    typeSel.value = initType;
+
+    const valueWrap = document.createElement('div');
+    valueWrap.className = 'body-edit__value';
+    valueWrap.append(bodyEditValueInput(initType, editValueText(initType, e.value)));
+
+    const keep = document.createElement('label');
+    keep.className = 'switch body-edit__keep';
+    keep.innerHTML = '<input type="checkbox"><span class="switch__track"></span>'
+      + '<span class="switch__label">已有同名字段不覆盖</span>';
+    keep.querySelector('input').checked = e.keep_origin === true;
+
+    const setRow = document.createElement('div');
+    setRow.className = 'body-edit__row';
+    setRow.append(typeSel, valueWrap);
+    setArea.append(setRow, keep);
+
+    // 条件：折叠区，标题上带条数
+    const condBox = document.createElement('div');
+    condBox.className = 'body-edit__conds';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'btn btn--ghost btn--sm body-edit__cond-toggle';
+
+    const condBody = document.createElement('div');
+    condBody.className = 'body-edit__cond-body';
+    condBody.hidden = true;
+
+    const logicRow = document.createElement('div');
+    logicRow.className = 'body-edit__logic';
+    const logicText = document.createElement('span');
+    logicText.textContent = '多条条件';
+    const logic = document.createElement('select');
+    logic.className = 'select body-edit__logic-select';
+    logic.innerHTML = '<option value="or">任一满足</option><option value="and">全部满足</option>';
+    logic.value = e.logic === 'and' ? 'and' : 'or';
+    logicRow.append(logicText, logic);
+
+    const condList = document.createElement('div');
+    condList.className = 'body-cond-list';
+
+    const addCond = document.createElement('button');
+    addCond.type = 'button';
+    addCond.className = 'btn btn--ghost btn--sm body-edit__cond-add';
+    addCond.innerHTML = icon('plus', 11) + '添加条件';
+
+    condBody.append(logicRow, condList, addCond);
+
+    const updateCondLabel = () => {
+      const n = condList.querySelectorAll('[data-body-cond]').length;
+      toggle.innerHTML = (n ? `条件（${n}）` : '条件')
+        + `<span class="body-edit__cond-chev">${icon('chevron', 12)}</span>`;
+      toggle.classList.toggle('is-on', n > 0);
+      toggle.classList.toggle('is-open', !condBody.hidden);
+      if (n && condBody.hidden && !toggle.dataset.opened) {
+        // 已有条件时默认展开，方便一眼看到这条规则的触发条件。
+        condBody.hidden = false;
+        toggle.dataset.opened = '1';
+        toggle.classList.add('is-open');
+      }
+    };
+    (e.conditions || []).forEach((c) => condList.append(bodyEditCondRow(c)));
+    updateCondLabel();
+
+    condBox.append(toggle, condBody);
+
+    card.append(head, setArea, condBox);
+    if (isDelete) setArea.hidden = true;
+
+    mode.onchange = () => {
+      setArea.hidden = mode.value === 'delete';
+    };
+    typeSel.onchange = () => {
+      // 换类型时保留已输入的文字，用户不必重敲一遍。
+      const prev = valueWrap.querySelector('.body-edit__value-input');
+      const text = prev ? prev.value : '';
+      valueWrap.replaceChildren(bodyEditValueInput(typeSel.value, text));
+    };
+    del.onclick = () => {
+      // 先取容器再移除卡片：remove() 之后 parentElement 已经是 null。
+      const host = card.parentElement;
+      card.remove();
+      refreshBodyEditsEmpty(host);
+    };
+    toggle.onclick = () => {
+      condBody.hidden = !condBody.hidden;
+      toggle.dataset.opened = condBody.hidden ? '' : '1';
+      toggle.classList.toggle('is-open', !condBody.hidden);
+    };
+    addCond.onclick = () => {
+      condList.append(bodyEditCondRow({}));
+      condBody.hidden = false;
+      toggle.dataset.opened = '1';
+      toggle.classList.add('is-open');
+      updateCondLabel();
+      const rows = condList.querySelectorAll('[data-body-cond]');
+      const last = rows[rows.length - 1];
+      if (last) last.querySelector('.body-cond__path').focus();
+    };
+    condList.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.body-cond__del');
+      if (!btn) return;
+      const row = btn.closest('[data-body-cond]');
+      if (row) row.remove();
+      updateCondLabel();
+    });
+    return card;
+  }
+
+  function refreshBodyEditsEmpty(host) {
+    if (!host) return;
+    const has = host.querySelector('[data-body-edit]');
+    const empty = host.querySelector('.body-edits__empty');
+    if (has && empty) empty.remove();
+    if (!has && !empty) {
+      const tip = document.createElement('div');
+      tip.className = 'body-edits__empty';
+      tip.textContent = '还没有规则。点击右上角「添加规则」删除或设置请求体字段。';
+      host.append(tip);
+    }
+  }
+
+  // collectBodyEdits 读取编辑器里的规则；值填错时抛错，由保存流程提示。
+  function collectBodyEdits(host) {
+    const out = [];
+    host.querySelectorAll('[data-body-edit]').forEach((card, i) => {
+      const mode = card.querySelector('select.body-edit__mode').value;
+      const path = card.querySelector('.body-edit__path').value.trim();
+      if (!path) throw new Error(`第 ${i + 1} 条规则还没有填字段路径`);
+      const item = { mode, path };
+      if (mode === 'set') {
+        const type = card.querySelector('select.body-edit__type').value;
+        const input = card.querySelector('.body-edit__value-input');
+        item.value_type = type;
+        item.value = readTypedValue(type, input ? input.value : '', {
+          label: `第 ${i + 1} 条规则的值`,
+        });
+        item.keep_origin = card.querySelector('.body-edit__keep input').checked;
+      }
+      const conds = [];
+      card.querySelectorAll('[data-body-cond]').forEach((row, j) => {
+        const cpath = row.querySelector('.body-cond__path').value.trim();
+        if (!cpath) throw new Error(`第 ${i + 1} 条规则的第 ${j + 1} 个条件还没有填字段`);
+        const ctype = row.querySelector('select.body-cond__type').value;
+        const cval = row.querySelector('.body-cond__value-input');
+        conds.push({
+          path: cpath,
+          mode: row.querySelector('select.body-cond__mode').value,
+          value_type: ctype,
+          // 条件值允许留空，表示和 null 比较。
+          value: readTypedValue(ctype, cval ? cval.value : '', {
+            allowEmpty: true,
+            label: `第 ${i + 1} 条规则的第 ${j + 1} 个条件的值`,
+          }),
+          invert: row.querySelector('.body-cond__invert').checked,
+          pass_missing_key: row.querySelector('.body-cond__miss').checked,
+        });
+      });
+      if (conds.length) {
+        item.conditions = conds;
+        item.logic = card.querySelector('select.body-edit__logic-select').value;
+      }
+      out.push(item);
+    });
+    return out;
+  }
+
+  // BODY_EDIT_SUMMARY_MAX 是渠道弹窗摘要里最多列几条规则，多了折成 +N。
+  const BODY_EDIT_SUMMARY_MAX = 3;
+
+  // cloneBodyEdits 复制一份规则做草稿：在独立弹窗里改到一半点取消，不能污染原配置。
+  function cloneBodyEdits(edits) {
+    if (!Array.isArray(edits) || !edits.length) return [];
+    try { return JSON.parse(JSON.stringify(edits)); } catch (e) { return []; }
+  }
+
+  // openBodyEditsEditor 在独立弹窗里编辑请求体修改：渠道弹窗本身已经很长，
+  // 规则卡片（尤其带条件的）挤在「高级设置」里既看不清也不方便对比。
+  // 点「保存规则」只把结果交回渠道表单，真正落盘还是跟渠道一起提交。
+  function openBodyEditsEditor(edits, onSave) {
+    const list = document.createElement('div');
+    list.className = 'body-edits';
+    list.id = 'be-list';
+    cloneBodyEdits(edits).forEach((edit) => list.append(bodyEditCard(edit)));
+
+    const wrap = document.createElement('div');
+    wrap.className = 'body-edits-modal';
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'body-edits-toolbar';
+    const heading = document.createElement('div');
+    heading.className = 'section-title';
+    heading.textContent = '修改规则';
+    const count = document.createElement('span');
+    count.className = 'muted fs-12';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'btn btn--sm body-edits-toolbar__add';
+    add.id = 'be-add';
+    add.innerHTML = icon('plus', 13) + '添加规则';
+    toolbar.append(heading, count, add);
+
+    const hint = document.createElement('div');
+    hint.className = 'field__hint';
+    hint.innerHTML = '规则按从上到下的顺序执行，只作用于 JSON 请求体。'
+      + '路径用点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写 <code>a\\.b</code>。';
+
+    wrap.append(toolbar, list, hint);
+
+    const sync = () => {
+      const n = list.querySelectorAll('[data-body-edit]').length;
+      count.textContent = n ? `共 ${n} 条` : '';
+      refreshBodyEditsEmpty(list);
+    };
+    sync();
+
+    return openModal({
+      title: '请求体修改',
+      desc: '删除或设置转发到上游的 JSON 请求体字段，可以加条件。改完点「保存规则」，再随渠道一起保存。',
+      size: 'xl',
+      // 叠在渠道编辑弹窗上面：Esc 和各层按钮只关最上面这层
+      top: true,
+      cls: 'modal--body-edits',
+      body: wrap,
+      footer: `<div class="spacer"></div>
+        <button class="btn" data-act="cancel">取消</button>
+        <button class="btn btn--primary" data-act="save">保存规则</button>`,
+      onMount(mo) {
+        add.onclick = () => {
+          const card = bodyEditCard({ mode: 'set' });
+          list.append(card);
+          sync();
+          card.querySelector('.body-edit__path').focus();
+        };
+        mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
+        mo.foot.querySelector('[data-act=save]').onclick = () => {
+          let next;
+          try {
+            next = collectBodyEdits(list);
+          } catch (e) {
+            Toast.warn(e.message, '请求体修改有误');
+            return;
+          }
+          onSave(next);
+          mo.close();
+        };
+      },
+    });
+  }
+
   // ---------- 渠道编辑弹窗 ----------
   function openChannelEditor(ch) {
     const isNew = !ch;
@@ -1477,7 +1915,7 @@
       multi_key: false,
       key_mode: 'sequential', key_affinity: false, key_cooldown_sec: 300, key_cooldown_reset: false,
       key_cooldown_status: '',
-      models: [], enabled: true, remark: '', headers: {},
+      models: [], enabled: true, remark: '', headers: {}, body_edits: [],
     };
     const initialKeyRows = data.key_rows || [];
     // 旧数据没有 multi_key_enabled 时按 Key 数量推断，与后端规则保持一致。
@@ -1486,6 +1924,12 @@
       : initialKeyRows.length > 1;
     const keySchedHelpText = '顺序：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。随机：每次请求完整打乱可用 Key 后再依次尝试。Key 亲和：上次成功的 Key 优先：顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。失败冷却：Key 返回的状态码命中下方规则后，在设定时间内跳过（0 = 不冷却）；超时、连接失败、断流不冷却 Key，单 Key 渠道也不参与 Key 冷却。全部冷却时重置：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。';
     const keyCooldownStatusHelpText = `支持单个状态码或区间，逗号分隔，例如 400-430、401,403,429。命中后该 Key 进入失败冷却；未命中的状态码不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。超时、连接失败、断流、空响应不冷却 Key。留空表示任何状态码都不冷却 Key；点击「填入模板」填入 ${DEFAULT_KEY_COOLDOWN_STATUS}。`;
+    const bodyEditHelpText = `转发到上游之前修改 JSON 请求体。
+      设置字段：客户端没带就加上；勾选「已有同名字段不覆盖」时只补缺，客户端自己传了就不动它。
+      删除字段：路径不存在时直接忽略。
+      路径用点号分层，数组写数字下标（-1 表示最后一项），字段名本身带点号时写成 a\\.b。
+      条件可选：读请求体里另一个字段，按「等于 / 前缀 / 后缀 / 包含 / 大于 / 大于等于 / 小于 / 小于等于」比较，命中才执行这条修改；多条条件可以选「任一满足」或「全部满足」，字段不存在默认不算命中，可以单独勾「字段不存在也算满足」，也可以勾「取反」。
+      只作用于 JSON 请求体（表单、语音二进制请求原样转发），字段名按上游协议书写。`;
 
     const body = `
       <div class="form-row">
@@ -1612,6 +2056,21 @@
             <textarea class="textarea" id="f-headers" rows="3" placeholder='{"X-Custom": "value"}'>${esc(Object.keys(data.headers || {}).length ? JSON.stringify(data.headers, null, 2) : '')}</textarea>
           </div>
           <div class="field">
+            <div class="field__head">
+              <label class="field__label">请求体修改
+                <button type="button" class="badge badge--blue badge--click field__help"
+                        id="f-body-edit-help" data-tip="${esc(bodyEditHelpText)}" aria-label="查看请求体修改说明">?</button>
+              </label>
+              <button type="button" class="btn btn--ghost btn--sm field__reset"
+                      id="f-body-edits-edit">${icon('edit', 11)}编辑规则</button>
+            </div>
+            <div class="body-edits-summary" id="f-body-edits-summary"></div>
+            <div class="field__hint">
+              只作用于 JSON 请求体，字段名按<b>上游协议</b>书写（OpenAI / Anthropic / Gemini 各自的格式）。
+              规则在独立窗口里编辑，随渠道一起保存。
+            </div>
+          </div>
+          <div class="field">
             <label class="field__label">备注</label>
             <input class="input" id="f-remark" value="${esc(data.remark || '')}" placeholder="可选">
           </div>
@@ -1660,6 +2119,42 @@
           `);
         };
         bindAdvancedState(mo.body, 'channel', data.id);
+
+        // 请求体修改：规则在独立弹窗里编辑（渠道弹窗已经很长，规则卡片挤在里面看不清）。
+        // 这里只保留摘要和入口，草稿改完随渠道一起提交。
+        const bodyEditsSummary = $('#f-body-edits-summary');
+        let bodyEditsDraft = cloneBodyEdits(data.body_edits);
+        const renderBodyEditsSummary = () => {
+          if (!bodyEditsDraft.length) {
+            bodyEditsSummary.innerHTML = '<span class="muted fs-12">还没有规则</span>';
+            return;
+          }
+          const chips = bodyEditsDraft.slice(0, BODY_EDIT_SUMMARY_MAX).map((e) => {
+            const label = `${e.mode === 'delete' ? '删除' : '设置'} ${e.path}`;
+            return badge(label, e.mode === 'delete' ? 'gray' : 'wood');
+          });
+          if (bodyEditsDraft.length > BODY_EDIT_SUMMARY_MAX) {
+            chips.push(`<span class="muted fs-12">+${bodyEditsDraft.length - BODY_EDIT_SUMMARY_MAX}</span>`);
+          }
+          bodyEditsSummary.innerHTML = `<span class="muted fs-12">共 ${bodyEditsDraft.length} 条</span>${chips.join('')}`;
+        };
+        renderBodyEditsSummary();
+        $('#f-body-edits-edit').onclick = () => {
+          openBodyEditsEditor(bodyEditsDraft, (next) => {
+            bodyEditsDraft = next;
+            renderBodyEditsSummary();
+          });
+        };
+        $('#f-body-edit-help').onclick = () => {
+          openHelpModal('请求体修改', `
+            <div style="margin-bottom:8px"><b>设置字段</b>：客户端没带就加上；勾选「已有同名字段不覆盖」时只补缺，客户端自己传了就不动它。</div>
+            <div style="margin-bottom:8px"><b>删除字段</b>：路径不存在时直接忽略。</div>
+            <div style="margin-bottom:8px"><b>路径</b>：点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写成 <code>a\\.b</code>。</div>
+            <div style="margin-bottom:8px"><b>条件</b>：读请求体里另一个字段，按「等于 / 前缀 / 后缀 / 包含 / 大于 / 大于等于 / 小于 / 小于等于」比较，命中才执行这条修改。多条条件可以选「任一满足」或「全部满足」；字段不存在默认不算命中，可以单独勾「字段不存在也算满足」，也可以勾「取反」。</div>
+            <div style="margin-bottom:8px"><b>比对值也要选类型</b>：字符串、数字、布尔、JSON 各管各的——字符串 <code>"5"</code> 和数字 <code>5</code> 在比较时是两回事，保存时会校验填的内容和选的类型对不对得上。留空表示和 <code>null</code> 比较（配合「等于」使用）。</div>
+            <div>只作用于 <b>JSON 请求体</b>，表单和语音二进制请求原样转发。字段名按上游协议书写：OpenAI 兼容渠道填 OpenAI 的字段，Anthropic / Gemini 渠道填各自协议的字段（协议转换之后才应用）。</div>
+          `);
+        };
 
         // 两列 Key 表格：密钥一列、备注一列。已保存的 Key 只在用户主动改 Key
         // 时才提交新值，只改备注时请求里只有下标和备注。
@@ -1925,6 +2420,8 @@
           if (headersRaw) {
             try { headers = JSON.parse(headersRaw); } catch (e) { Toast.warn('自定义请求头不是合法的 JSON'); return; }
           }
+          // 规则在独立弹窗里已经校验过，这里直接用草稿。
+          const bodyEdits = bodyEditsDraft;
           const payload = {
             id, name: $('#f-name').value.trim(), type: typeEl.value,
             base_url: base, key_rows: keys, append_v1: $('#f-append-v1').checked, models,
@@ -1935,7 +2432,7 @@
             key_cooldown_reset: $('#f-key-reset').checked,
             key_cooldown_status: $('#f-key-cooldown-status').value.trim(),
             enabled: $('#f-enabled').checked,
-            headers, remark: $('#f-remark').value.trim(),
+            headers, body_edits: bodyEdits, remark: $('#f-remark').value.trim(),
           };
           const disabling = payload.enabled === false && !(ch && !ch.enabled);
           const saveBtn = mo.foot.querySelector('[data-act=save]');

@@ -172,6 +172,7 @@ type channelRequest struct {
 	AppendV1          *bool              `json:"append_v1"`
 	Models            *[]string          `json:"models"`
 	Headers           *map[string]string `json:"headers"`
+	BodyEdits         *[]store.BodyEdit  `json:"body_edits"`
 	Enabled           *bool              `json:"enabled"`
 	Weight            *int               `json:"weight"`
 	Remark            *string            `json:"remark"`
@@ -359,6 +360,16 @@ func (s *Server) saveChannelWith(w http.ResponseWriter, r *http.Request, create 
 	}
 	if req.Headers != nil {
 		ch.Headers = *req.Headers
+	}
+	if req.BodyEdits != nil {
+		// 路径、值类型和条件在这里一次性校验好：写进库里的配置不允许「永远不生效」
+		// 却又不报错，否则只能在调用时才发现字段没改对。
+		edits, err := relay.NormalizeBodyEdits(*req.BodyEdits)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体修改配置有误："+err.Error())
+			return
+		}
+		ch.BodyEdits = edits
 	}
 	if req.Enabled != nil {
 		ch.Enabled = *req.Enabled

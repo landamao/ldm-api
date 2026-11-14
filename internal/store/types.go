@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -69,6 +70,74 @@ const (
 	KeyModeRandom = "random"
 )
 
+// 请求体修改的操作类型
+const (
+	// BodyEditSet 设置字段：客户端没带就加上，带了看 KeepOrigin 决定覆不覆盖。
+	BodyEditSet = "set"
+	// BodyEditDelete 删除字段：路径不存在时忽略。
+	BodyEditDelete = "delete"
+)
+
+// 请求体修改的值类型，只影响后台回填和校验，转发时按原始 JSON 写入。
+const (
+	BodyValueString  = "string"
+	BodyValueNumber  = "number"
+	BodyValueBoolean = "boolean"
+	BodyValueJSON    = "json"
+)
+
+// 条件比较方式，与 new-api 的参数覆盖一致。
+const (
+	CondFull     = "full" // 全等
+	CondPrefix   = "prefix"
+	CondSuffix   = "suffix"
+	CondContains = "contains"
+	CondGt       = "gt"
+	CondGte      = "gte"
+	CondLt       = "lt"
+	CondLte      = "lte"
+)
+
+// BodyEditCondition 是请求体修改的一条条件：从当前请求体里读出一个字段，
+// 按 Mode 与 Value 比较，通过才执行所属的修改。
+type BodyEditCondition struct {
+	// Path 是 JSON 路径，语法与 BodyEdit.Path 相同。
+	Path string `json:"path"`
+	// Mode 是比较方式：full / prefix / suffix / contains / gt / gte / lt / lte。
+	// gt / gte / lt / lte 要求两边都是数字。
+	Mode string `json:"mode"`
+	// Value 是比对值，按原样保存 JSON，数字和布尔不会被转成字符串。
+	Value json.RawMessage `json:"value,omitempty"`
+	// ValueType 是比对值的类型：string / number / boolean / json。
+	// 比较时按 JSON 类型严格匹配（字符串 "5" 不等于数字 5），
+	// 空值表示旧数据，读取时按 Value 的实际类型推断。
+	ValueType string `json:"value_type,omitempty"`
+	// Invert 取反比较结果（例如「全等」变「不等」）。
+	Invert bool `json:"invert,omitempty"`
+	// PassMissingKey 表示字段不存在时这条条件直接算通过。
+	PassMissingKey bool `json:"pass_missing_key,omitempty"`
+}
+
+// BodyEdit 是转发前对 JSON 请求体的一条修改：删除字段或设置字段。
+type BodyEdit struct {
+	// Mode 是 set 或 delete。
+	Mode string `json:"mode"`
+	// Path 是 JSON 路径，用点号分隔层级，数组用数字下标（支持负数）。
+	// 例如 temperature、messages.0.role、tools.-1.function.name；
+	// 字段名本身带点号时用 \. 转义。
+	Path string `json:"path"`
+	// ValueType 是设置值的类型：string / number / boolean / json。
+	ValueType string `json:"value_type,omitempty"`
+	// Value 是要写入的值，按原样保存 JSON。
+	Value json.RawMessage `json:"value,omitempty"`
+	// KeepOrigin 为 true 时，客户端已经带了同名字段就不覆盖。
+	KeepOrigin bool `json:"keep_origin,omitempty"`
+	// Conditions 是执行条件，按 Logic 组合后决定这条修改是否生效。
+	Conditions []BodyEditCondition `json:"conditions,omitempty"`
+	// Logic 是条件之间的关系：and / or，空值按 or。
+	Logic string `json:"logic,omitempty"`
+}
+
 // ChannelKey 一条上游 Key 及其备注。
 type ChannelKey struct {
 	Key  string `json:"key"`
@@ -108,13 +177,16 @@ type Channel struct {
 	KeyCooldownStatus *string `json:"key_cooldown_status,omitempty"`
 	// AppendV1 控制是否在接口地址后补全 /v1。nil 表示旧数据，按默认开启处理。
 	// 关闭后按 BaseURL 原样拼接，适合火山方舟（/api/v3）这类非 v1 前缀的服务。
-	AppendV1  *bool             `json:"append_v1,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Enabled   bool              `json:"enabled"`
-	Weight    int               `json:"weight"`
-	Remark    string            `json:"remark,omitempty"`
-	CreatedAt int64             `json:"created_at"`
-	UpdatedAt int64             `json:"updated_at"`
+	AppendV1 *bool             `json:"append_v1,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	// BodyEdits 是转发前对请求体的修改规则，按顺序执行，只作用于 JSON 请求体，
+	// 字段名按上游协议书写（协议转换之后才应用）。
+	BodyEdits []BodyEdit `json:"body_edits,omitempty"`
+	Enabled   bool       `json:"enabled"`
+	Weight    int        `json:"weight"`
+	Remark    string     `json:"remark,omitempty"`
+	CreatedAt int64      `json:"created_at"`
+	UpdatedAt int64      `json:"updated_at"`
 }
 
 // ShouldAppendV1 返回是否自动补全 /v1；旧数据未设置时默认开启。

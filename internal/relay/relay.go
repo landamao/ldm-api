@@ -1230,6 +1230,25 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		sendContentType = "application/x-www-form-urlencoded"
 	}
 
+	// 渠道「请求体修改」：删除 / 设置字段，可带条件。
+	// 放在协议转换之后，改的是上游真正收到的结构；字段名按上游协议书写。
+	// 非 JSON 请求体（multipart 表单、语音二进制）没有字段概念，直接跳过。
+	if len(route.Channel.BodyEdits) > 0 && req.JSON != nil {
+		edited, changed, err := ApplyBodyEdits(body, route.Channel.BodyEdits)
+		if err != nil {
+			// 配置问题换哪条路由都一样，不重试，直接把原因告诉调用方；
+			// 也不能把它记成路由失败（skipRouteCooldown），否则改完配置要等冷却才恢复。
+			return attemptOutcome{
+				err:       fmt.Errorf("渠道「%s」的请求体修改没有生效: %w", route.Channel.ID, err),
+				retryable: false, status: http.StatusInternalServerError, skipRouteCooldown: true,
+			}
+		}
+		if changed {
+			body = edited
+			sendContentType = "application/json"
+		}
+	}
+
 	base := upstream.NormalizeBase(route.Channel.BaseURL)
 	if base == "" {
 		return attemptOutcome{

@@ -1695,6 +1695,159 @@ html[data-theme="dark"] .ldm-opt__check { color: var(--leaf-300); }
 .key-rows--single [data-key-del] { display: none; }
 .input-group .input { flex: 1; }
 
+/* ---------- 渠道「请求体修改」编辑器 ---------- */
+.body-edits { display: flex; flex-direction: column; gap: 8px; }
+/* 渠道弹窗里只放摘要：一行 chips，点「编辑规则」去独立窗口改 */
+.body-edits-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 2px solid var(--edge);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.body-edits-summary .badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+/* 独立编辑弹窗顶部：标题 + 条数 + 添加按钮 */
+.body-edits-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.body-edits-toolbar .section-title { margin-bottom: 0; }
+.body-edits-toolbar__add { margin-left: auto; }
+/* 列表与底部说明之间留一口气，别贴着最后一张卡片 */
+.body-edits-modal .field__hint { margin-top: 12px; }
+.body-edits__empty {
+  padding: 12px;
+  border: 2px dashed var(--card-line);
+  border-radius: 10px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  text-align: center;
+}
+.body-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 2px solid var(--edge);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.body-edit__head {
+  display: grid;
+  /* 116px 是「设置字段」四个字加自绘下拉右侧箭头的最小宽度，再窄就截断成「设置字…」 */
+  grid-template-columns: 116px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.body-edit__path,
+.body-cond__path,
+.input.body-edit__value-input,
+.input.body-cond__value-input {
+  height: 32px;
+  font-size: 12.5px;
+  padding: 0 9px;
+}
+/* 自绘下拉复用原生 select 的 class，这里只改高度和字号，
+   左右内边距留给 .ldm-select（右侧要给箭头留位置）。 */
+.body-edit__mode,
+.body-edit__type,
+.body-cond__mode,
+.body-cond__type,
+.body-cond__value-input.select {
+  height: 32px;
+  font-size: 12.5px;
+}
+/* JSON 类型的多行值 */
+.textarea.body-edit__value-input,
+.textarea.body-cond__value-input {
+  height: auto;
+  padding: 6px 9px;
+  line-height: 1.55;
+}
+.textarea.body-edit__value-input { min-height: 54px; }
+.textarea.body-cond__value-input { min-height: 44px; }
+.body-edit__row { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px; align-items: start; }
+/* 「类型 + 值」与下面的覆盖开关之间留出间距：缺这层 flex 时 label 是行内元素，
+   会紧贴上一行，开关轨道看起来和输入框黏在一起。 */
+.body-edit__set { display: flex; flex-direction: column; gap: 10px; }
+.body-edit__set[hidden] { display: none; }
+.body-edit__keep .switch__label { font-size: 12px; }
+.body-edit__cond-toggle.is-on { border-color: var(--edge-wood); }
+.body-edit__cond-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px;
+  /* 深色下 --surface-2 和卡片底几乎同色，补一圈描边把条件区从卡片里分出来 */
+  border: 1.5px solid var(--card-line);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+.body-edit__cond-body[hidden] { display: none; }
+.body-edit__logic { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-3); }
+.body-edit__logic-select { width: 112px; height: 28px; font-size: 12px; }
+/* 条件按钮和展开后的条件区之间也要留间距：这层不设 flex 时，
+   下面的块级条件区会紧贴按钮下沿。 */
+.body-edit__conds { display: flex; flex-direction: column; gap: 8px; }
+.body-edit__cond-add { align-self: flex-start; }
+.body-edit__cond-toggle { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; }
+.body-edit__cond-chev { display: inline-flex; transition: transform .18s; }
+.body-edit__cond-toggle.is-open .body-edit__cond-chev { transform: rotate(180deg); }
+.body-cond-list { display: flex; flex-direction: column; gap: 8px; }
+.body-cond {
+  display: grid;
+  /* 路径 | 比较方式 | 值类型 | 值 | 删除。
+     112 / 96 是「大于等于」「字符串」加上自绘下拉右侧箭头的最小宽度，
+     再窄就会被省略号截断成「大于等...」「字符...」。 */
+  grid-template-columns: minmax(0, 1fr) 112px 96px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "path mode type value del"
+    "flags flags flags flags flags";
+  gap: 6px;
+  align-items: center;
+}
+.body-cond__path { grid-area: path; }
+.body-cond__mode { grid-area: mode; }
+.body-cond__type { grid-area: type; }
+.body-cond__value { grid-area: value; }
+.body-cond__del { grid-area: del; }
+.body-cond__flags {
+  grid-area: flags;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.body-cond__flags label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+
+@media (max-width: 640px) {
+  .body-edit__head { grid-template-columns: 104px minmax(0, 1fr) auto; }
+  .body-edit__row { grid-template-columns: 88px minmax(0, 1fr); }
+  .body-cond {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    /* 手机上「比较方式 + 值类型」并排，值单独占一行 */
+    grid-template-areas:
+      "path path del"
+      "mode type type"
+      "value value value"
+      "flags flags flags";
+  }
+}
+
 /* ---------- 渠道测试弹窗 ---------- */
 .ct-desc { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ct-desc__type {
