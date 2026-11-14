@@ -3305,10 +3305,15 @@
             ? `Token 用量 ${res.total_tokens}（输入 ${res.prompt_tokens} / 输出 ${res.completion_tokens}）`
             : '',
         ].filter(Boolean).join('\n');
-        Toast.show('success', `「${m.id}」测试通过`, `${meta}\n\n上游返回：\n${res.content || '（空响应）'}`, 16000);
+        // 提示条里的正文按 600 字截断，复制键拿 content_full 的原文
+        const full = res.content_full || res.content || '（空响应）';
+        Toast.show('success', `「${m.id}」测试通过`, `${meta}\n\n上游返回：\n${res.content || '（空响应）'}`,
+          16000, `${meta}\n\n上游返回：\n${full}`);
       } else {
         const meta = [head, route, `HTTP ${res.status_code}`].filter(Boolean).join('\n');
-        Toast.show('error', `「${m.id}」测试失败`, `${meta}\n\n${res.error || '未知错误'}`, 16000);
+        const shown = res.error || '未知错误';
+        Toast.show('error', `「${m.id}」测试失败`, `${meta}\n\n${shown}`,
+          16000, `${meta}\n\n${res.error_full || shown}`);
       }
     } catch (e) {
       Toast.error(e.message, `「${m.id}」测试失败`);

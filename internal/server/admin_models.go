@@ -654,8 +654,18 @@ func (s *Server) saveModel(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, m)
 }
 
+// copyTextLimit 是「复制全文」类字段的上限（按字符计）。
+// 展示用的文案只留几百字，复制走的那份基本要原文，但上游偶尔会吐整页 HTML，
+// 60 多万字符塞进 JSON 既没意义也会卡住浏览器，这里留一道兜底。
+const copyTextLimit = 64 << 10
+
 // extractReplyText 从上游返回的 OpenAI 格式响应里取出正文，用于测试结果展示。
 func extractReplyText(raw []byte) string {
+	return extractReplyTextN(raw, 600)
+}
+
+// extractReplyTextN 同 extractReplyText，最多保留 n 个字符。
+func extractReplyTextN(raw []byte, n int) string {
 	var resp struct {
 		Choices []struct {
 			Message struct {
@@ -668,20 +678,20 @@ func extractReplyText(raw []byte) string {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return truncateText(strings.TrimSpace(string(raw)), 600)
+		return truncateText(strings.TrimSpace(string(raw)), n)
 	}
 	if len(resp.Choices) > 0 {
 		if c := resp.Choices[0].Message.Content; c != "" {
-			return truncateText(c, 600)
+			return truncateText(c, n)
 		}
 		if rc := resp.Choices[0].Message.ReasoningContent; rc != "" {
-			return truncateText(rc, 600)
+			return truncateText(rc, n)
 		}
 	}
 	if resp.Error != nil {
-		return truncateText(resp.Error.Message, 600)
+		return truncateText(resp.Error.Message, n)
 	}
-	return truncateText(strings.TrimSpace(string(raw)), 600)
+	return truncateText(strings.TrimSpace(string(raw)), n)
 }
 
 func truncateText(s string, n int) string {
@@ -757,12 +767,15 @@ func (s *Server) testModel(w http.ResponseWriter, r *http.Request) {
 	}
 	if ok {
 		out["content"] = extractReplyText(rec.Body.Bytes())
+		// 展示留 600 字，复制走 content_full：提示条上的复制键不该只能拿到半截正文
+		out["content_full"] = extractReplyTextN(rec.Body.Bytes(), copyTextLimit)
 	} else {
 		msg := res.Err
 		if msg == "" {
-			msg = extractReplyText(rec.Body.Bytes())
+			msg = extractReplyTextN(rec.Body.Bytes(), copyTextLimit)
 		}
 		out["error"] = truncateText(msg, 600)
+		out["error_full"] = truncateText(msg, copyTextLimit)
 	}
 	writeOK(w, out)
 }

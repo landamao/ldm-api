@@ -304,7 +304,9 @@
       }
       return this.host;
     },
-    show(type, title, msg, timeout) {
+    // copyBody：复制时用的正文。界面上为了排版会把长文案截断（模型测试的上游
+    // 原文、渠道报错这类），那种情况把完整版本从这里传进来，展示仍用 msg。
+    show(type, title, msg, timeout, copyBody) {
       const el = document.createElement('div');
       el.className = 'toast toast--' + type;
       const ic = type === 'success' ? 'check' : type === 'error' ? 'alert' : type === 'warn' ? 'alert' : 'info';
@@ -328,7 +330,8 @@
       };
       el.querySelector('[data-toast-copy]').addEventListener('click', (e) => {
         e.stopPropagation();
-        copyText((title || '') + (msg ? '\n' + msg : ''));
+        const body = copyBody === undefined ? msg : copyBody;
+        copyText((title || '') + (body ? '\n' + body : ''));
       });
       el.querySelector('.toast__close').addEventListener('click', (e) => {
         e.stopPropagation();
