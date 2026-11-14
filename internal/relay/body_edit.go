@@ -430,11 +430,15 @@ func ApplyBodyEdits(body []byte, edits []store.BodyEdit) ([]byte, bool, error) {
 			}
 			obj, _ = next.(map[string]any)
 			changed = true
-		case store.BodyEditSet:
-			if edit.KeepOrigin {
-				if _, exists := getEditValue(obj, segs); exists {
-					continue
-				}
+		case store.BodyEditSet, store.BodyEditPatch:
+			_, exists := getEditValue(obj, segs)
+			// 修改字段只在客户端已经带了该字段时生效：没传就跳过，不凭空造一个。
+			if edit.Mode == store.BodyEditPatch && !exists {
+				continue
+			}
+			// 设置字段默认覆盖；勾了「已有同名字段不覆盖」时，客户端自己传的就保留。
+			if edit.Mode == store.BodyEditSet && edit.KeepOrigin && exists {
+				continue
 			}
 			// 值解成原生结构再写入：后面的规则可以继续往里加字段，
 			// 数字用 json.Number 保留原始精度。
@@ -489,7 +493,7 @@ func NormalizeBodyEdits(edits []store.BodyEdit) ([]store.BodyEdit, error) {
 		switch mode {
 		case store.BodyEditDelete:
 			// 删除不需要值和覆盖开关，顺手清掉避免历史脏数据留在库里。
-		case store.BodyEditSet:
+		case store.BodyEditSet, store.BodyEditPatch:
 			valueType := strings.ToLower(strings.TrimSpace(edit.ValueType))
 			if valueType == "" {
 				valueType = store.BodyValueJSON
@@ -500,9 +504,12 @@ func NormalizeBodyEdits(edits []store.BodyEdit) ([]store.BodyEdit, error) {
 			}
 			next.ValueType = valueType
 			next.Value = norm
-			next.KeepOrigin = edit.KeepOrigin
+			// 「已有字段不覆盖」只对设置字段有意义：修改字段本身就是「客户端带了才改」。
+			if mode == store.BodyEditSet {
+				next.KeepOrigin = edit.KeepOrigin
+			}
 		default:
-			return nil, fmt.Errorf("%s：不支持的修改方式“%s”，只能是 set 或 delete", label, edit.Mode)
+			return nil, fmt.Errorf("%s：不支持的修改方式“%s”，只能是 set / patch / delete", label, edit.Mode)
 		}
 
 		for j, cond := range edit.Conditions {

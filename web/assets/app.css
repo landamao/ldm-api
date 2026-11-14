@@ -1721,11 +1721,23 @@ html[data-theme="dark"] .ldm-opt__check { color: var(--leaf-300); }
 .body-edits-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
+  row-gap: 8px;
   margin-bottom: 10px;
 }
+/* JSON 模式：整段规则直接编辑，方便复制粘贴复用 */
+.body-edits-json__input { min-height: 320px; font-size: 12px; }
+.body-edits-json__tools { display: flex; gap: 8px; margin-top: 8px; }
 .body-edits-toolbar .section-title { margin-bottom: 0; }
-.body-edits-toolbar__add { margin-left: auto; }
+/* 可视化 / JSON 切换和「添加规则」包成右侧一组：顺序是 切换 → 添加，
+   窄屏折行时整组一起掉到第二行并保持靠右 */
+.body-edits-toolbar__right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
 /* 列表与底部说明之间留一口气，别贴着最后一张卡片 */
 .body-edits-modal .field__hint { margin-top: 12px; }
 .body-edits__empty {
@@ -1785,6 +1797,8 @@ html[data-theme="dark"] .ldm-opt__check { color: var(--leaf-300); }
 .body-edit__set { display: flex; flex-direction: column; gap: 10px; }
 .body-edit__set[hidden] { display: none; }
 .body-edit__keep .switch__label { font-size: 12px; }
+/* .switch 自己设了 display:inline-flex，不加这条的话 hidden 属性压不住 */
+.body-edit__keep[hidden] { display: none; }
 .body-edit__cond-toggle.is-on { border-color: var(--edge-wood); }
 .body-edit__cond-body {
   display: flex;

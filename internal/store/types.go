@@ -74,6 +74,8 @@ const (
 const (
 	// BodyEditSet 设置字段：客户端没带就加上，带了看 KeepOrigin 决定覆不覆盖。
 	BodyEditSet = "set"
+	// BodyEditPatch 修改字段：只有客户端已经传了这个字段才改，没传就跳过。
+	BodyEditPatch = "patch"
 	// BodyEditDelete 删除字段：路径不存在时忽略。
 	BodyEditDelete = "delete"
 )

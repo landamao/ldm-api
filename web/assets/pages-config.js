@@ -1633,8 +1633,10 @@
 
     const mode = document.createElement('select');
     mode.className = 'select body-edit__mode';
-    mode.innerHTML = '<option value="set">设置字段</option><option value="delete">删除字段</option>';
-    mode.value = isDelete ? 'delete' : 'set';
+    mode.innerHTML = '<option value="set">设置字段</option>'
+      + '<option value="patch">修改字段</option>'
+      + '<option value="delete">删除字段</option>';
+    mode.value = isDelete ? 'delete' : (e.mode === 'patch' ? 'patch' : 'set');
 
     const path = document.createElement('input');
     path.className = 'input mono body-edit__path';
@@ -1728,11 +1730,14 @@
     condBox.append(toggle, condBody);
 
     card.append(head, setArea, condBox);
-    if (isDelete) setArea.hidden = true;
 
-    mode.onchange = () => {
+    const syncMode = () => {
       setArea.hidden = mode.value === 'delete';
+      // 「已有同名字段不覆盖」只对设置字段有意义：修改字段本身就是「客户端带了才改」。
+      keep.hidden = mode.value !== 'set';
     };
+    syncMode();
+    mode.onchange = syncMode;
     typeSel.onchange = () => {
       // 换类型时保留已输入的文字，用户不必重敲一遍。
       const prev = valueWrap.querySelector('.body-edit__value-input');
@@ -1791,14 +1796,15 @@
       const path = card.querySelector('.body-edit__path').value.trim();
       if (!path) throw new Error(`第 ${i + 1} 条规则还没有填字段路径`);
       const item = { mode, path };
-      if (mode === 'set') {
+      if (mode !== 'delete') {
         const type = card.querySelector('select.body-edit__type').value;
         const input = card.querySelector('.body-edit__value-input');
         item.value_type = type;
         item.value = readTypedValue(type, input ? input.value : '', {
           label: `第 ${i + 1} 条规则的值`,
         });
-        item.keep_origin = card.querySelector('.body-edit__keep input').checked;
+        // 只有设置字段需要「已有就不覆盖」
+        if (mode === 'set') item.keep_origin = card.querySelector('.body-edit__keep input').checked;
       }
       const conds = [];
       card.querySelectorAll('[data-body-cond]').forEach((row, j) => {
@@ -1837,8 +1843,73 @@
     try { return JSON.parse(JSON.stringify(edits)); } catch (e) { return []; }
   }
 
+  // parseBodyEditsJSON 解析 JSON 模式下的规则数组：接受纯数组，也接受包含
+  // body_edits 数组的对象。这里只做结构检查，类型细节留给后端再校验一遍。
+  function parseBodyEditsJSON(text) {
+    if (!String(text || '').trim()) return [];
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      throw new Error('JSON 解析失败：' + e.message);
+    }
+    const arr = Array.isArray(parsed) ? parsed
+      : (parsed && Array.isArray(parsed.body_edits) ? parsed.body_edits : null);
+    if (!arr) throw new Error('需要一个规则数组，或包含 body_edits 数组的对象');
+    const modes = ['set', 'patch', 'delete'];
+    return arr.map((it, i) => {
+      const n = i + 1;
+      if (!it || typeof it !== 'object' || Array.isArray(it)) throw new Error(`第 ${n} 条必须是对象`);
+      const mode = String(it.mode || 'set').toLowerCase();
+      if (!modes.includes(mode)) throw new Error(`第 ${n} 条的 mode 只能是 set / patch / delete`);
+      const path = typeof it.path === 'string' ? it.path.trim() : '';
+      if (!path) throw new Error(`第 ${n} 条缺少 path`);
+      const edit = { mode, path };
+      if (mode !== 'delete') {
+        if (it.value === undefined) throw new Error(`第 ${n} 条缺少 value`);
+        const type = String(it.value_type || 'json').toLowerCase();
+        if (!BODY_EDIT_VALUE_TYPES.some(([v]) => v === type)) {
+          throw new Error(`第 ${n} 条的 value_type 不支持：${type}`);
+        }
+        edit.value_type = type;
+        edit.value = it.value;
+        if (mode === 'set') edit.keep_origin = it.keep_origin === true;
+      }
+      const conds = Array.isArray(it.conditions) ? it.conditions : [];
+      if (conds.length) {
+        edit.conditions = conds.map((c, k) => {
+          const m = k + 1;
+          if (!c || typeof c !== 'object' || Array.isArray(c)) {
+            throw new Error(`第 ${n} 条第 ${m} 个条件必须是对象`);
+          }
+          const cpath = typeof c.path === 'string' ? c.path.trim() : '';
+          if (!cpath) throw new Error(`第 ${n} 条第 ${m} 个条件缺少 path`);
+          const cmode = String(c.mode || 'full').toLowerCase();
+          if (!BODY_EDIT_COND_MODES.some(([v]) => v === cmode)) {
+            throw new Error(`第 ${n} 条第 ${m} 个条件的比较方式不支持：${cmode}`);
+          }
+          const ctype = String(c.value_type || inferCondValueType(c.value)).toLowerCase();
+          if (!BODY_EDIT_VALUE_TYPES.some(([v]) => v === ctype)) {
+            throw new Error(`第 ${n} 条第 ${m} 个条件的 value_type 不支持：${ctype}`);
+          }
+          return {
+            path: cpath,
+            mode: cmode,
+            value_type: ctype,
+            value: c.value === undefined ? null : c.value,
+            invert: c.invert === true,
+            pass_missing_key: c.pass_missing_key === true,
+          };
+        });
+        edit.logic = String(it.logic || 'or').toLowerCase() === 'and' ? 'and' : 'or';
+      }
+      return edit;
+    });
+  }
+
   // openBodyEditsEditor 在独立弹窗里编辑请求体修改：渠道弹窗本身已经很长，
   // 规则卡片（尤其带条件的）挤在「高级设置」里既看不清也不方便对比。
+  // 提供「可视化 / JSON」两种编辑方式，JSON 适合整段复制粘贴复用。
   // 点「保存规则」只把结果交回渠道表单，真正落盘还是跟渠道一起提交。
   function openBodyEditsEditor(edits, onSave) {
     const list = document.createElement('div');
@@ -1854,6 +1925,11 @@
     const heading = document.createElement('div');
     heading.className = 'section-title';
     heading.textContent = '修改规则';
+    const modeEl = document.createElement('div');
+    modeEl.className = 'pill-toggle';
+    modeEl.id = 'be-mode';
+    modeEl.innerHTML = '<button type="button" data-be-mode="visual" class="is-on">可视化</button>'
+      + '<button type="button" data-be-mode="json">JSON</button>';
     const count = document.createElement('span');
     count.className = 'muted fs-12';
     const add = document.createElement('button');
@@ -1861,25 +1937,75 @@
     add.className = 'btn btn--sm body-edits-toolbar__add';
     add.id = 'be-add';
     add.innerHTML = icon('plus', 13) + '添加规则';
-    toolbar.append(heading, count, add);
+    // 右侧一组：可视化 / JSON 切换紧挨「添加规则」，窄屏时整组一起折到第二行靠右
+    const rightGroup = document.createElement('div');
+    rightGroup.className = 'body-edits-toolbar__right';
+    rightGroup.append(modeEl, add);
+    toolbar.append(heading, count, rightGroup);
+
+    const visual = document.createElement('div');
+    visual.className = 'body-edits-visual';
+    visual.append(list);
+
+    const jsonBox = document.createElement('div');
+    jsonBox.className = 'body-edits-json';
+    jsonBox.hidden = true;
+    const jsonInput = document.createElement('textarea');
+    jsonInput.className = 'textarea mono body-edits-json__input';
+    jsonInput.id = 'be-json';
+    jsonInput.spellcheck = false;
+    jsonInput.placeholder = '[{ "mode": "set", "path": "max_tokens", "value_type": "number", "value": 4096 }]';
+    const jsonTools = document.createElement('div');
+    jsonTools.className = 'body-edits-json__tools';
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'btn btn--sm';
+    copyBtn.innerHTML = icon('copy', 12) + '复制';
+    const pasteBtn = document.createElement('button');
+    pasteBtn.type = 'button';
+    pasteBtn.className = 'btn btn--sm';
+    pasteBtn.innerHTML = icon('paste', 12) + '粘贴';
+    jsonTools.append(copyBtn, pasteBtn);
+    jsonBox.append(jsonInput, jsonTools);
 
     const hint = document.createElement('div');
     hint.className = 'field__hint';
     hint.innerHTML = '规则按从上到下的顺序执行，只作用于 JSON 请求体。'
+      + '设置字段：没带就补上；修改字段：只有客户端传了才改；删除字段：没有就忽略。'
       + '路径用点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写 <code>a\\.b</code>。';
 
-    wrap.append(toolbar, list, hint);
+    wrap.append(toolbar, visual, jsonBox, hint);
 
+    let mode = 'visual';
     const sync = () => {
       const n = list.querySelectorAll('[data-body-edit]').length;
       count.textContent = n ? `共 ${n} 条` : '';
       refreshBodyEditsEmpty(list);
     };
+    const syncMode = () => {
+      modeEl.querySelectorAll('[data-be-mode]').forEach((b) => {
+        b.classList.toggle('is-on', b.dataset.beMode === mode);
+      });
+      visual.hidden = mode !== 'visual';
+      jsonBox.hidden = mode !== 'json';
+    };
+    const renderCards = (arr) => {
+      list.replaceChildren();
+      arr.forEach((edit) => list.append(bodyEditCard(edit)));
+      sync();
+    };
+    // 把 JSON 里的内容还原成卡片；解析失败时抛错，由调用方提示并留在 JSON 模式
+    const switchToVisual = () => {
+      renderCards(parseBodyEditsJSON(jsonInput.value));
+      mode = 'visual';
+      syncMode();
+    };
     sync();
+    syncMode();
 
     return openModal({
       title: '请求体修改',
-      desc: '删除或设置转发到上游的 JSON 请求体字段，可以加条件。改完点「保存规则」，再随渠道一起保存。',
+      desc: '设置、修改或删除转发到上游的 JSON 请求体字段，可以加条件。改完点「保存规则」，再随渠道一起保存。',
       size: 'xl',
       // 叠在渠道编辑弹窗上面：Esc 和各层按钮只关最上面这层
       top: true,
@@ -1889,17 +2015,56 @@
         <button class="btn" data-act="cancel">取消</button>
         <button class="btn btn--primary" data-act="save">保存规则</button>`,
       onMount(mo) {
+        const setMode = (next) => {
+          if (next === mode) return;
+          if (next === 'json') {
+            let text;
+            try {
+              text = JSON.stringify(collectBodyEdits(list), null, 2);
+            } catch (e) {
+              Toast.warn(e.message, '先把可视化里的规则补全');
+              return;
+            }
+            jsonInput.value = text;
+            mode = 'json';
+            syncMode();
+            return;
+          }
+          try {
+            switchToVisual();
+          } catch (e) {
+            Toast.error(e.message, 'JSON 格式有误');
+          }
+        };
+        modeEl.querySelectorAll('[data-be-mode]').forEach((b) => {
+          b.onclick = () => setMode(b.dataset.beMode);
+        });
         add.onclick = () => {
+          // JSON 模式下先回填到可视化再加，避免两套数据打架
+          if (mode === 'json') {
+            try {
+              switchToVisual();
+            } catch (e) {
+              Toast.error(e.message, 'JSON 格式有误');
+              return;
+            }
+          }
           const card = bodyEditCard({ mode: 'set' });
           list.append(card);
           sync();
           card.querySelector('.body-edit__path').focus();
         };
+        copyBtn.onclick = () => {
+          if (mode === 'json') copyText(jsonInput.value, '规则 JSON ');
+        };
+        pasteBtn.onclick = () => {
+          if (mode === 'json') pasteTextInto(jsonInput);
+        };
         mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
         mo.foot.querySelector('[data-act=save]').onclick = () => {
           let next;
           try {
-            next = collectBodyEdits(list);
+            next = mode === 'json' ? parseBodyEditsJSON(jsonInput.value) : collectBodyEdits(list);
           } catch (e) {
             Toast.warn(e.message, '请求体修改有误');
             return;
@@ -2135,8 +2300,9 @@
             return;
           }
           const chips = bodyEditsDraft.slice(0, BODY_EDIT_SUMMARY_MAX).map((e) => {
-            const label = `${e.mode === 'delete' ? '删除' : '设置'} ${e.path}`;
-            return badge(label, e.mode === 'delete' ? 'gray' : 'wood');
+            const verb = e.mode === 'delete' ? '删除' : (e.mode === 'patch' ? '修改' : '设置');
+            const tone = e.mode === 'delete' ? 'gray' : (e.mode === 'patch' ? 'blue' : 'wood');
+            return badge(`${verb} ${e.path}`, tone);
           });
           if (bodyEditsDraft.length > BODY_EDIT_SUMMARY_MAX) {
             chips.push(`<span class="muted fs-12">+${bodyEditsDraft.length - BODY_EDIT_SUMMARY_MAX}</span>`);

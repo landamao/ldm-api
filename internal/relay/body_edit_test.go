@@ -529,3 +529,81 @@ func TestCompareEditValuesStringModes(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyBodyEditsPatch 「修改字段」只在客户端已经带了该字段时才改。
+func TestApplyBodyEditsPatch(t *testing.T) {
+	body := []byte(`{"temperature":1,"model":"gpt-4o"}`)
+	edits := mustEdits(t, []store.BodyEdit{
+		{Mode: "patch", Path: "temperature", ValueType: "number", Value: json.RawMessage(`0.2`)},
+		{Mode: "patch", Path: "top_p", ValueType: "number", Value: json.RawMessage(`0.9`)},
+		{Mode: "patch", Path: "model", ValueType: "string", Value: json.RawMessage(`"gpt-4o-mini"`),
+			Conditions: []store.BodyEditCondition{
+				{Path: "model", Mode: "prefix", Value: json.RawMessage(`"gpt-4o"`)},
+			}},
+	})
+	out, changed, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("应当有改动")
+	}
+	got := bodyEditJSON(t, out)
+	if got["temperature"].(json.Number).String() != "0.2" {
+		t.Errorf("客户端传了 temperature，应被改成 0.2，实际 %v", got["temperature"])
+	}
+	if _, exists := got["top_p"]; exists {
+		t.Errorf("客户端没传 top_p，不应凭空创建：%v", got["top_p"])
+	}
+	if got["model"] != "gpt-4o-mini" {
+		t.Errorf("条件命中时 model 应被修改，实际 %v", got["model"])
+	}
+}
+
+// TestApplyBodyEditsPatchConditions 修改字段同样要满足条件；条件不命中时原值不动。
+func TestApplyBodyEditsPatchConditions(t *testing.T) {
+	body := []byte(`{"temperature":0.7,"model":"gpt-4o","extra":{"n":1}}`)
+	edits := mustEdits(t, []store.BodyEdit{
+		{Mode: "patch", Path: "temperature", ValueType: "number", Value: json.RawMessage(`0.2`),
+			Conditions: []store.BodyEditCondition{
+				{Path: "model", Mode: "full", Value: json.RawMessage(`"claude-3"`)},
+			}},
+		{Mode: "patch", Path: "extra.n", ValueType: "number", Value: json.RawMessage(`9`),
+			Conditions: []store.BodyEditCondition{
+				{Path: "temperature", Mode: "gt", ValueType: "number", Value: json.RawMessage(`0.5`)},
+			}},
+	})
+	out, _, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := bodyEditJSON(t, out)
+	if got["temperature"].(json.Number).String() != "0.7" {
+		t.Errorf("条件未命中时不应修改：%v", got["temperature"])
+	}
+	if got["extra"].(map[string]any)["n"].(json.Number).String() != "9" {
+		t.Errorf("嵌套字段的修改应生效：%v", got["extra"])
+	}
+}
+
+func TestNormalizeBodyEditsPatch(t *testing.T) {
+	out, err := NormalizeBodyEdits([]store.BodyEdit{{
+		Mode: "patch", Path: "temperature", ValueType: "number",
+		Value: json.RawMessage(`0.2`), KeepOrigin: true,
+	}})
+	if err != nil {
+		t.Fatalf("修改字段不应报错：%v", err)
+	}
+	if out[0].Mode != store.BodyEditPatch {
+		t.Errorf("模式应为 patch，实际 %q", out[0].Mode)
+	}
+	if out[0].KeepOrigin {
+		t.Error("修改字段不需要 keep_origin，应被清掉")
+	}
+	if out[0].ValueType != store.BodyValueNumber || string(out[0].Value) != "0.2" {
+		t.Errorf("值应保留：%+v", out[0])
+	}
+	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "patch", Path: "a"}}); err == nil {
+		t.Error("修改字段没填值应当报错")
+	}
+}
