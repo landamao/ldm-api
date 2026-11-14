@@ -5846,7 +5846,7 @@
           网关暴露在网络上时请务必立即修改，否则任何人都能进入控制台。
         </div></div>` : ''}
 
-        <div class="chart-grid" style="grid-template-columns:1fr 1fr">
+        <div class="chart-grid settings-grid">
           <div class="card">
             <div class="card__head">
               <div><div class="card__title">站点信息</div><div class="card__sub">显示在侧边栏与浏览器标题</div></div>
@@ -5893,26 +5893,66 @@
             </div>
           </div>
 
-          <div class="card">
-            <div class="card__head">
-              <div><div class="card__title">安全</div><div class="card__sub">管理端登录密码</div></div>
+          <div class="settings-side">
+            <div class="card">
+              <div class="card__head">
+                <div><div class="card__title">安全</div><div class="card__sub">管理端登录密码</div></div>
+              </div>
+              <div class="card__body">
+                <div class="field">
+                  <label class="field__label">当前密码</label>
+                  <input class="input" id="p-old" type="password" placeholder="输入当前密码">
+                </div>
+                <div class="field">
+                  <label class="field__label">新密码</label>
+                  <input class="input" id="p-new" type="password" placeholder="至少 6 位">
+                </div>
+                <div class="field">
+                  <label class="field__label">确认新密码</label>
+                  <input class="input" id="p-new2" type="password" placeholder="再输入一次">
+                </div>
+                <button class="btn btn--primary mt-8" id="p-save">${icon('shield', 14)}修改密码</button>
+                <div class="sep"></div>
+                <button class="btn btn--danger btn--block" id="btn-logout">${icon('logout', 14)}退出登录</button>
+              </div>
             </div>
-            <div class="card__body">
-              <div class="field">
-                <label class="field__label">当前密码</label>
-                <input class="input" id="p-old" type="password" placeholder="输入当前密码">
+
+            <div class="card">
+              <div class="card__head">
+                <div><div class="card__title">亲和自动清理</div><div class="card__sub">定时清空「上次成功优先」的偏好</div></div>
               </div>
-              <div class="field">
-                <label class="field__label">新密码</label>
-                <input class="input" id="p-new" type="password" placeholder="至少 6 位">
+              <div class="card__body">
+                <div class="field">
+                  <label class="field__label">清理间隔</label>
+                  <div class="flex-center gap-8">
+                    <input class="input" id="s-affinity-hours" type="number" min="0" max="8760" step="1"
+                           value="${Number(settings.affinity_cleanup_hours) || 0}" style="width:110px">
+                    <span class="muted fs-12">小时</span>
+                  </div>
+                  <div class="field__hint">每隔设定时长清空一次亲和记录，0 表示不自动清理。</div>
+                </div>
+                <div class="field">
+                  <label class="field__label">清理范围</label>
+                  <div class="flex-center gap-12" style="flex-wrap:wrap">
+                    <label class="switch">
+                      <input type="checkbox" id="s-affinity-channel" ${settings.affinity_clean_channel ? 'checked' : ''}>
+                      <span class="switch__track"></span>
+                      <span class="switch__label">渠道 Key 亲和</span>
+                    </label>
+                    <label class="switch">
+                      <input type="checkbox" id="s-affinity-model" ${settings.affinity_clean_model ? 'checked' : ''}>
+                      <span class="switch__track"></span>
+                      <span class="switch__label">模型路由亲和</span>
+                    </label>
+                  </div>
+                  <div class="field__hint">只清「下次优先走上次成功者」的记录，失败冷却不受影响。</div>
+                </div>
+                <div class="btn-row" style="align-items:center">
+                  <button class="btn btn--primary" id="s-affinity-save">${icon('check', 14)}保存</button>
+                  <button class="btn" id="s-affinity-clear">${icon('trash', 14)}立即清理</button>
+                </div>
+                <div class="field__hint mt-8" id="s-affinity-meta"></div>
               </div>
-              <div class="field">
-                <label class="field__label">确认新密码</label>
-                <input class="input" id="p-new2" type="password" placeholder="再输入一次">
-              </div>
-              <button class="btn btn--primary mt-8" id="p-save">${icon('shield', 14)}修改密码</button>
-              <div class="sep"></div>
-              <button class="btn btn--danger btn--block" id="btn-logout">${icon('logout', 14)}退出登录</button>
             </div>
           </div>
         </div>
@@ -6012,6 +6052,79 @@
       };
       logoInput.addEventListener('input', debounce(syncPreview, 300));
       syncPreview();
+
+      // 亲和自动清理：只清「下次优先走上次成功者」的记录，失败冷却不受影响。
+      const affinityState = {
+        channel: Number(settings.affinity_channel_count) || 0,
+        model: Number(settings.affinity_model_count) || 0,
+        last: Number(settings.affinity_cleanup_at) || 0,
+      };
+      const renderAffinityMeta = () => {
+        const parts = [];
+        if (affinityState.channel > 0) parts.push(`渠道 ${fmtInt(affinityState.channel)}`);
+        if (affinityState.model > 0) parts.push(`模型 ${fmtInt(affinityState.model)}`);
+        const total = affinityState.channel + affinityState.model;
+        const scope = parts.length ? `（${parts.join(' / ')}）` : '';
+        const last = affinityState.last ? fmtTime(affinityState.last) : '从未';
+        q('#s-affinity-meta').innerHTML =
+          `当前 <b>${fmtInt(total)}</b> 条亲和${scope} · 上次自动清理：${esc(last)}`;
+      };
+      renderAffinityMeta();
+
+      q('#s-affinity-save').onclick = async () => {
+        const hours = Math.max(0, Math.min(8760, Math.round(Number(q('#s-affinity-hours').value) || 0)));
+        const channel = q('#s-affinity-channel').checked;
+        const model = q('#s-affinity-model').checked;
+        if (hours > 0 && !channel && !model) {
+          Toast.warn('请至少勾选一种清理范围');
+          return;
+        }
+        const btn = q('#s-affinity-save');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';
+        try {
+          const res = await API.put('/api/settings', {
+            affinity_cleanup_hours: hours,
+            affinity_clean_channel: channel,
+            affinity_clean_model: model,
+          });
+          q('#s-affinity-hours').value = hours;
+          if (res && res.affinity_cleanup_at !== undefined) {
+            affinityState.last = Number(res.affinity_cleanup_at) || 0;
+            renderAffinityMeta();
+          }
+          Toast.success(hours > 0 ? `已开启：每 ${fmtInt(hours)} 小时清理一次` : '已关闭亲和自动清理');
+        } catch (e) {
+          Toast.error(e.message, '保存失败');
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = icon('check', 14) + '保存';
+        }
+      };
+
+      q('#s-affinity-clear').onclick = async () => {
+        const channel = q('#s-affinity-channel').checked;
+        const model = q('#s-affinity-model').checked;
+        if (!channel && !model) {
+          Toast.warn('请至少勾选一种清理范围');
+          return;
+        }
+        const btn = q('#s-affinity-clear');
+        btn.disabled = true;
+        try {
+          const res = await API.post('/api/settings/clear-affinity', { channel, model });
+          const n = Number(res.affinity) || 0;
+          if (channel) affinityState.channel = 0;
+          if (model) affinityState.model = 0;
+          renderAffinityMeta();
+          if (n > 0) Toast.success(`已清理 ${fmtInt(n)} 条亲和`);
+          else Toast.info('当前没有可清理的亲和记录');
+        } catch (e) {
+          Toast.error(e.message, '清理失败');
+        } finally {
+          btn.disabled = false;
+        }
+      };
 
       // 导出范围：全选框跟随子项状态，部分选中时显示为半选。
       const scopeInputs = Array.from(q('#backup-scopes').querySelectorAll('input[type="checkbox"]'));

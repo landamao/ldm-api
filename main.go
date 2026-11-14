@@ -22,7 +22,7 @@ import (
 	"ldmapi/internal/termtitle"
 )
 
-var version = "1.28.1"
+var version = "1.28.2"
 
 func main() {
 	// 先读 .env，让其中的环境变量成为命令行参数的默认值
@@ -110,6 +110,16 @@ func main() {
 		defer ticker.Stop()
 		for range ticker.C {
 			srv.Cleanup()
+		}
+	}()
+
+	go func() {
+		// 每分钟检查一次亲和自动清理：设置里的间隔最小是 1 小时，
+		// 一分钟一跳既保证到点就清，开销也只有一次设置读取。
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			srv.CleanupAffinity()
 		}
 	}()
 

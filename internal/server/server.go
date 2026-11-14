@@ -122,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	// ---- 设置 ----
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.admin(s.saveSettings))
+	mux.HandleFunc("POST /api/settings/clear-affinity", s.admin(s.clearAffinity))
 
 	// ---- 备份导出 ----
 	mux.HandleFunc("POST /api/backup/export", s.admin(s.exportBackup))

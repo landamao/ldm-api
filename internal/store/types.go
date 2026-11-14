@@ -607,9 +607,15 @@ type Settings struct {
 	Logo             string `json:"logo"`
 	Theme            string `json:"theme"` // light | dark
 	LogRetentionDays int    `json:"log_retention_days"`
-	RootPasswordHash string `json:"root_password_hash"`
-	RootPasswordSalt string `json:"root_password_salt"`
-	AllowOrigins     string `json:"allow_origins"`
+	// AffinityCleanupHours 是亲和自动清理的间隔（小时），0 表示不自动清理。
+	// 只清「上次成功优先」的亲和记录，不动失败冷却：AffinityCleanChannel 清渠道
+	// 多 Key 的 Key 亲和，AffinityCleanModel 清模型的路由亲和。
+	AffinityCleanupHours int    `json:"affinity_cleanup_hours"`
+	AffinityCleanChannel bool   `json:"affinity_clean_channel"`
+	AffinityCleanModel   bool   `json:"affinity_clean_model"`
+	RootPasswordHash     string `json:"root_password_hash"`
+	RootPasswordSalt     string `json:"root_password_salt"`
+	AllowOrigins         string `json:"allow_origins"`
 }
 
 // ChannelModel 是渠道 + 模型名派生出来的“渠道模型”视图，不作为独立实体存储。

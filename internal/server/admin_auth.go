@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"ldmapi/internal/relay"
 	"ldmapi/internal/store"
 )
 
@@ -215,13 +216,38 @@ func publicSettings(st store.Settings) store.Settings {
 	return out
 }
 
+// settingsResponse 是 /api/settings 的响应体：设置本体扁平展开，
+// 再附带亲和的运行时状态（设置页要显示当前条数和上次自动清理时间）。
+type settingsResponse struct {
+	store.Settings
+	AffinityCleanupAt    int64 `json:"affinity_cleanup_at"`
+	AffinityModelCount   int   `json:"affinity_model_count"`
+	AffinityChannelCount int   `json:"affinity_channel_count"`
+}
+
+// buildSettingsResponse 组装响应。亲和状态与上次清理时间都不落进 Settings，
+// 避免定时器写库时和前端保存设置互相覆盖。
+func (s *Server) buildSettingsResponse(st store.Settings) settingsResponse {
+	modelAffinity, channelAffinity := relay.AffinityCount()
+	var lastClean int64
+	if t := s.affinityCleanupAt(); !t.IsZero() {
+		lastClean = t.UnixMilli()
+	}
+	return settingsResponse{
+		Settings:             publicSettings(st),
+		AffinityCleanupAt:    lastClean,
+		AffinityModelCount:   modelAffinity,
+		AffinityChannelCount: channelAffinity,
+	}
+}
+
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	st, err := s.store.GetSettings()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "读取设置失败")
 		return
 	}
-	writeOK(w, publicSettings(st))
+	writeOK(w, s.buildSettingsResponse(st))
 }
 
 func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +258,10 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		Theme            *string `json:"theme"`
 		LogRetentionDays *int    `json:"log_retention_days"`
 		AllowOrigins     *string `json:"allow_origins"`
+		// 亲和自动清理：间隔小时数与清理范围。
+		AffinityCleanupHours *int  `json:"affinity_cleanup_hours"`
+		AffinityCleanChannel *bool `json:"affinity_clean_channel"`
+		AffinityCleanModel   *bool `json:"affinity_clean_model"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
@@ -260,9 +290,19 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	if req.AllowOrigins != nil {
 		st.AllowOrigins = strings.TrimSpace(*req.AllowOrigins)
 	}
+	if req.AffinityCleanupHours != nil && *req.AffinityCleanupHours >= 0 {
+		// 0 表示关闭；上限一年，避免手滑填出一个永远不触发的值。
+		st.AffinityCleanupHours = min(*req.AffinityCleanupHours, 24*365)
+	}
+	if req.AffinityCleanChannel != nil {
+		st.AffinityCleanChannel = *req.AffinityCleanChannel
+	}
+	if req.AffinityCleanModel != nil {
+		st.AffinityCleanModel = *req.AffinityCleanModel
+	}
 	if err := s.store.SaveSettings(st); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeOK(w, publicSettings(st))
+	writeOK(w, s.buildSettingsResponse(st))
 }

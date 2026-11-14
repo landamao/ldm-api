@@ -2672,6 +2672,11 @@ html[data-theme="dark"] .route-item__idx { color: var(--leaf-300); }
   margin-bottom: 18px;
 }
 @media (max-width: 1080px) { .chart-grid { grid-template-columns: 1fr; } }
+/* 系统设置右列：安全与自动清理上下排，窄屏跟着栅格一起变单列 */
+.settings-side { display: flex; flex-direction: column; gap: 14px; }
+/* 设置页两列等宽；不能写在内联样式里，否则媒体查询覆盖不掉，窄屏会挤成两列 */
+.settings-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 1080px) { .settings-grid { grid-template-columns: 1fr; } }
 
 .chart { width: 100%; display: block; overflow: visible; }
 .chart .grid-line { stroke: var(--border-line); stroke-width: 1; stroke-dasharray: 4 5; }

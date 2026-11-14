@@ -110,6 +110,38 @@ func ClearAllCooldowns() ClearResult {
 	return res
 }
 
+// AffinityCount 返回当前内存里的亲和条数：先模型路由亲和，后渠道 Key 亲和。
+func AffinityCount() (model, channel int) {
+	routeStates.Lock()
+	model = len(routeStates.lastRoute)
+	routeStates.Unlock()
+
+	keyStates.Lock()
+	channel = len(keyStates.lastKey)
+	keyStates.Unlock()
+	return model, channel
+}
+
+// ClearAffinity 只清亲和记录，不动失败冷却。
+// model 清各模型「上次成功的路由」，channel 清各渠道「上次成功的 Key」。
+// 用于系统设置里的定时清理和「立即清理」，两者都不应该影响正在冷却的条目。
+func ClearAffinity(channel, model bool) ClearResult {
+	var res ClearResult
+	if model {
+		routeStates.Lock()
+		res.Affinity += len(routeStates.lastRoute)
+		clear(routeStates.lastRoute)
+		routeStates.Unlock()
+	}
+	if channel {
+		keyStates.Lock()
+		res.Affinity += len(keyStates.lastKey)
+		clear(keyStates.lastKey)
+		keyStates.Unlock()
+	}
+	return res
+}
+
 // ClearCooldownsForModel 清掉该模型路由涉及的失败冷却与亲和，返回清除条数。
 // 冷却按「渠道ID/上游模型」全局共享，因此会同时解除其他引用同一条路由的模型的冷却。
 // 该模型的亲和记录也一并清掉：否则刚解除冷却的条目会因上次成功记录被优先命中。
