@@ -5384,13 +5384,15 @@
         <label class="field__label">备注</label>
         <input class="input" id="t-remark" value="${esc(t.remark || '')}" placeholder="可选">
       </div>
-      ${!isNew ? `<div class="field">
-        <label class="field__label">密钥</label>
+      <div class="field">
+        <label class="field__label" for="t-key">密钥</label>
         <div class="input-group">
-          <input class="input mono" value="${esc(t.key)}" readonly>
-          <button class="btn" data-act="copykey">${icon('copy', 14)}复制</button>
+          <input class="input mono key-masked" id="t-key" value="${esc(t.key || '')}" placeholder="${isNew ? '留空自动生成' : ''}" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true">
+          <button class="btn" data-act="togglekey" type="button" title="显示 Key">${icon('eye', 14)}</button>
+          <button class="btn" data-act="copykey" type="button">${icon('copy', 14)}复制</button>
         </div>
-      </div>` : ''}
+        <div class="field__hint">${isNew ? '留空则自动生成；手动填写时保存后即使用该密钥。' : '保存后旧密钥立即失效，请及时更新调用方配置。'}</div>
+      </div>
       <div class="field">
         <label class="switch"><input type="checkbox" id="t-enabled" ${t.enabled ? 'checked' : ''}><span class="switch__track"></span><span class="switch__label">启用该密钥</span></label>
       </div>`;
@@ -5439,15 +5441,34 @@
           });
         };
         mo.foot.querySelector('[data-act=cancel]').onclick = () => mo.close();
-        const copyBtn = mo.foot.querySelector('[data-act=copykey]');
-        if (copyBtn) copyBtn.onclick = () => copyText(t.key, '密钥 ');
+        const keyInput = mo.body.querySelector('#t-key');
+        const eyeBtn = mo.body.querySelector('[data-act=togglekey]');
+        eyeBtn.onclick = () => {
+          const masked = keyInput.classList.toggle('key-masked');
+          eyeBtn.title = masked ? '显示 Key' : '隐藏 Key';
+        };
+        mo.body.querySelector('[data-act=copykey]').onclick = () => {
+          const key = keyInput.value.trim();
+          if (!key) {
+            Toast.warn(isNew ? '留空将在保存后自动生成密钥' : '请填写密钥');
+            return;
+          }
+          copyText(key, '密钥 ');
+        };
         mo.foot.querySelector('[data-act=save]').onclick = async () => {
           const name = mo.body.querySelector('#t-name').value.trim();
           if (!name) { Toast.warn('请填写名称'); return; }
+          const key = keyInput.value.trim();
+          if (!isNew && !key) {
+            Toast.warn('请填写密钥');
+            keyInput.focus();
+            return;
+          }
           const expireVal2 = mo.body.querySelector('#t-expire').value;
           const payload = {
             id: t.id || '',
             name,
+            key,
             enabled: mo.body.querySelector('#t-enabled').checked,
             expires_at: expireVal2 ? new Date(expireVal2 + 'T23:59:59').getTime() : 0,
             quota_limit: Number(mo.body.querySelector('#t-quota').value) || 0,

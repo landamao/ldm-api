@@ -1,7 +1,9 @@
 package store
 
 import (
+	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -48,6 +50,66 @@ func TestWithWriteLockBlocksWrites(t *testing.T) {
 		t.Fatal("锁释放后写入仍未完成")
 	}
 	<-lockDone
+}
+
+func TestSaveTokenRejectsDuplicateKey(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "token-key.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.SaveToken(Token{ID: "t1", Key: "sk-one", Name: "旧名称"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveToken(Token{ID: "t2", Key: "sk-two"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveToken(Token{ID: "t2", Key: "sk-one"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("其他令牌占用密钥时应返回 ErrConflict，得到 %v", err)
+	}
+	got, err := st.GetToken("t2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Key != "sk-two" {
+		t.Errorf("冲突保存不应覆盖原密钥，得到 %q", got.Key)
+	}
+
+	// 排除自身，同值更新其它字段可以正常保存。
+	if err := st.SaveToken(Token{ID: "t1", Key: "sk-one", Name: "新名称"}); err != nil {
+		t.Fatalf("同值更新自身密钥应成功: %v", err)
+	}
+
+	// 检查和写入在同一个写事务里，并发抢同一个密钥也只能成功一个。
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, id := range []string{"race-a", "race-b"} {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			<-start
+			errs <- st.SaveToken(Token{ID: id, Key: "sk-race"})
+		}(id)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	succeeded, conflicts := 0, 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrConflict):
+			conflicts++
+		default:
+			t.Fatalf("并发保存出现意外错误: %v", err)
+		}
+	}
+	if succeeded != 1 || conflicts != 1 {
+		t.Errorf("并发保存应有 1 次成功、1 次冲突，得到 %d / %d", succeeded, conflicts)
+	}
 }
 
 // 近 N 次调用统计：按时间倒序取每个模型最新的 limit 条，取消的调用不算失败。

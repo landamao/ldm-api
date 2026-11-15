@@ -338,11 +338,31 @@ func (s *Store) FindTokenByKey(key string) (Token, error) {
 
 var errStop = errors.New("stop")
 
+// SaveToken 保存令牌，并在同一写事务里保证密钥不会被其他令牌占用。
 func (s *Store) SaveToken(t Token) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return put(tx.Bucket(bTokens), t.ID, t)
+		b := tx.Bucket(bTokens)
+		if t.Key != "" {
+			err := b.ForEach(func(k, v []byte) error {
+				if string(k) == t.ID {
+					return nil
+				}
+				var existing Token
+				if err := json.Unmarshal(v, &existing); err != nil {
+					return nil
+				}
+				if existing.Key == t.Key {
+					return ErrConflict
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return put(b, t.ID, t)
 	})
 }
 

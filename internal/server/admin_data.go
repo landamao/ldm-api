@@ -47,6 +47,7 @@ func (s *Server) saveToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID            string    `json:"id"`
 		Name          *string   `json:"name"`
+		Key           *string   `json:"key"`
 		Enabled       *bool     `json:"enabled"`
 		ExpiresAt     *int64    `json:"expires_at"`
 		QuotaLimit    *int64    `json:"quota_limit"`
@@ -80,6 +81,17 @@ func (s *Server) saveToken(w http.ResponseWriter, r *http.Request) {
 		t.Key = newAPIKey()
 		t.CreatedAt = time.Now().UnixMilli()
 		t.Enabled = true
+	}
+	if req.Key != nil {
+		key := strings.TrimSpace(*req.Key)
+		if key == "" {
+			if !isNew {
+				writeErr(w, http.StatusBadRequest, "密钥不能为空")
+				return
+			}
+		} else {
+			t.Key = key
+		}
 	}
 	if req.Name != nil {
 		if name := strings.TrimSpace(*req.Name); name != "" {
@@ -129,6 +141,10 @@ func (s *Server) saveToken(w http.ResponseWriter, r *http.Request) {
 	t.UpdatedAt = time.Now().UnixMilli()
 
 	if err := s.store.SaveToken(t); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeErr(w, http.StatusConflict, "密钥已被其他令牌使用")
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -3417,6 +3417,137 @@ func TestTokenPartialUpdateKeepsFields(t *testing.T) {
 	}
 }
 
+func TestTokenKeyEditing(t *testing.T) {
+	s, st := newTestServer(t, "token-key-edit")
+	gw := httptest.NewServer(s.Handler())
+	defer gw.Close()
+	sess, err := s.issueSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := func(method, path, body string) (int, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(method, gw.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sess})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, data
+	}
+	create := func(body string) (store.Token, int, []byte) {
+		t.Helper()
+		status, data := request(http.MethodPost, "/api/tokens", body)
+		var token store.Token
+		if status == http.StatusOK {
+			if err := json.Unmarshal(data, &token); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return token, status, data
+	}
+
+	created, status, body := create(`{"name":"第一个","key":"  sk-one-custom  ","enabled":true,"expires_at":4102444800000,"quota_limit":1000,"allowed_models":["gpt-4o"],"allowed_ips":["127.0.0.1"],"remark":"保留我"}`)
+	if status != http.StatusOK {
+		t.Fatalf("创建自定义密钥应成功，得到 %d：%s", status, body)
+	}
+	if created.Key != "sk-one-custom" {
+		t.Fatalf("创建时应清理密钥首尾空白，得到 %q", created.Key)
+	}
+	created.UsedQuota = 42
+	created.LastUsedAt = 123456
+	if err := st.SaveToken(created); err != nil {
+		t.Fatal(err)
+	}
+
+	second, status, body := create(`{"name":"第二个","key":"sk-two-custom"}`)
+	if status != http.StatusOK {
+		t.Fatalf("创建第二个令牌应成功，得到 %d：%s", status, body)
+	}
+	generated, status, body := create(`{"name":"自动密钥","key":"  "}`)
+	if status != http.StatusOK {
+		t.Fatalf("新增令牌留空密钥应自动生成，得到 %d：%s", status, body)
+	}
+	if !strings.HasPrefix(generated.Key, "sk-ldm-") || generated.Key == second.Key {
+		t.Errorf("留空创建应生成独立随机密钥，得到 %q", generated.Key)
+	}
+	if _, status, body = create(`{"name":"重复密钥","key":"sk-two-custom"}`); status != http.StatusConflict {
+		t.Errorf("新增重复密钥应返回 409，得到 %d：%s", status, body)
+	}
+
+	status, body = request(http.MethodPut, "/api/tokens/"+created.ID, `{"key":"  sk-one-renamed  "}`)
+	if status != http.StatusOK {
+		t.Fatalf("编辑密钥应成功，得到 %d：%s", status, body)
+	}
+	got, err := st.GetToken(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Key != "sk-one-renamed" {
+		t.Errorf("编辑后密钥应清理首尾空白并保存，得到 %q", got.Key)
+	}
+	if got.CreatedAt != created.CreatedAt || got.UsedQuota != 42 || got.LastUsedAt != 123456 || got.QuotaLimit != 1000 || got.ExpiresAt != 4102444800000 {
+		t.Errorf("修改密钥不应改变令牌时间、额度和用量：%+v", got)
+	}
+	if len(got.AllowedModels) != 1 || got.AllowedModels[0] != "gpt-4o" || len(got.AllowedIPs) != 1 || got.AllowedIPs[0] != "127.0.0.1" || got.Remark != "保留我" {
+		t.Errorf("修改密钥不应改变权限和备注：%+v", got)
+	}
+
+	callKey := func(key string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, gw.URL+"/v1/models", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := callKey("sk-one-custom"); code != http.StatusUnauthorized {
+		t.Errorf("旧密钥修改后应立即失效，得到 %d", code)
+	}
+	if code := callKey("sk-one-renamed"); code != http.StatusOK {
+		t.Errorf("新密钥保存后应立即生效，得到 %d", code)
+	}
+
+	if status, body = request(http.MethodPut, "/api/tokens/"+created.ID, `{"key":"sk-one-renamed"}`); status != http.StatusOK {
+		t.Errorf("保存自身原密钥应成功，得到 %d：%s", status, body)
+	}
+	if status, body = request(http.MethodPut, "/api/tokens/"+created.ID, `{"key":"   "}`); status != http.StatusBadRequest {
+		t.Errorf("编辑时空密钥应返回 400，得到 %d：%s", status, body)
+	}
+	if status, body = request(http.MethodPut, "/api/tokens/"+created.ID, `{"key":"sk-two-custom"}`); status != http.StatusConflict {
+		t.Errorf("编辑为其他令牌的密钥应返回 409，得到 %d：%s", status, body)
+	}
+	if status, body = request(http.MethodPut, "/api/tokens/"+created.ID, `{"enabled":false}`); status != http.StatusOK {
+		t.Errorf("不带 key 的部分更新应成功，得到 %d：%s", status, body)
+	}
+	got, err = st.GetToken(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Key != "sk-one-renamed" {
+		t.Errorf("失败或不带 key 的更新不应覆盖当前密钥，得到 %q", got.Key)
+	}
+	if got.Enabled {
+		t.Error("不带 key 的部分更新仍应更新启用状态")
+	}
+}
+
 // 开发模式从磁盘读资源时，必须把路径限制在 DevDir 内。
 func TestDevAssetRejectsTraversal(t *testing.T) {
 	s, _ := newTestServer(t, "dev-asset")
