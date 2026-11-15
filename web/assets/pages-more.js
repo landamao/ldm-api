@@ -5889,6 +5889,14 @@
                        placeholder="留空允许所有来源访问 /v1 接口">
                 <div class="field__hint">限制浏览器跨域调用 <code>/v1</code> 接口的来源，多个用逗号分隔，例如 <code>https://a.com, https://b.com</code>；<code>*</code> 或留空表示不限制。不影响 curl 等非浏览器调用。</div>
               </div>
+              <div class="field">
+                <label class="switch">
+                  <input type="checkbox" id="s-unlisted-channel-models" ${settings.allow_unlisted_channel_models ? 'checked' : ''}>
+                  <span class="switch__track"></span>
+                  <span class="switch__label">允许直接调用渠道模型</span>
+                </label>
+                <div class="field__hint">开启后可直接使用 <code>渠道ID/模型ID</code> 调用渠道中已配置的模型，无需先添加到模型列表；已添加的模型仍以模型设置为准。</div>
+              </div>
               <button class="btn btn--primary mt-8" id="s-save">${icon('check', 14)}保存设置</button>
             </div>
           </div>
@@ -6187,6 +6195,7 @@
             theme: q('#s-theme .tristate__opt.is-on').dataset.value,
             log_retention_days: Number(q('#s-retention').value) || 0,
             allow_origins: q('#s-cors').value.trim(),
+            allow_unlisted_channel_models: q('#s-unlisted-channel-models').checked,
           });
           Toast.success('设置已保存');
           window.LDM.applyLogo(q('#s-logo').value.trim());

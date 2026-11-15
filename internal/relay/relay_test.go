@@ -112,6 +112,52 @@ func TestResolveUnaddedModelFails(t *testing.T) {
 	}
 }
 
+func TestResolveUnlistedChannelModelWhenEnabled(t *testing.T) {
+	st := newTestStore(t)
+	seedChannels(t, st)
+	ch, err := st.GetChannel("A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch.Models = append(ch.Models, "deepseek/chat")
+	if err := st.SaveChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSettings(store.Settings{AllowUnlistedChannelModels: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := New(st).Resolve("A/deepseek/chat")
+	if err != nil {
+		t.Fatalf("开启开关后应能解析未登记渠道模型，得到 %v", err)
+	}
+	if res.Model.ID != "A/deepseek/chat" || len(res.Routes) != 1 {
+		t.Fatalf("临时渠道模型结果错误：模型=%+v 路由=%+v", res.Model, res.Routes)
+	}
+	if res.Routes[0].Channel.ID != "A" || res.Routes[0].Upstream != "deepseek/chat" {
+		t.Fatalf("含斜杠的上游模型解析错误：%+v", res.Routes[0])
+	}
+}
+
+func TestResolveUnlistedChannelModelKeepsSavedModelPriority(t *testing.T) {
+	st := newTestStore(t)
+	seedChannels(t, st)
+	now := time.Now().UnixMilli()
+	if err := st.SaveModel(store.Model{
+		ID: "A/b", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "b",
+		Enabled: false, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSettings(store.Settings{AllowUnlistedChannelModels: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := New(st).Resolve("A/b"); err != ErrModelDisabled {
+		t.Fatalf("已保存但禁用的模型应保持禁用，得到 %v", err)
+	}
+}
+
 func TestResolveCustomModelPriorityOrder(t *testing.T) {
 	st := newTestStore(t)
 	seedChannels(t, st)

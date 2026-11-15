@@ -940,6 +940,70 @@ func newTestServer(t *testing.T, name string) (*Server, *store.Store) {
 	return New(st), st
 }
 
+func TestServeModelListIncludesUnlistedChannelModels(t *testing.T) {
+	s, st := newTestServer(t, "model-list-unlisted-channel")
+	now := time.Now().UnixMilli()
+	if err := st.SaveChannel(store.Channel{
+		ID: "A", Name: "主线路", Type: store.ChannelOpenAI,
+		BaseURL: "https://a.example.com", APIKey: "sk-a",
+		Models: []string{"a", "deepseek/chat", "hidden"}, Enabled: true,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "A/a", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "a",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveModel(store.Model{
+		ID: "A/hidden", Type: store.ModelTypeChannel, ChannelID: "A", Upstream: "hidden",
+		Enabled: false, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSettings(store.Settings{AllowUnlistedChannelModels: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	s.serveModelList(rec, store.Token{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("模型列表应返回 200，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, item := range out.Data {
+		counts[item.ID]++
+	}
+	if counts["A/a"] != 1 {
+		t.Errorf("已登记模型应出现且只能出现一次，实际 %d 次", counts["A/a"])
+	}
+	if counts["A/deepseek/chat"] != 1 {
+		t.Errorf("未登记渠道模型应出现一次，实际 %d 次", counts["A/deepseek/chat"])
+	}
+	if counts["A/hidden"] != 0 {
+		t.Errorf("已保存但禁用的模型不应被兜底展示，实际 %d 次", counts["A/hidden"])
+	}
+
+	if err := st.SaveSettings(store.Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	s.serveModelList(rec, store.Token{})
+	if strings.Contains(rec.Body.String(), "A/deepseek/chat") {
+		t.Error("关闭开关后不应展示未登记渠道模型")
+	}
+}
+
 func callDiscover(t *testing.T, s *Server, payload map[string]any) (int, map[string]any) {
 	t.Helper()
 	raw, _ := json.Marshal(payload)

@@ -252,12 +252,13 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SiteName         *string `json:"site_name"`
-		SiteSubtitle     *string `json:"site_subtitle"`
-		Logo             *string `json:"logo"`
-		Theme            *string `json:"theme"`
-		LogRetentionDays *int    `json:"log_retention_days"`
-		AllowOrigins     *string `json:"allow_origins"`
+		SiteName                   *string `json:"site_name"`
+		SiteSubtitle               *string `json:"site_subtitle"`
+		Logo                       *string `json:"logo"`
+		Theme                      *string `json:"theme"`
+		LogRetentionDays           *int    `json:"log_retention_days"`
+		AllowOrigins               *string `json:"allow_origins"`
+		AllowUnlistedChannelModels *bool   `json:"allow_unlisted_channel_models"`
 		// 亲和自动清理：间隔小时数与清理范围。
 		AffinityCleanupHours *int  `json:"affinity_cleanup_hours"`
 		AffinityCleanChannel *bool `json:"affinity_clean_channel"`
@@ -289,6 +290,9 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AllowOrigins != nil {
 		st.AllowOrigins = strings.TrimSpace(*req.AllowOrigins)
+	}
+	if req.AllowUnlistedChannelModels != nil {
+		st.AllowUnlistedChannelModels = *req.AllowUnlistedChannelModels
 	}
 	if req.AffinityCleanupHours != nil && *req.AffinityCleanupHours >= 0 {
 		// 0 表示关闭；上限一年，避免手滑填出一个永远不触发的值。

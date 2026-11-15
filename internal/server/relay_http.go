@@ -118,9 +118,18 @@ func (s *Server) serveModelList(w http.ResponseWriter, token store.Token) {
 		writeErr(w, http.StatusInternalServerError, "读取模型列表失败")
 		return
 	}
+	settings, err := s.store.GetSettings()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取系统设置失败")
+		return
+	}
 	created := time.Now().Unix()
 	data := []map[string]any{}
+	added := make(map[string]bool, len(models))
 	for _, m := range models {
+		// 只要模型设置里已有这个 ID，就由模型设置决定它是否可用；
+		// 禁用或不完整的记录不能被下面的渠道模型兜底重新放开。
+		added[m.ID] = true
 		if !m.Enabled {
 			continue
 		}
@@ -144,6 +153,39 @@ func (s *Server) serveModelList(w http.ResponseWriter, token store.Token) {
 			entry["routed_from"] = len(m.Routes)
 		}
 		data = append(data, entry)
+	}
+
+	// 开启后，渠道里列出的模型即使没有单独保存到模型列表，也可以直接调用。
+	// 这里同步展示它们，客户端可从 /v1/models 发现这些 ID；已保存模型优先，
+	// 避免同一个 ID 在列表里出现两次，也保留已保存模型自己的启用状态。
+	if settings.AllowUnlistedChannelModels {
+		channels, err := s.store.ListChannels()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "读取渠道列表失败")
+			return
+		}
+		for _, ch := range channels {
+			if !ch.Enabled {
+				continue
+			}
+			for _, upstream := range ch.Models {
+				upstream = strings.TrimSpace(upstream)
+				if upstream == "" {
+					continue
+				}
+				id := ch.ID + "/" + upstream
+				if added[id] || !tokenAllowsModel(token, id) {
+					continue
+				}
+				data = append(data, map[string]any{
+					"id":       id,
+					"object":   "model",
+					"created":  created,
+					"owned_by": "ldmapi",
+				})
+				added[id] = true
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
@@ -181,16 +223,16 @@ func (s *Server) record(token store.Token, req *relay.Request, res *relay.Result
 		ClientError:      truncateErr(res.ClientErr),
 		// 「流式」徽章只看客户端请求的形态：请求体里写了 stream: true 就标，
 		// 上游最后回的是 SSE 还是完整 JSON 都不影响这个标记。
-		Stream:           req.Stream,
-		Retries:          res.Retries,
-		Attempts:         res.Attempts,
-		Affinity:         res.Affinity,
-		IP:               req.IP,
-		ReasoningChars:   res.ReasoningChars,
-		ReasoningTokens:  res.ReasoningTokens,
-		CachedTokens:     res.CachedTokens,
-		Canceled:         res.Canceled,
-		AsContent:        res.AsContent,
+		Stream:          req.Stream,
+		Retries:         res.Retries,
+		Attempts:        res.Attempts,
+		Affinity:        res.Affinity,
+		IP:              req.IP,
+		ReasoningChars:  res.ReasoningChars,
+		ReasoningTokens: res.ReasoningTokens,
+		CachedTokens:    res.CachedTokens,
+		Canceled:        res.Canceled,
+		AsContent:       res.AsContent,
 	}
 	entry.TokensPerSec = tokensPerSecond(entry, res.GenMs, res.StreamGen)
 	_ = s.store.AppendLog(entry)

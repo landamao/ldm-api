@@ -81,6 +81,43 @@ var (
 	ErrNoAvailable   = errors.New("no available channel")
 )
 
+// splitChannelModelID 按第一个斜杠拆出「渠道 ID / 上游模型名」。上游模型名
+// 本身可以包含斜杠（例如 deepseek/chat），所以不能用 strings.Split。
+func splitChannelModelID(id string) (string, string, bool) {
+	i := strings.IndexByte(id, '/')
+	if i <= 0 || i == len(id)-1 {
+		return "", "", false
+	}
+	return id[:i], id[i+1:], true
+}
+
+// resolveUnlistedChannelModel 把开启了「无需加入模型列表」时的渠道模型 ID
+// 组装成临时模型配置。只有渠道实际存在且仍列出了该上游模型才允许兜底，
+// 这样不会因为一个随便拼出的 ID 就绕过渠道模型校验。
+func (r *Relay) resolveUnlistedChannelModel(modelID string) (store.Model, error) {
+	channelID, upstream, ok := splitChannelModelID(modelID)
+	if !ok {
+		return store.Model{}, ErrModelNotFound
+	}
+	ch, err := r.Store.GetChannel(channelID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return store.Model{}, ErrModelNotFound
+		}
+		return store.Model{}, err
+	}
+	if !channelHasModel(ch, upstream) {
+		return store.Model{}, ErrModelNotFound
+	}
+	return store.Model{
+		ID:        modelID,
+		Type:      store.ModelTypeChannel,
+		ChannelID: channelID,
+		Upstream:  upstream,
+		Enabled:   true,
+	}, nil
+}
+
 // Resolve 根据模型 ID 解析出可用的上游路由链。
 func (r *Relay) Resolve(modelID string) (*Resolved, error) {
 	return r.resolve(modelID, false)
@@ -92,9 +129,18 @@ func (r *Relay) resolve(modelID string, allowDisabled bool) (*Resolved, error) {
 	m, err := r.Store.GetModel(modelID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, ErrModelNotFound
+			settings, settingsErr := r.Store.GetSettings()
+			if settingsErr != nil {
+				return nil, settingsErr
+			}
+			if !settings.AllowUnlistedChannelModels {
+				return nil, ErrModelNotFound
+			}
+			m, err = r.resolveUnlistedChannelModel(modelID)
 		}
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 	if !m.Enabled && !allowDisabled {
 		return nil, ErrModelDisabled
@@ -1122,7 +1168,7 @@ type attemptOutcome struct {
 	// estimatedOutput 表示只有输出 token 是估算的：上游报了输入用量、没报输出，
 	// 网关按响应正文长度补齐。输入仍是上游的真值。
 	estimatedOutput bool
-	reasoning int
+	reasoning       int
 	// streamGen 表示这次输出是流式一块块生成出来的。
 	// 与写给客户端的形态无关：调用方要非流式、网关收完再返回时同样是 true。
 	streamGen bool

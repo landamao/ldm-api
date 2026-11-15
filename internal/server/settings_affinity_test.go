@@ -80,6 +80,37 @@ func TestSettingsAffinityCleanupFields(t *testing.T) {
 	}
 }
 
+func TestSettingsAllowUnlistedChannelModels(t *testing.T) {
+	s, st := newTestServer(t, "allow-unlisted-channel-models")
+
+	code, out := settingsCall(t, s, http.MethodPut, "/api/settings", `{"allow_unlisted_channel_models":true}`)
+	if code != http.StatusOK {
+		t.Fatalf("保存直连渠道模型开关失败：%d", code)
+	}
+	if out["allow_unlisted_channel_models"] != true {
+		t.Fatalf("响应中的开关应为 true，实际 %v", out["allow_unlisted_channel_models"])
+	}
+	saved, err := st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.AllowUnlistedChannelModels {
+		t.Fatal("直连渠道模型开关没有落盘")
+	}
+
+	code, out = settingsCall(t, s, http.MethodPut, "/api/settings", `{"allow_unlisted_channel_models":false}`)
+	if code != http.StatusOK || out["allow_unlisted_channel_models"] != false {
+		t.Fatalf("关闭直连渠道模型开关失败：状态 %d，响应 %v", code, out)
+	}
+	saved, err = st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AllowUnlistedChannelModels {
+		t.Fatal("直连渠道模型开关关闭后仍为 true")
+	}
+}
+
 // 「立即清理」按传入范围清，返回清掉的条数，且不动失败冷却。
 func TestClearAffinityEndpoint(t *testing.T) {
 	s, _ := newTestServer(t, "affinity-clear")

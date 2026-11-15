@@ -530,10 +530,10 @@ type Log struct {
 	UsageEstimate bool `json:"usage_estimate,omitempty"`
 	// OutputEstimate 表示只有输出 token 是估算的：上游上报了输入用量、没上报输出，
 	// 网关按响应正文长度补齐。输入仍是上游真值，前端只在输出旁标「估算」。
-	OutputEstimate bool `json:"output_estimate,omitempty"`
-	LatencyMs     int64 `json:"latency_ms"`
-	FirstByteMs   int64 `json:"first_byte_ms"`
-	StatusCode    int   `json:"status_code"`
+	OutputEstimate bool  `json:"output_estimate,omitempty"`
+	LatencyMs      int64 `json:"latency_ms"`
+	FirstByteMs    int64 `json:"first_byte_ms"`
+	StatusCode     int   `json:"status_code"`
 	// Error 是内部失败原因，可能包含渠道、上游地址等细节，只用于后台排查。
 	Error string `json:"error,omitempty"`
 	// ClientError 是实际返回给调用方的错误内容。网关对外会收敛成笼统提示，
@@ -700,6 +700,9 @@ type Settings struct {
 	RootPasswordHash     string `json:"root_password_hash"`
 	RootPasswordSalt     string `json:"root_password_salt"`
 	AllowOrigins         string `json:"allow_origins"`
+
+	// AllowUnlistedChannelModels 开启后，渠道模型无需单独加入模型列表即可调用。
+	AllowUnlistedChannelModels bool `json:"allow_unlisted_channel_models"`
 }
 
 // ChannelModel 是渠道 + 模型名派生出来的“渠道模型”视图，不作为独立实体存储。
