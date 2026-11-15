@@ -81,6 +81,9 @@ const (
 	// BodyEditMove 移动字段：把源路径的值搬到目标路径，并删掉源字段。
 	// 源字段一律删掉，目标已有值时看 KeepOrigin 决定是否覆盖目标自己的值。
 	BodyEditMove = "move"
+	// BodyEditCopy 复制字段：把源路径的值写到目标路径，源字段保留。
+	// 源字段不存在时忽略；目标已有值时看 KeepOrigin 决定是否覆盖。
+	BodyEditCopy = "copy"
 )
 
 // 请求体修改的值类型，只影响后台回填和校验，转发时按原始 JSON 写入。

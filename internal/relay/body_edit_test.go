@@ -907,6 +907,110 @@ func TestApplyBodyEditsMoveWithinSameBranch(t *testing.T) {
 	}
 }
 
+// TestApplyBodyEditsCopy 复制字段：源字段保留，值写到目标，目标已有值时看 keep_origin。
+func TestApplyBodyEditsCopy(t *testing.T) {
+	body := []byte(`{"a":"new","b":{"a":"old"},"list":[]}`)
+
+	// 默认覆盖目标，源保留
+	edits := mustEdits(t, []store.BodyEdit{{Mode: "copy", Path: "a", Target: "b.a"}})
+	out, changed, err := ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("应当有改动")
+	}
+	got := bodyEditJSON(t, out)
+	if got["a"] != "new" {
+		t.Errorf("源字段应保留：%v", got)
+	}
+	if got["b"].(map[string]any)["a"] != "new" {
+		t.Errorf("目标已有值时应被覆盖：%v", got["b"])
+	}
+
+	// 勾了「目标已有值不覆盖」：目标保留自己的值，请求体不变
+	edits = mustEdits(t, []store.BodyEdit{
+		{Mode: "copy", Path: "a", Target: "b.a", KeepOrigin: true},
+	})
+	out, changed, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Errorf("目标已有值且不覆盖时不应改动：%s", out)
+	}
+	got = bodyEditJSON(t, out)
+	if got["a"] != "new" || got["b"].(map[string]any)["a"] != "old" {
+		t.Errorf("源和目标都应保持原样：%v", got)
+	}
+
+	// 目标不存在时「不覆盖」也照常复制
+	edits = mustEdits(t, []store.BodyEdit{
+		{Mode: "copy", Path: "a", Target: "c.a", KeepOrigin: true},
+	})
+	out, _, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = bodyEditJSON(t, out)
+	if got["c"].(map[string]any)["a"] != "new" {
+		t.Errorf("目标不存在时应正常复制：%v", got["c"])
+	}
+
+	// 源字段不存在：跳过，不凭空造字段
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "copy", Path: "nope", Target: "c.x"}})
+	out, changed, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Errorf("源字段不存在时不应改动：%s", out)
+	}
+
+	// 目标写不进去：整条不算改动，源字段也不能受影响
+	edits = mustEdits(t, []store.BodyEdit{{Mode: "copy", Path: "a", Target: "list.-3"}})
+	out, changed, err = ApplyBodyEdits(body, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Errorf("目标越界时不应算改动：%s", out)
+	}
+	got = bodyEditJSON(t, out)
+	if got["a"] != "new" {
+		t.Errorf("源字段应保留：%v", got)
+	}
+}
+
+func TestNormalizeBodyEditsCopy(t *testing.T) {
+	out, err := NormalizeBodyEdits([]store.BodyEdit{{
+		Mode: "COPY", Path: " reasoning_effort ", Target: " chat_template_kwargs.reasoning_effort ",
+		ValueType: "string", Value: json.RawMessage(`"max"`), KeepOrigin: true,
+	}})
+	if err != nil {
+		t.Fatalf("复制字段不应报错：%v", err)
+	}
+	if out[0].Mode != store.BodyEditCopy {
+		t.Errorf("模式应为 copy，实际 %q", out[0].Mode)
+	}
+	if out[0].Path != "reasoning_effort" || out[0].Target != "chat_template_kwargs.reasoning_effort" {
+		t.Errorf("路径两端空格应被去掉：%+v", out[0])
+	}
+	if len(out[0].Value) != 0 || out[0].ValueType != "" {
+		t.Errorf("复制规则不应保留值和值类型：%+v", out[0])
+	}
+	if !out[0].KeepOrigin {
+		t.Errorf("「目标已有值不覆盖」应保留：%+v", out[0])
+	}
+
+	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "copy", Path: "a"}}); err == nil {
+		t.Error("复制字段没填目标路径应当报错")
+	}
+	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "copy", Path: "a", Target: " a "}}); err == nil {
+		t.Error("目标路径与源路径相同应当报错")
+	}
+}
+
 func TestNormalizeBodyEditsMove(t *testing.T) {
 	out, err := NormalizeBodyEdits([]store.BodyEdit{{
 		Mode: "MOVE", Path: " reasoning_effort ", Target: " chat_template_kwargs.reasoning_effort ",
@@ -936,7 +1040,7 @@ func TestNormalizeBodyEditsMove(t *testing.T) {
 	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "move", Path: "a", Target: "b..c"}}); err == nil {
 		t.Error("目标路径有错误层级应当报错")
 	}
-	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "copy", Path: "a", Target: "b"}}); err == nil {
+	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "rename", Path: "a", Target: "b"}}); err == nil {
 		t.Error("不支持的修改方式应当报错")
 	}
 }

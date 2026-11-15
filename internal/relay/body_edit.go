@@ -533,6 +533,29 @@ func ApplyBodyEdits(body []byte, edits []store.BodyEdit) ([]byte, bool, error) {
 				continue
 			}
 			obj, _ = written.(map[string]any)
+		case store.BodyEditCopy:
+			targets, err := parseEditPath(edit.Target)
+			if err != nil {
+				continue
+			}
+			val, exists := getEditValue(obj, segs)
+			// 源字段不存在就没有可复制的值，跳过而不是凭空造一个。
+			if !exists {
+				continue
+			}
+			// 勾了「目标已有值不覆盖」时目标原样保留，这种场景下复制等于没发生。
+			if edit.KeepOrigin {
+				if _, has := getEditValue(obj, targets); has {
+					continue
+				}
+			}
+			// 复制不动源字段，也不需要清理空父对象：源还在，父对象不会被搬空。
+			written, err := setEditValue(obj, targets, val)
+			if err != nil {
+				continue
+			}
+			obj, _ = written.(map[string]any)
+			changed = true
 		}
 	}
 	if !changed {
@@ -605,8 +628,23 @@ func NormalizeBodyEdits(edits []store.BodyEdit) ([]store.BodyEdit, error) {
 			// 但源字段无论哪种情况都会删掉——移动的语义就是不要原来的。
 			next.Target = target
 			next.KeepOrigin = edit.KeepOrigin
+		case store.BodyEditCopy:
+			target := strings.TrimSpace(edit.Target)
+			if target == "" {
+				return nil, fmt.Errorf("%s：复制字段要填目标路径", label)
+			}
+			if _, err := parseEditPath(target); err != nil {
+				return nil, fmt.Errorf("%s：目标路径有误：%s", label, err.Error())
+			}
+			if target == path {
+				return nil, fmt.Errorf("%s：目标路径不能和源路径相同", label)
+			}
+			// 复制不需要值：复制过去的永远是请求体里现有的内容。
+			// keep_origin 表示目标已有值就保留目标自己的值，不覆盖。
+			next.Target = target
+			next.KeepOrigin = edit.KeepOrigin
 		default:
-			return nil, fmt.Errorf("%s：不支持的修改方式“%s”，只能是 set / patch / delete / move", label, edit.Mode)
+			return nil, fmt.Errorf("%s：不支持的修改方式“%s”，只能是 set / patch / delete / move / copy", label, edit.Mode)
 		}
 
 		for j, cond := range edit.Conditions {

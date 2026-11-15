@@ -210,20 +210,34 @@ await setSelect(r4.locator('select.body-edit__mode'), 'delete');
 check(await r4.locator('.body-edit__set').isHidden(), '删除模式隐藏值和覆盖开关');
 check(await r4.locator('.body-edit__move').isHidden(), '删除模式不显示目标路径');
 await r4.locator('.body-edit__path').fill('logprobs');
-check((await page.locator(`${PANE} .body-edits-toolbar`).innerText()).includes('共 4 条'), '工具栏显示规则条数');
+
+// ---- 5.6) 规则 5：复制字段（temperature → extra.temperature，勾「目标已有值不覆盖」） ----
+await page.click('#be-add');
+await page.waitForTimeout(200);
+const r5 = cardAt(4);
+await setSelect(r5.locator('select.body-edit__mode'), 'copy');
+check(await r5.locator('.body-edit__set').isHidden(), '复制模式隐藏值和值类型');
+check(await r5.locator('.body-edit__move').isVisible(), '复制模式显示目标路径');
+check((await r5.locator('.body-edit__move-label').innerText()).trim() === '复制到', '复制模式的目标行文案');
+check((await r5.locator('.body-edit__keep .switch__label').innerText()).trim() === '目标已有值不覆盖',
+  '复制模式的开关文案');
+await r5.locator('.body-edit__path').fill('temperature');
+await r5.locator('.body-edit__target').fill('extra.temperature');
+await r5.locator('.body-edit__keep input').check({ force: true });
+check((await page.locator(`${PANE} .body-edits-toolbar`).innerText()).includes('共 5 条'), '工具栏显示规则条数');
 
 await page.screenshot({ path: `${SHOT}/body-edits-window-1440.png`, fullPage: false });
 
-// ---- 6) 保存规则 → 摘要列出四种操作（超过 3 条折成 +N） ----
+// ---- 6) 保存规则 → 摘要列出五种操作（超过 3 条折成 +N） ----
 await page.click(`${PANE} [data-act=save]`);
 await page.waitForTimeout(400);
 const summary = (await page.locator('#f-body-edits-summary').innerText()).replace(/\s+/g, ' ').trim();
 console.log('  summary:', summary);
-check(summary.includes('共 4 条'), '摘要显示规则条数', summary);
+check(summary.includes('共 5 条'), '摘要显示规则条数', summary);
 check(/设置 max_tokens/.test(summary) && /修改 temperature/.test(summary)
   && /移动 reasoning_effort → chat_template_kwargs\.reasoning_effort/.test(summary),
   '摘要分别标注设置 / 修改 / 移动', summary);
-check(/\+1/.test(summary), '第 4 条规则折成 +1', summary);
+check(/\+2/.test(summary), '第 4、5 条规则折成 +2', summary);
 
 // ---- 7) 保存渠道并核对落盘 ----
 await page.click('.modal [data-act=save]');
@@ -233,10 +247,10 @@ const saved = await page.evaluate(async () => {
   return res.ok ? res.json() : { error: res.status };
 });
 const chans = Array.isArray(saved) ? saved : [];
-const target = chans.find((c) => Array.isArray(c.body_edits) && c.body_edits.length === 4);
-check(!!target, '渠道保存了 4 条请求体修改规则');
+const target = chans.find((c) => Array.isArray(c.body_edits) && c.body_edits.length === 5);
+check(!!target, '渠道保存了 5 条请求体修改规则');
 if (target) {
-  const [a, b, c, d] = target.body_edits;
+  const [a, b, c, d, e] = target.body_edits;
   check(a.mode === 'set' && a.path === 'max_tokens' && a.value_type === 'number' && a.value === 4096,
     '规则 1 是设置字段', a);
   check(a.conditions && a.conditions.length === 2 && a.conditions[0].pass_missing_key === true,
@@ -254,13 +268,17 @@ if (target) {
   check(c.value === undefined && c.value_type === undefined, '移动规则不保存值和值类型', c);
   check(c.keep_origin === true, '移动规则保存「目标已有值不覆盖」开关', c);
   check(d.mode === 'delete' && d.path === 'logprobs', '规则 4 是删除字段', d);
+  check(e.mode === 'copy' && e.path === 'temperature' && e.target === 'extra.temperature',
+    '规则 5 是复制字段', e);
+  check(e.value === undefined && e.value_type === undefined, '复制规则不保存值和值类型', e);
+  check(e.keep_origin === true, '复制规则保存「目标已有值不覆盖」开关', e);
 }
 
-// ---- 8) 重新打开：摘要 + 四种规则回显 ----
+// ---- 8) 重新打开：摘要 + 五种规则回显 ----
 await openFirstChannel();
-check((await page.locator('#f-body-edits-summary').innerText()).includes('共 4 条'), '重开后摘要仍有 4 条');
+check((await page.locator('#f-body-edits-summary').innerText()).includes('共 5 条'), '重开后摘要仍有 5 条');
 await openRulesWindow();
-check(await page.locator(`${PANE} .body-edit`).count() === 4, '重新打开回显 4 条规则');
+check(await page.locator(`${PANE} .body-edit`).count() === 5, '重新打开回显 5 条规则');
 check(await cardAt(0).locator('.body-edit__path').inputValue() === 'max_tokens', '规则 1 路径回显');
 check(await cardAt(0).locator('select.body-edit__type').inputValue() === 'number', '规则 1 值类型回显');
 check(await cardAt(0).locator('.body-edit__value-input').inputValue() === '4096', '规则 1 值回显');
@@ -276,6 +294,9 @@ check(await cardAt(2).locator('.body-edit__keep').isVisible(), '移动模式显�
 check(await cardAt(2).locator('.body-edit__keep input').isChecked(), '移动开关回显为已勾选');
 check(await cardAt(3).locator('select.body-edit__mode').inputValue() === 'delete', '规则 4 删除模式回显');
 check(await cardAt(3).locator('.body-edit__set').isHidden(), '删除模式不显示值区');
+check(await cardAt(4).locator('select.body-edit__mode').inputValue() === 'copy', '规则 5 复制模式回显');
+check(await cardAt(4).locator('.body-edit__target').inputValue() === 'extra.temperature', '规则 5 目标路径回显');
+check(await cardAt(4).locator('.body-edit__keep input').isChecked(), '复制开关回显为已勾选');
 
 // ---- 9) JSON 视图：结构完整、往返不丢、坏 JSON 拦下来 ----
 await page.click('#be-mode [data-be-mode=json]');
@@ -283,6 +304,8 @@ await page.waitForTimeout(300);
 const jsonText = await page.locator('#be-json').inputValue();
 console.log('  json head:', jsonText.slice(0, 60).replace(/\s+/g, ' '));
 check(/"mode": "patch"/.test(jsonText), 'JSON 里能看到修改字段', jsonText.length);
+check(/"mode": "copy"/.test(jsonText) && /"target": "extra\.temperature"/.test(jsonText),
+  'JSON 里能看到复制的目标路径');
 check(/"mode": "move"/.test(jsonText) && /"target": "chat_template_kwargs\.reasoning_effort"/.test(jsonText),
   'JSON 里能看到移动的目标路径');
 check(/"conditions"/.test(jsonText) && /"value_type": "number"/.test(jsonText), 'JSON 里带条件与值类型');
@@ -295,16 +318,18 @@ await page.waitForTimeout(350);
 check(await page.locator(`${PANE} .body-edit`).count() === 0, 'JSON 清空后可视化也清空');
 check(await page.locator(`${PANE} .body-edits__empty`).count() === 1, '空状态提示回来');
 
-// 把原来的 JSON 粘回去，四条规则恢复
+// 把原来的 JSON 粘回去，五条规则恢复
 await page.click('#be-mode [data-be-mode=json]');
 await page.fill('#be-json', jsonText);
 await page.click('#be-mode [data-be-mode=visual]');
 await page.waitForTimeout(350);
-check(await page.locator(`${PANE} .body-edit`).count() === 4, 'JSON 粘回后规则恢复');
+check(await page.locator(`${PANE} .body-edit`).count() === 5, 'JSON 粘回后规则恢复');
 check(await cardAt(1).locator('select.body-edit__mode').inputValue() === 'patch', '粘回后修改字段仍是 patch');
 check(await cardAt(2).locator('select.body-edit__mode').inputValue() === 'move', '粘回后移动字段仍是 move');
 check(await cardAt(2).locator('.body-edit__target').inputValue() === 'chat_template_kwargs.reasoning_effort',
   '粘回后目标路径不丢');
+check(await cardAt(4).locator('select.body-edit__mode').inputValue() === 'copy', '粘回后复制字段仍是 copy');
+check(await cardAt(4).locator('.body-edit__target').inputValue() === 'extra.temperature', '粘回后复制目标不丢');
 
 // 坏 JSON 停在 JSON 模式并提示
 await page.click('#be-mode [data-be-mode=json]');
@@ -317,7 +342,7 @@ check(/JSON/.test(jsonToast), '提示 JSON 格式有误', jsonToast.replace(/\s+
 await page.fill('#be-json', jsonText);
 await page.click('#be-mode [data-be-mode=visual]');
 await page.waitForTimeout(450);
-check(await page.locator(`${PANE} .body-edit`).count() === 4, '修正后能切回可视化');
+check(await page.locator(`${PANE} .body-edit`).count() === 5, '修正后能切回可视化');
 
 // ---- 10) 值类型互转 + JSON 值的扩大编辑浮在最上面 ----
 const s1 = cardAt(0);
@@ -385,11 +410,26 @@ check(overflow.toolbar && overflow.toolbar.sw <= overflow.toolbar.cw + 1, '手�
 await page.waitForTimeout(2400); // 等提示条消失，别挡截图
 await page.screenshot({ path: `${SHOT}/body-edits-window-390.png`, fullPage: false });
 
-// ---- 13) 清理：清空规则并保存渠道 ----
+// ---- 13) 清空前单独验一条复制规则的摘要（摘要只展示前 3 条，避免被 +N 折叠） ----
 await page.setViewportSize({ width: 1440, height: 900 });
 await page.waitForTimeout(300);
 await page.click(`${PANE} [data-act=cancel]`);
 await page.waitForTimeout(300);
+await openRulesWindow();
+await clearRules();
+await page.click('#be-add');
+await page.waitForTimeout(200);
+const copyCard = cardAt(0);
+await setSelect(copyCard.locator('select.body-edit__mode'), 'copy');
+await copyCard.locator('.body-edit__path').fill('reasoning_effort');
+await copyCard.locator('.body-edit__target').fill('chat_template_kwargs.reasoning_effort');
+await page.click(`${PANE} [data-act=save]`);
+await page.waitForTimeout(400);
+const copySummary = (await page.locator('#f-body-edits-summary').innerText()).replace(/\s+/g, ' ').trim();
+check(/复制 reasoning_effort → chat_template_kwargs\.reasoning_effort/.test(copySummary),
+  '摘要标注复制与目标', copySummary);
+
+// ---- 14) 清理：清空规则并保存渠道 ----
 await openRulesWindow();
 await clearRules();
 await page.click(`${PANE} [data-act=save]`);

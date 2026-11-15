@@ -1634,10 +1634,12 @@
     mode.className = 'select body-edit__mode';
     mode.innerHTML = '<option value="set">设置字段</option>'
       + '<option value="patch">修改字段</option>'
+      + '<option value="copy">复制字段</option>'
       + '<option value="move">移动字段</option>'
       + '<option value="delete">删除字段</option>';
     mode.value = e.mode === 'delete' ? 'delete'
-      : (e.mode === 'move' ? 'move' : (e.mode === 'patch' ? 'patch' : 'set'));
+      : (e.mode === 'move' ? 'move'
+        : (e.mode === 'copy' ? 'copy' : (e.mode === 'patch' ? 'patch' : 'set')));
 
     const path = document.createElement('input');
     path.className = 'input mono body-edit__path';
@@ -1751,13 +1753,16 @@
 
     const syncMode = () => {
       const m = mode.value;
-      setArea.hidden = m === 'delete' || m === 'move';
-      moveArea.hidden = m !== 'move';
-      // 「不覆盖」只对设置和移动有意义：修改字段本身就是「客户端带了才改」，
+      // 复制和移动共用「目标路径」这一行，只有标题不同。
+      const toTarget = m === 'move' || m === 'copy';
+      setArea.hidden = m === 'delete' || toTarget;
+      moveArea.hidden = !toTarget;
+      moveLabel.textContent = m === 'copy' ? '复制到' : '移动到';
+      // 「不覆盖」对设置 / 复制 / 移动都有意义：修改字段本身就是「客户端带了才改」，
       // 删除则没有值需要保护。
-      keep.hidden = m !== 'set' && m !== 'move';
-      // 移动的开关只管目标：勾上后目标保留自己的值，源字段照样删掉。
-      keepLabel.textContent = m === 'move' ? '目标已有值不覆盖' : '已有同名字段不覆盖';
+      keep.hidden = m !== 'set' && m !== 'copy' && m !== 'move';
+      // 设置是「同名字段」，复制和移动看的是目标路径。
+      keepLabel.textContent = m === 'set' ? '已有同名字段不覆盖' : '目标已有值不覆盖';
     };
     syncMode();
     mode.onchange = syncMode;
@@ -1806,7 +1811,7 @@
     if (!has && !empty) {
       const tip = document.createElement('div');
       tip.className = 'body-edits__empty';
-      tip.textContent = '还没有规则。点击右上角「添加规则」设置、移动、修改或删除请求体字段。';
+      tip.textContent = '还没有规则。点击右上角「添加规则」设置、修改、复制、移动或删除请求体字段。';
       host.append(tip);
     }
   }
@@ -1819,11 +1824,12 @@
       const path = card.querySelector('.body-edit__path').value.trim();
       if (!path) throw new Error(`第 ${i + 1} 条规则还没有填字段路径`);
       const item = { mode, path };
-      if (mode === 'move') {
+      if (mode === 'move' || mode === 'copy') {
         const target = card.querySelector('.body-edit__target').value.trim();
-        if (!target) throw new Error(`第 ${i + 1} 条规则还没有填「移动到」的目标路径`);
+        const toLabel = mode === 'copy' ? '复制到' : '移动到';
+        if (!target) throw new Error(`第 ${i + 1} 条规则还没有填「${toLabel}」的目标路径`);
         item.target = target;
-        // 移动的开关只管目标：目标已有值时不覆盖，源字段照样删掉。
+        // 复制 / 移动的开关只管目标：目标已有值时不覆盖。
         item.keep_origin = card.querySelector('.body-edit__keep input').checked;
       } else if (mode !== 'delete') {
         const type = card.querySelector('select.body-edit__type').value;
@@ -1885,7 +1891,7 @@
     const arr = Array.isArray(parsed) ? parsed
       : (parsed && Array.isArray(parsed.body_edits) ? parsed.body_edits : null);
     if (!arr) throw new Error('需要一个规则数组，或包含 body_edits 数组的对象');
-    const modes = ['set', 'patch', 'move', 'delete'];
+    const modes = ['set', 'patch', 'copy', 'move', 'delete'];
     return arr.map((it, i) => {
       const n = i + 1;
       if (!it || typeof it !== 'object' || Array.isArray(it)) throw new Error(`第 ${n} 条必须是对象`);
@@ -1894,10 +1900,10 @@
       const path = typeof it.path === 'string' ? it.path.trim() : '';
       if (!path) throw new Error(`第 ${n} 条缺少 path`);
       const edit = { mode, path };
-      if (mode === 'move') {
+      if (mode === 'move' || mode === 'copy') {
         const target = typeof it.target === 'string' ? it.target.trim() : '';
         if (!target) throw new Error(`第 ${n} 条缺少 target`);
-        // 移动的开关只管目标：目标已有值时不覆盖，源字段照样删掉。
+        // 复制 / 移动的开关只管目标：目标已有值时不覆盖。
         edit.target = target;
         edit.keep_origin = it.keep_origin === true;
       } else if (mode !== 'delete') {
@@ -2007,6 +2013,7 @@
     hint.className = 'field__hint';
     hint.innerHTML = '规则按从上到下的顺序执行，只作用于 JSON 请求体。'
       + '设置字段：没带就补上；修改字段：只有客户端传了才改；'
+      + '复制字段：把源字段的值复制到目标路径、原字段保留；'
       + '移动字段：把源字段的值搬到目标路径并删掉源字段（目标已有值可选是否覆盖）；删除字段：没有就忽略。'
       + '移动或删除后变空的对象会一并清掉。'
       + '路径用点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写 <code>a\\.b</code>。';
@@ -2133,6 +2140,7 @@
     const bodyEditHelpText = `转发到上游之前修改 JSON 请求体。
       设置字段：客户端没带就加上；勾选「已有同名字段不覆盖」时只补缺，客户端自己传了就不动它。
       修改字段：只有客户端已经传了这个字段才改，没传就跳过。
+      复制字段：把「字段路径」的值复制到「复制到」，原字段保留——适合上游同时要顶层和嵌套两处的场景。源字段不存在时跳过；勾选「目标已有值不覆盖」时目标已存在就不动它。
       移动字段：把「字段路径」的值搬到「移动到」，并删掉原字段——例如 reasoning_effort 搬到 chat_template_kwargs.reasoning_effort。源字段不存在时跳过；源字段一律删掉，勾选「目标已有值不覆盖」时目标保留自己的值、源的值不再搬过去（直接丢弃），不勾就覆盖目标。搬走某个对象里最后一个键时，空掉的父对象会一起删掉。
       删除字段：路径不存在时直接忽略；删完变空的父对象会一起删掉。
       路径用点号分层，数组写数字下标（-1 表示最后一项），字段名本身带点号时写成 a\\.b。
@@ -2340,10 +2348,12 @@
           }
           const chips = bodyEditsDraft.slice(0, BODY_EDIT_SUMMARY_MAX).map((e) => {
             const verb = e.mode === 'delete' ? '删除'
-              : (e.mode === 'patch' ? '修改' : (e.mode === 'move' ? '移动' : '设置'));
+              : (e.mode === 'patch' ? '修改'
+                : (e.mode === 'copy' ? '复制' : (e.mode === 'move' ? '移动' : '设置')));
             const tone = e.mode === 'delete' ? 'gray'
-              : (e.mode === 'patch' ? 'blue' : (e.mode === 'move' ? 'violet' : 'wood'));
-            const to = e.mode === 'move' && e.target ? ` → ${e.target}` : '';
+              : (e.mode === 'patch' ? 'blue'
+                : (e.mode === 'copy' ? 'amber' : (e.mode === 'move' ? 'violet' : 'wood')));
+            const to = (e.mode === 'move' || e.mode === 'copy') && e.target ? ` → ${e.target}` : '';
             return badge(`${verb} ${e.path}${to}`, tone);
           });
           if (bodyEditsDraft.length > BODY_EDIT_SUMMARY_MAX) {
@@ -2362,6 +2372,7 @@
           openHelpModal('请求体修改', `
             <div style="margin-bottom:8px"><b>设置字段</b>：客户端没带就加上；勾选「已有同名字段不覆盖」时只补缺，客户端自己传了就不动它。</div>
             <div style="margin-bottom:8px"><b>修改字段</b>：只有客户端已经传了这个字段才改，没传就跳过。</div>
+            <div style="margin-bottom:8px"><b>复制字段</b>：把「字段路径」的值复制到「复制到」，原字段保留，例如把 <code>reasoning_effort</code> 同时放到 <code>chat_template_kwargs.reasoning_effort</code>。源字段不存在时跳过；默认覆盖目标已有值，勾选「目标已有值不覆盖」时目标已存在就不动它。</div>
             <div style="margin-bottom:8px"><b>移动字段</b>：把「字段路径」的值搬到「移动到」，并删掉原字段，例如 <code>reasoning_effort</code> 搬到 <code>chat_template_kwargs.reasoning_effort</code>。源字段不存在时跳过；<b>源字段一律删掉</b>，勾选「目标已有值不覆盖」时目标保留自己的值、源的值不再搬过去（直接丢弃），不勾就覆盖目标。搬走某个对象里最后一个键时，空掉的父对象会一起删掉（逐层往上清），不会留下 <code>{"a": {}}</code> 这种空壳。</div>
             <div style="margin-bottom:8px"><b>删除字段</b>：路径不存在时直接忽略；删完变空的父对象会一起删掉（逐层往上清）。</div>
             <div style="margin-bottom:8px"><b>路径</b>：点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写成 <code>a\\.b</code>。</div>
