@@ -75,6 +75,7 @@ func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
 		}
 		v.APIKey = maskKey(c.APIKey)
 		v.APIKeys = nil
+		v.ProxyURL = upstream.MaskProxyURL(c.ProxyURL)
 		v.MultiKeyEnabled = c.MultiKeyEnabled()
 		v.KeyRows = keyRowViews(c.KeyList())
 		out = append(out, v)
@@ -161,6 +162,7 @@ type channelRequest struct {
 	Name              *string            `json:"name"`
 	Type              string             `json:"type"`
 	BaseURL           *string            `json:"base_url"`
+	ProxyURL          *string            `json:"proxy_url"`
 	APIKey            string             `json:"api_key"`
 	KeyRows           *[]keyRowRequest   `json:"key_rows"`
 	MultiKey          *bool              `json:"multi_key"`
@@ -194,6 +196,18 @@ func (s *Server) createChannel(w http.ResponseWriter, r *http.Request) {
 // channelIDTaken 是创建渠道时 ID 已被占用的统一提示。
 func channelIDTaken(id string) string {
 	return "渠道 ID “" + id + "” 已存在，请换一个 ID"
+}
+
+// resolveChannelProxy 保留未修改的代理认证信息；清空时必须显式提交空字符串。
+func resolveChannelProxy(submitted *string, existing string) (string, error) {
+	if submitted == nil {
+		return existing, nil
+	}
+	raw := strings.TrimSpace(*submitted)
+	if existing != "" && raw == upstream.MaskProxyURL(existing) {
+		return existing, nil
+	}
+	return upstream.NormalizeProxyURL(raw)
 }
 
 func (s *Server) saveChannelWith(w http.ResponseWriter, r *http.Request, create bool) {
@@ -270,6 +284,11 @@ func (s *Server) saveChannelWith(w http.ResponseWriter, r *http.Request, create 
 	}
 	if isNew && ch.BaseURL == "" {
 		writeErr(w, http.StatusBadRequest, "接口地址（Base URL）不能为空")
+		return
+	}
+	ch.ProxyURL, err = resolveChannelProxy(req.ProxyURL, ch.ProxyURL)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.AppendV1 != nil {
@@ -412,6 +431,7 @@ func (s *Server) saveChannelWith(w http.ResponseWriter, r *http.Request, create 
 	view := channelSaveView{Channel: ch}
 	view.APIKey = maskKey(ch.APIKey)
 	view.APIKeys = nil
+	view.ProxyURL = upstream.MaskProxyURL(ch.ProxyURL)
 	view.MultiKeyEnabled = ch.MultiKeyEnabled()
 	view.KeyRows = keyRowViews(ch.KeyList())
 	writeOK(w, map[string]any{
@@ -726,6 +746,13 @@ func (s *Server) removeChannelRefsNow(chID string) (removed, updated []string, e
 
 // ---------- 渠道测试 / 探测 ----------
 
+// 探测共用连接池，代理按每次请求的渠道配置选择；保留原来的 30 秒上限。
+var channelProbeClient = func() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = upstream.ProxyForRequest
+	return &http.Client{Transport: tr, Timeout: 30 * time.Second}
+}()
+
 func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) {
 	ch, err := s.store.GetChannel(r.PathValue("id"))
 	if err != nil {
@@ -770,14 +797,14 @@ type probeResult struct {
 
 	// 下面这些字段只用于把「测某个模型」写进调用日志，不序列化给前端
 	// （名字不导出，encoding/json 会直接跳过）。
-	path          string         // 实际请求的上游路径
-	statusCode    int            // 上游返回的状态码；0 表示请求没发出去或没收到响应
-	upstreamModel string         // 本次测的模型名，日志的上游模型列用它
-	usage         upstream.Usage // 上游上报的 token 用量，未上报时为零值
-	responseModel string         // 上游响应里回显的模型名
-	keyIndex      int            // 本次生效的 Key 序号（从 1 开始），无 Key 渠道为 0
-	keyMasked     string         // 本次生效的 Key 掩码
-	keyNote       string         // 本次生效的 Key 备注
+	path          string             // 实际请求的上游路径
+	statusCode    int                // 上游返回的状态码；0 表示请求没发出去或没收到响应
+	upstreamModel string             // 本次测的模型名，日志的上游模型列用它
+	usage         upstream.Usage     // 上游上报的 token 用量，未上报时为零值
+	responseModel string             // 上游响应里回显的模型名
+	keyIndex      int                // 本次生效的 Key 序号（从 1 开始），无 Key 渠道为 0
+	keyMasked     string             // 本次生效的 Key 掩码
+	keyNote       string             // 本次生效的 Key 备注
 	tries         []store.LogAttempt // 多 Key 逐个尝试的明细，单 Key 或指定 Key 时为空
 }
 
@@ -883,7 +910,7 @@ func probeWithKeys(ch store.Channel, keyIndex *int, probe func(store.Channel) pr
 // probeListOnce 只测模型列表接口并把原始结果带回来，失败不做对话回退。
 func probeListOnce(ch store.Channel) probeResult {
 	start := time.Now()
-	models, listErr := fetchChannelModels(&http.Client{Timeout: 30 * time.Second}, ch)
+	models, listErr := fetchChannelModels(channelProbeClient, ch)
 	if listErr != "" {
 		return probeResult{OK: false, Message: listErr, Latency: time.Since(start).Milliseconds()}
 	}
@@ -911,11 +938,15 @@ func fetchChannelModels(client *http.Client, ch store.Channel) ([]string, string
 		return nil, "请求模型列表失败: " + err.Error()
 	}
 	upstream.Get(ch.Type).Auth(req, ch)
+	req = upstream.WithProxy(req, ch.ProxyURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "请求模型列表失败: " + err.Error()
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		return nil, "代理认证失败，请检查代理用户名和密码"
+	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateErr(string(raw)))
@@ -930,7 +961,7 @@ func (s *Server) probeChannelOnce(ch store.Channel) probeResult {
 	if base == "" {
 		return probeResult{OK: false, Message: "该渠道还没有填写接口地址"}
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := channelProbeClient
 
 	// 先试模型列表接口，它最省额度
 	models, listErr := fetchChannelModels(client, ch)
@@ -961,7 +992,7 @@ func (s *Server) probeModelOnce(ch store.Channel, model string) probeResult {
 	if model == "" {
 		return probeResult{OK: false, Message: "缺少模型名"}
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := channelProbeClient
 	payload := map[string]any{
 		"model":      model,
 		"messages":   []any{map[string]any{"role": "user", "content": "你好"}},
@@ -987,11 +1018,16 @@ func (s *Server) probeModelOnce(ch store.Channel, model string) probeResult {
 		return probeResult{OK: false, path: path, upstreamModel: model, Message: err.Error(), Latency: time.Since(start).Milliseconds()}
 	}
 	upstream.Get(ch.Type).Auth(req, ch)
+	req = upstream.WithProxy(req, ch.ProxyURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return probeResult{OK: false, path: path, upstreamModel: model, Message: "请求失败: " + err.Error(), Latency: time.Since(start).Milliseconds()}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		return probeResult{OK: false, path: path, upstreamModel: model, statusCode: http.StatusBadGateway,
+			Message: "代理认证失败，请检查代理用户名和密码", Latency: time.Since(start).Milliseconds()}
+	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
 		return probeResult{OK: false, path: path, upstreamModel: model, statusCode: resp.StatusCode,
@@ -1148,11 +1184,12 @@ func parseModelIDs(raw []byte) []string {
 // 要保存又必须先填模型」的死循环。
 func (s *Server) discoverChannelModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID       string `json:"id"`
-		Type     string `json:"type"`
-		BaseURL  string `json:"base_url"`
-		APIKey   string `json:"api_key"`
-		AppendV1 *bool  `json:"append_v1"`
+		ID       string  `json:"id"`
+		Type     string  `json:"type"`
+		BaseURL  string  `json:"base_url"`
+		ProxyURL *string `json:"proxy_url"`
+		APIKey   string  `json:"api_key"`
+		AppendV1 *bool   `json:"append_v1"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
@@ -1180,16 +1217,25 @@ func (s *Server) discoverChannelModels(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "不支持的渠道类型："+ch.Type)
 		return
 	}
-	// 密钥留空、或者填的是列表页展示的掩码值时，回退到已保存的渠道配置
+	saved, err := s.store.GetChannel(ch.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 代理继承独立于 API Key：编辑时换了 Key，也仍应沿用未修改的代理。
+	ch.ProxyURL, err = resolveChannelProxy(req.ProxyURL, saved.ProxyURL)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 密钥留空、或者填的是列表页展示的掩码值时，回退到已保存的渠道配置。
 	if ch.APIKey == "" || strings.Contains(ch.APIKey, "****") {
-		if saved, err := s.store.GetChannel(ch.ID); err == nil {
-			ch.APIKey = saved.Keys()[0]
-			if ch.BaseURL == "" {
-				ch.BaseURL = saved.BaseURL
-			}
-			if ch.Type == store.ChannelOpenAI && saved.Type != "" {
-				ch.Type = saved.Type
-			}
+		ch.APIKey = saved.Keys()[0]
+		if ch.BaseURL == "" {
+			ch.BaseURL = saved.BaseURL
+		}
+		if ch.Type == store.ChannelOpenAI && saved.Type != "" {
+			ch.Type = saved.Type
 		}
 	}
 	// 接口地址必须显式填写：网关不会替用户猜一个默认上游，
@@ -1205,7 +1251,7 @@ func (s *Server) discoverChannelModels(w http.ResponseWriter, r *http.Request) {
 
 	// 只关心模型列表接口本身：对话回退给不出模型列表，还会把上游的真实错误盖掉。
 	start := time.Now()
-	models, listErr := fetchChannelModels(&http.Client{Timeout: 30 * time.Second}, ch)
+	models, listErr := fetchChannelModels(channelProbeClient, ch)
 	if listErr != "" {
 		writeErr(w, http.StatusBadGateway, listErr)
 		return

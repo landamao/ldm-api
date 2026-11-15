@@ -28,7 +28,7 @@ type Relay struct {
 
 func New(st *store.Store) *Relay {
 	tr := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: upstream.ProxyForRequest,
 		DialContext: (&net.Dialer{
 			Timeout:   20 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -1330,6 +1330,7 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		upReq.Header.Set(k, v)
 	}
 
+	upReq = upstream.WithProxy(upReq, route.Channel.ProxyURL)
 	started := time.Now()
 	resp, err := r.http.Do(upReq)
 	if err != nil {
@@ -1348,6 +1349,11 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 	}
 	defer resp.Body.Close()
 
+	// 407 是代理认证失败，与上游 API Key 无关；不透传代理的认证页或冷却 Key。
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		return attemptOutcome{err: errors.New("代理认证失败，请检查代理用户名和密码"),
+			retryable: true, status: http.StatusBadGateway}
+	}
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		status := resp.StatusCode

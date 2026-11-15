@@ -162,6 +162,8 @@ type Channel struct {
 	Name    string `json:"name"`
 	Type    string `json:"type"`
 	BaseURL string `json:"base_url"`
+	// ProxyURL 是该渠道访问上游时使用的代理地址；留空沿用环境代理。
+	ProxyURL string `json:"proxy_url,omitempty"`
 	// APIKey 是 v1.7.0 及更早版本使用的单 Key 字段，仅用于读取已发布版本的旧数据。
 	// 新数据使用 APIKeys；保存时会把第一个 Key 同步到这里，避免降级后读到过期配置。
 	APIKey string   `json:"api_key,omitempty"`

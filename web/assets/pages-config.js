@@ -255,7 +255,10 @@
       <td>${badge(typeLabel(c.type), typeTone(c.type))}${multiKeyOn && keyCount > 1
         ? ` <span class="badge badge--gray" data-tip="${esc(keyTip)}">${keyCount} Keys</span>`
         : ''}</td>
-      <td><span class="muted fs-12 truncate" style="display:block;max-width:170px" data-tip="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span></td>
+      <td><div class="flex-center gap-8">
+        <span class="muted fs-12 truncate" style="display:block;max-width:170px" data-tip="${esc(c.base_url)}">${esc(c.base_url || '（默认地址）')}</span>
+        ${c.proxy_url ? '<span class="badge badge--blue" data-tip="已配置独立代理">代理</span>' : ''}
+      </div></td>
       <td>
         <div class="badge-group">
           ${names.slice(0, 4).map((m) => `<button type="button" class="badge badge--click mono" data-copy="${esc(m)}" data-copy-label="模型名 ">${esc(m)}</button>`).join('')}
@@ -2120,17 +2123,66 @@
     });
   }
 
+  // 只检查代理 URL 的结构，不交给 URL 自动补主机、去空端口或折叠路径。
+  // 与 Go 保持一致：允许省略端口、IPv6 zone 和末尾单个 /，认证信息不写入报错。
+  function channelProxyError(value) {
+    if (!value) return '';
+    if (/[\u0000-\u0020\u007f]/.test(value) || /%(?![\da-f]{2})/i.test(value)) {
+      return '代理地址格式有误，请填写 协议://主机:端口；认证中的特殊字符请使用 URL 编码';
+    }
+    const parts = /^([a-z][a-z\d+.-]*):\/\/([^/?#]*)(.*)$/i.exec(value);
+    if (!parts || !['http', 'https', 'socks5', 'socks5h'].includes(parts[1].toLowerCase())) {
+      return '代理地址仅支持 http://、https://、socks5://、socks5h://';
+    }
+    if (parts[3] && parts[3] !== '/') return '代理地址不能包含路径、查询参数或片段';
+    const authority = parts[2];
+    const at = authority.lastIndexOf('@');
+    if (at >= 0) {
+      const userInfo = authority.slice(0, at);
+      if (!/^[a-z\d\-._~!$&'()*+,;=:%@]*$/i.test(userInfo)) {
+        return '代理认证格式有误，请使用 scheme://user:password@host:port，特殊字符请使用 URL 编码';
+      }
+      const colon = userInfo.indexOf(':');
+      const credentials = colon < 0 ? [userInfo] : [userInfo.slice(0, colon), userInfo.slice(colon + 1)];
+      if (credentials.some((v) => v.replace(/%2a/ig, '*') === '****')) {
+        return '代理认证信息已隐藏，更换代理时请填写完整的用户名和密码';
+      }
+    }
+    const hostPort = authority.slice(at + 1);
+    const hostParts = /^(\[[^\]]+\]|[^:\[\]]+)(?::([^:]*))?$/.exec(hostPort);
+    if (!hostParts) return '代理主机格式有误，请填写主机；IPv6 地址需要用方括号包围';
+    const host = hostParts[1];
+    const decodedHost = host.replace(/%([\da-f]{2})/ig, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    if (/[\u0000-\u0020\u007f\\/?#@<>"^`{|}]/.test(decodedHost)) return '代理主机格式有误';
+    if (host.startsWith('[')) {
+      const ip = host.slice(1, -1).split('%25')[0];
+      if (!ip.includes(':')) return '代理 IPv6 地址格式有误';
+      try { new URL(`http://[${ip}]`); } catch (e) { return '代理 IPv6 地址格式有误'; }
+    } else if (host.includes('%')) {
+      return '代理主机格式有误';
+    }
+    const port = hostParts[2];
+    if (port === '') return '代理端口不能为空';
+    if (port !== undefined && (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535)) {
+      return '代理端口必须是 1–65535 的整数';
+    }
+    return '';
+  }
+
   // ---------- 渠道编辑弹窗 ----------
   function openChannelEditor(ch) {
     const isNew = !ch;
     const data = ch || {
-      id: '', name: '', type: 'openai', base_url: '', api_key: '', key_rows: [], append_v1: true,
+      id: '', name: '', type: 'openai', base_url: '', proxy_url: '', api_key: '', key_rows: [], append_v1: true,
       multi_key: false,
       key_mode: 'sequential', key_affinity: false, key_cooldown_sec: 300, key_cooldown_reset: false,
       key_cooldown_status: '',
       models: [], enabled: true, remark: '', headers: {}, body_edits: [],
     };
     const initialKeyRows = data.key_rows || [];
+    const initialProxyURL = (data.proxy_url || '').trim();
+    const hasMaskedProxy = /^[a-z][a-z\d+.-]*:\/\/\*{4}:\*{4}@/i.test(initialProxyURL);
+    const proxyHelpText = '留空沿用 HTTP_PROXY / HTTPS_PROXY / NO_PROXY 环境代理，没有环境代理则直连。支持 http://、https://、socks5://、socks5h://，认证格式 scheme://user:password@host:port。';
     // 旧数据没有 multi_key_enabled 时按 Key 数量推断，与后端规则保持一致。
     const multiKeyInit = data.multi_key_enabled !== undefined
       ? data.multi_key_enabled === true
@@ -2269,6 +2321,17 @@
             </div>
           </div>
           <div class="field">
+            <label class="field__label" for="f-proxy-url">代理地址
+              <button type="button" class="badge badge--blue badge--click field__help"
+                      id="f-proxy-help" data-tip="${esc(proxyHelpText)}" aria-label="查看代理地址说明">?</button>
+            </label>
+            <input class="input mono" id="f-proxy-url" type="text" value="${esc(initialProxyURL)}"
+                   placeholder="http://127.0.0.1:7890" autocomplete="off" spellcheck="false"
+                   aria-describedby="f-proxy-hint${hasMaskedProxy ? ' f-proxy-masked-hint' : ''}" data-1p-ignore data-lpignore="true">
+            <div class="field__hint" id="f-proxy-hint">留空沿用 HTTP_PROXY / HTTPS_PROXY / NO_PROXY 环境代理，没有环境代理则直连。支持协议与 URL 认证格式见问号说明。</div>
+            ${hasMaskedProxy ? '<div class="field__hint" id="f-proxy-masked-hint">已保存的代理用户名和密码均以 **** 显示；<b>未修改会保留原代理</b>。更换代理请完整重填地址及认证信息，清空则移除独立代理。</div>' : ''}
+          </div>
+          <div class="field">
             <label class="field__label">自定义请求头（JSON）</label>
             <textarea class="textarea" id="f-headers" rows="3" placeholder='{"X-Custom": "value"}'>${esc(Object.keys(data.headers || {}).length ? JSON.stringify(data.headers, null, 2) : '')}</textarea>
           </div>
@@ -2309,6 +2372,7 @@
         const idEl = $('#f-id');
         const typeEl = $('#f-type');
         const baseEl = $('#f-base');
+        const proxyEl = $('#f-proxy-url');
         const modelsEl = $('#f-models');
         const keyRowsEl = $('#f-key-rows');
         const preview = $('#model-preview');
@@ -2336,6 +2400,29 @@
           `);
         };
         bindAdvancedState(mo.body, 'channel', data.id);
+        $('#f-proxy-help').onclick = () => {
+          openHelpModal('渠道代理地址', `
+            <div style="margin-bottom:8px"><b>作用</b>：为这个渠道单独指定访问上游的代理。留空沿用运行 LDM API 的环境代理 <code>HTTP_PROXY</code> / <code>HTTPS_PROXY</code> / <code>NO_PROXY</code>；没有环境代理则直连。</div>
+            <div style="margin-bottom:8px"><b>格式</b>：支持 <code>http://</code>、<code>https://</code>、<code>socks5://</code>、<code>socks5h://</code>，例如 <code>http://127.0.0.1:7890</code>。端口可省略，填写时须为 1–65535；不要附加路径、查询参数或片段。</div>
+            <div style="margin-bottom:8px"><b>URL 认证</b>：需要认证时填写 <code>scheme://user:password@host:port</code>，用户名和密码中的特殊字符请使用 URL 编码（例如 <code>@</code> 写为 <code>%40</code>）。</div>
+            <div style="margin-bottom:8px"><b>已保存的认证</b>：用户名和密码均显示为 <code>****</code>，原始密码不会返回。未修改时保留已保存的代理；更换代理请完整重填地址及认证信息，清空后保存则移除独立代理、恢复环境代理。</div>
+            <div style="margin-bottom:8px"><b>网络位置</b>：运行 LDM API 的主机必须能连接这个代理。<code>127.0.0.1</code> 指服务所在机器，不是正在打开网页的设备。</div>
+            <div><b>获取模型列表</b>使用当前表单的代理；编辑时未修改则沿用已保存的代理。<b>连通性测试</b>使用已保存的渠道配置，修改代理后需先保存再测试。</div>
+          `);
+        };
+        // 保存和模型发现共用读取与校验：未改脱敏回显时不回传，避免覆盖原认证。
+        const collectProxyURL = () => {
+          const value = proxyEl.value.trim();
+          if (!isNew && value === initialProxyURL) return {};
+          const error = channelProxyError(value);
+          if (error) {
+            Toast.warn(error);
+            $('details.advanced-settings').open = true;
+            proxyEl.focus();
+            return null;
+          }
+          return { proxy_url: value }; // 显式空字符串表示移除独立代理。
+        };
 
         // 请求体修改：规则在独立弹窗里编辑（渠道弹窗已经很长，规则卡片挤在里面看不清）。
         // 这里只保留摘要和入口，草稿改完随渠道一起提交。
@@ -2589,6 +2676,8 @@
             if (keyInputs[0]) keyInputs[0].focus();
             return;
           }
+          const proxy = collectProxyURL();
+          if (!proxy) return;
           discoverBtn.disabled = true;
           discoverBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px"></span>获取中…';
           try {
@@ -2598,6 +2687,7 @@
               base_url: base,
               api_key: key,
               append_v1: $('#f-append-v1').checked,
+              ...proxy,
             });
             const list = res.models || [];
             if (!list.length) { Toast.warn('上游没有返回模型列表，请手动填写'); return; }
@@ -2633,6 +2723,8 @@
           const base = baseEl.value.trim();
           if (!base) { Toast.warn('请填写接口地址（Base URL）'); baseEl.focus(); return; }
           if (!base.includes('://')) { Toast.warn('接口地址需要带上 https:// 或 http://'); baseEl.focus(); return; }
+          const proxy = collectProxyURL();
+          if (!proxy) return;
           // 模型列表允许为空：可以先建好渠道，之后再回来补模型
           const models = parseModels(modelsEl.value);
           const keys = collectKeyRows();
@@ -2660,6 +2752,7 @@
             key_cooldown_status: $('#f-key-cooldown-status').value.trim(),
             enabled: $('#f-enabled').checked,
             headers, body_edits: bodyEdits, remark: $('#f-remark').value.trim(),
+            ...proxy,
           };
           const disabling = payload.enabled === false && !(ch && !ch.enabled);
           const saveBtn = mo.foot.querySelector('[data-act=save]');
