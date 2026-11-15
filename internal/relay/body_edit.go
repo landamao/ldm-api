@@ -497,11 +497,13 @@ func ApplyBodyEdits(body []byte, edits []store.BodyEdit) ([]byte, bool, error) {
 			if !exists {
 				continue
 			}
-			// 勾了「目标已有值不覆盖」时整条跳过：只删源不写目标会让值彻底丢掉，
-			// 原地不动比悄悄删掉更符合预期。
+			// 移动的语义就是「不要原来的」：源字段一律删掉，不看目标有没有值。
+			// 勾了「目标已有值不覆盖」时目标保留自己的原值、源的值丢掉（不搬过去）；
+			// 没勾就覆盖目标。两种情况下源都不能再出现在请求体里。
+			overwrite := true
 			if edit.KeepOrigin {
 				if _, has := getEditValue(obj, targets); has {
-					continue
+					overwrite = false
 				}
 			}
 			// 先删源再写目标：目标可能是源的子路径（a 搬到 a.b），
@@ -514,17 +516,23 @@ func ApplyBodyEdits(body []byte, edits []store.BodyEdit) ([]byte, bool, error) {
 			// 源是父对象里最后一个键时父对象会剩成空壳（{"a": {}}），
 			// 一起清掉：空对象对上游没有意义，还可能被严格的接口判成非法参数。
 			obj, _ = pruneEmptyParents(obj, segs).(map[string]any)
+			before := changed
+			changed = true
+			if !overwrite {
+				// 目标已有值且勾了不覆盖：源已经删掉，目标原样保留。
+				continue
+			}
 			written, err := setEditValue(obj, targets, val)
 			if err != nil {
 				// 目标写不进去（例如负数下标越界）时把源值放回原位，
-				// 别让一条配置有误的规则把字段吃掉。
+				// 别让一条配置有误的规则把字段吃掉；源放回去了就算没改动。
 				if restore, rerr := setEditValue(obj, segs, val); rerr == nil {
 					obj, _ = restore.(map[string]any)
+					changed = before
 				}
 				continue
 			}
 			obj, _ = written.(map[string]any)
-			changed = true
 		}
 	}
 	if !changed {
@@ -593,6 +601,8 @@ func NormalizeBodyEdits(edits []store.BodyEdit) ([]store.BodyEdit, error) {
 				return nil, fmt.Errorf("%s：目标路径不能和源路径相同", label)
 			}
 			// 移动不需要值：搬过去的永远是请求体里现有的内容。
+			// keep_origin 在移动里表示「目标已有值就保留目标自己的值」，
+			// 但源字段无论哪种情况都会删掉——移动的语义就是不要原来的。
 			next.Target = target
 			next.KeepOrigin = edit.KeepOrigin
 		default:

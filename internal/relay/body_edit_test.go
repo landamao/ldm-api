@@ -656,11 +656,10 @@ func TestApplyBodyEditsMove(t *testing.T) {
 	}
 }
 
-// TestApplyBodyEditsMoveTarget 目标已有值时的覆盖策略，以及源不存在的情况。
+// TestApplyBodyEditsMoveTarget 目标已有值直接覆盖：移动的语义就是不要原来的。
 func TestApplyBodyEditsMoveTarget(t *testing.T) {
 	body := []byte(`{"a":"new","b":{"a":"old"}}`)
 
-	// 默认覆盖目标
 	edits := mustEdits(t, []store.BodyEdit{{Mode: "move", Path: "a", Target: "b.a"}})
 	out, _, err := ApplyBodyEdits(body, edits)
 	if err != nil {
@@ -674,7 +673,8 @@ func TestApplyBodyEditsMoveTarget(t *testing.T) {
 		t.Errorf("目标已有值时应被覆盖：%v", got["b"])
 	}
 
-	// 勾了「目标已有值不覆盖」：整条规则跳过，源和目标都留在原位
+	// 勾了「目标已有值不覆盖」：目标保留自己的值，源照样删掉——移动的语义
+	// 就是不要原来的，源字段不能留在请求体里。
 	edits = mustEdits(t, []store.BodyEdit{
 		{Mode: "move", Path: "a", Target: "b.a", KeepOrigin: true},
 	})
@@ -682,12 +682,15 @@ func TestApplyBodyEditsMoveTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed {
-		t.Errorf("目标已有值且不覆盖时不应改动请求体：%s", out)
+	if !changed {
+		t.Errorf("删掉源字段也算改动：%s", out)
 	}
 	got = bodyEditJSON(t, out)
-	if got["a"] != "new" || got["b"].(map[string]any)["a"] != "old" {
-		t.Errorf("源和目标都应保持原样：%v", got)
+	if _, exists := got["a"]; exists {
+		t.Errorf("源字段应被删除：%v", got)
+	}
+	if got["b"].(map[string]any)["a"] != "old" {
+		t.Errorf("不覆盖时目标应保留原值：%v", got["b"])
 	}
 
 	// 目标不存在时「不覆盖」也照常搬过去
@@ -924,7 +927,6 @@ func TestNormalizeBodyEditsMove(t *testing.T) {
 	if !out[0].KeepOrigin {
 		t.Errorf("「目标已有值不覆盖」应保留：%+v", out[0])
 	}
-
 	if _, err := NormalizeBodyEdits([]store.BodyEdit{{Mode: "move", Path: "a"}}); err == nil {
 		t.Error("移动字段没填目标路径应当报错")
 	}

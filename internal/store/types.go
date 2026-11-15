@@ -79,7 +79,7 @@ const (
 	// BodyEditDelete 删除字段：路径不存在时忽略。
 	BodyEditDelete = "delete"
 	// BodyEditMove 移动字段：把源路径的值搬到目标路径，并删掉源字段。
-	// 源字段不存在时忽略；目标已有值时看 KeepOrigin 决定覆盖还是整条跳过。
+	// 源字段一律删掉，目标已有值时看 KeepOrigin 决定是否覆盖目标自己的值。
 	BodyEditMove = "move"
 )
 
@@ -139,7 +139,7 @@ type BodyEdit struct {
 	// Value 是要写入的值，按原样保存 JSON。
 	Value json.RawMessage `json:"value,omitempty"`
 	// KeepOrigin 为 true 时，客户端已经带了同名字段就不覆盖。
-	// move 时含义是目标路径已有值就不搬（源字段保持在原位）。
+	// move 时含义是目标路径已有值就保留目标自己的值，但源字段照样删掉。
 	KeepOrigin bool `json:"keep_origin,omitempty"`
 	// Conditions 是执行条件，按 Logic 组合后决定这条修改是否生效。
 	Conditions []BodyEditCondition `json:"conditions,omitempty"`

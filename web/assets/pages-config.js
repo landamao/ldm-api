@@ -1756,6 +1756,7 @@
       // 「不覆盖」只对设置和移动有意义：修改字段本身就是「客户端带了才改」，
       // 删除则没有值需要保护。
       keep.hidden = m !== 'set' && m !== 'move';
+      // 移动的开关只管目标：勾上后目标保留自己的值，源字段照样删掉。
       keepLabel.textContent = m === 'move' ? '目标已有值不覆盖' : '已有同名字段不覆盖';
     };
     syncMode();
@@ -1822,7 +1823,7 @@
         const target = card.querySelector('.body-edit__target').value.trim();
         if (!target) throw new Error(`第 ${i + 1} 条规则还没有填「移动到」的目标路径`);
         item.target = target;
-        // 移动只需要一个开关：目标已有值时是否覆盖。
+        // 移动的开关只管目标：目标已有值时不覆盖，源字段照样删掉。
         item.keep_origin = card.querySelector('.body-edit__keep input').checked;
       } else if (mode !== 'delete') {
         const type = card.querySelector('select.body-edit__type').value;
@@ -1896,6 +1897,7 @@
       if (mode === 'move') {
         const target = typeof it.target === 'string' ? it.target.trim() : '';
         if (!target) throw new Error(`第 ${n} 条缺少 target`);
+        // 移动的开关只管目标：目标已有值时不覆盖，源字段照样删掉。
         edit.target = target;
         edit.keep_origin = it.keep_origin === true;
       } else if (mode !== 'delete') {
@@ -2005,7 +2007,7 @@
     hint.className = 'field__hint';
     hint.innerHTML = '规则按从上到下的顺序执行，只作用于 JSON 请求体。'
       + '设置字段：没带就补上；修改字段：只有客户端传了才改；'
-      + '移动字段：把源字段的值搬到目标路径并删掉源字段；删除字段：没有就忽略。'
+      + '移动字段：把源字段的值搬到目标路径并删掉源字段（目标已有值可选是否覆盖）；删除字段：没有就忽略。'
       + '移动或删除后变空的对象会一并清掉。'
       + '路径用点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写 <code>a\\.b</code>。';
 
@@ -2131,7 +2133,7 @@
     const bodyEditHelpText = `转发到上游之前修改 JSON 请求体。
       设置字段：客户端没带就加上；勾选「已有同名字段不覆盖」时只补缺，客户端自己传了就不动它。
       修改字段：只有客户端已经传了这个字段才改，没传就跳过。
-      移动字段：把「字段路径」的值搬到「移动到」，并删掉原字段——例如 reasoning_effort 搬到 chat_template_kwargs.reasoning_effort。源字段不存在时跳过；勾选「目标已有值不覆盖」时目标已有值就整条跳过，源字段留在原位。搬走某个对象里最后一个键时，空掉的父对象会一起删掉。
+      移动字段：把「字段路径」的值搬到「移动到」，并删掉原字段——例如 reasoning_effort 搬到 chat_template_kwargs.reasoning_effort。源字段不存在时跳过；源字段一律删掉，勾选「目标已有值不覆盖」时目标保留自己的值、源的值不再搬过去（直接丢弃），不勾就覆盖目标。搬走某个对象里最后一个键时，空掉的父对象会一起删掉。
       删除字段：路径不存在时直接忽略；删完变空的父对象会一起删掉。
       路径用点号分层，数组写数字下标（-1 表示最后一项），字段名本身带点号时写成 a\\.b。
       条件可选：读请求体里另一个字段，按「等于 / 前缀 / 后缀 / 包含 / 大于 / 大于等于 / 小于 / 小于等于」比较，命中才执行这条修改；多条条件可以选「任一满足」或「全部满足」，字段不存在默认不算命中，可以单独勾「字段不存在也算满足」，也可以勾「取反」。
@@ -2360,7 +2362,7 @@
           openHelpModal('请求体修改', `
             <div style="margin-bottom:8px"><b>设置字段</b>：客户端没带就加上；勾选「已有同名字段不覆盖」时只补缺，客户端自己传了就不动它。</div>
             <div style="margin-bottom:8px"><b>修改字段</b>：只有客户端已经传了这个字段才改，没传就跳过。</div>
-            <div style="margin-bottom:8px"><b>移动字段</b>：把「字段路径」的值搬到「移动到」，并删掉原字段，例如 <code>reasoning_effort</code> 搬到 <code>chat_template_kwargs.reasoning_effort</code>。源字段不存在时跳过；勾选「目标已有值不覆盖」时，目标已有值就整条跳过，源字段留在原位。搬走某个对象里最后一个键时，空掉的父对象会一起删掉（逐层往上清），不会留下 <code>{"a": {}}</code> 这种空壳。</div>
+            <div style="margin-bottom:8px"><b>移动字段</b>：把「字段路径」的值搬到「移动到」，并删掉原字段，例如 <code>reasoning_effort</code> 搬到 <code>chat_template_kwargs.reasoning_effort</code>。源字段不存在时跳过；<b>源字段一律删掉</b>，勾选「目标已有值不覆盖」时目标保留自己的值、源的值不再搬过去（直接丢弃），不勾就覆盖目标。搬走某个对象里最后一个键时，空掉的父对象会一起删掉（逐层往上清），不会留下 <code>{"a": {}}</code> 这种空壳。</div>
             <div style="margin-bottom:8px"><b>删除字段</b>：路径不存在时直接忽略；删完变空的父对象会一起删掉（逐层往上清）。</div>
             <div style="margin-bottom:8px"><b>路径</b>：点号分层，数组写数字下标（<code>-1</code> 表示最后一项），字段名本身带点号时写成 <code>a\\.b</code>。</div>
             <div style="margin-bottom:8px"><b>条件</b>：读请求体里另一个字段，按「等于 / 前缀 / 后缀 / 包含 / 大于 / 大于等于 / 小于 / 小于等于」比较，命中才执行这条修改。多条条件可以选「任一满足」或「全部满足」；字段不存在默认不算命中，可以单独勾「字段不存在也算满足」，也可以勾「取反」。</div>

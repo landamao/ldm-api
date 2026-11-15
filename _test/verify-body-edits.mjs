@@ -198,6 +198,9 @@ check((await r3.locator('.body-edit__keep .switch__label').innerText()).trim() =
   '移动模式的开关文案');
 await r3.locator('.body-edit__path').fill('reasoning_effort');
 await r3.locator('.body-edit__target').fill('chat_template_kwargs.reasoning_effort');
+// 勾上「目标已有值不覆盖」：只保护目标，源字段照样删（后端测试见 body_edit_test.go）
+// 开关是自绘轨道，原生 input 被 span 盖住，直接点会超时
+await r3.locator('.body-edit__keep input').check({ force: true });
 
 // ---- 5.5) 规则 4：删除字段 ----
 await page.click('#be-add');
@@ -249,7 +252,7 @@ if (target) {
   check(c.mode === 'move' && c.path === 'reasoning_effort'
     && c.target === 'chat_template_kwargs.reasoning_effort', '规则 3 是移动字段', c);
   check(c.value === undefined && c.value_type === undefined, '移动规则不保存值和值类型', c);
-  check(c.keep_origin !== true, '移动规则默认覆盖目标已有值', c);
+  check(c.keep_origin === true, '移动规则保存「目标已有值不覆盖」开关', c);
   check(d.mode === 'delete' && d.path === 'logprobs', '规则 4 是删除字段', d);
 }
 
@@ -270,6 +273,7 @@ check(await cardAt(2).locator('.body-edit__target').inputValue() === 'chat_templ
   '规则 3 目标路径回显');
 check(await cardAt(2).locator('.body-edit__move').isVisible(), '移动模式重新打开仍显示目标路径');
 check(await cardAt(2).locator('.body-edit__keep').isVisible(), '移动模式显示「目标已有值不覆盖」');
+check(await cardAt(2).locator('.body-edit__keep input').isChecked(), '移动开关回显为已勾选');
 check(await cardAt(3).locator('select.body-edit__mode').inputValue() === 'delete', '规则 4 删除模式回显');
 check(await cardAt(3).locator('.body-edit__set').isHidden(), '删除模式不显示值区');
 
