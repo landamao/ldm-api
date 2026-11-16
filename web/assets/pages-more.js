@@ -44,10 +44,12 @@
   // 的做法一致，不另起一个小按钮。桌面鼠标移上去弹气泡、点徽章复制模型名；
   // 手机没有悬停，点徽章直接展开气泡。上游原样回显时不加图标，点击还是复制。
   // plain 传对应列表用的普通徽章（日志页可复制版 / 看板只读版）。
+  // 只差大小写不算换模型：上游常把模型名回显成全大写 / 全小写（GLM-5.2 → glm-5.2），
+  // 这种回显不该挂路由图标，否则几乎每条都得点开看一遍。
   const upstreamModelBadge = (l, plain) => {
     const asked = (l.upstream_model || '').trim();
     const got = (l.response_model || '').trim();
-    if (!got || got === asked) return plain(asked);
+    if (!got || got.toLowerCase() === asked.toLowerCase()) return plain(asked);
     const tip = `请求模型：${asked || '—'} / 响应模型：${got}`;
     return `<button type="button" class="badge badge--tag badge--click log-model-map"`
       + ` style="--tag-h:${tagHue(asked)}"`

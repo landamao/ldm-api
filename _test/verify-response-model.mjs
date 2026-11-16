@@ -248,6 +248,45 @@ const toastText = async (page) => {
   await ctx.close();
 }
 
+// ---------- 只差大小写的回显不算换模型 ----------
+// 上游经常把模型名回显成 GLM-5.2 / glm-5.2 这种纯大小写差异，这种记录不该挂路由图标。
+{
+  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => console.log('[page error]', e.message));
+  let flipped = 0;
+  await page.route('**/api/logs?*', async (route) => {
+    const resp = await route.fetch();
+    const body = await resp.json();
+    for (const it of body.items || []) {
+      const asked = (it.upstream_model || '').trim();
+      if (!asked) continue;
+      const other = asked === asked.toLowerCase() ? asked.toUpperCase() : asked.toLowerCase();
+      if (other === asked) continue;
+      it.response_model = other;
+      flipped++;
+    }
+    await route.fulfill({ response: resp, json: body });
+  });
+  await login(page);
+  await page.goto(BASE + '/#/logs', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2400);
+
+  const rows = await page.locator('#log-table tbody tr').count();
+  const chips = await page.locator('#log-table .log-model-map').count();
+  check(rows > 0, '大小写用例有记录', String(rows));
+  check(flipped > 0, '已把响应模型改成另一种大小写', String(flipped));
+  check(chips === 0, '只差大小写的响应模型不挂路由图标', String(chips));
+  const first = await page.evaluate(() => {
+    const row = document.querySelector('#log-table tbody tr');
+    const tag = row && row.querySelector('.badge--tag');
+    if (!tag) return null;
+    return { text: tag.textContent.trim(), isMap: tag.classList.contains('log-model-map') };
+  });
+  check(!!first && !first.isMap && first.text.length > 0, '徽章仍是普通模型徽章', JSON.stringify(first));
+  await ctx.close();
+}
+
 console.log(fails ? `\n${fails} 项未通过` : '\n全部通过');
 await browser.close();
 process.exit(fails ? 1 : 0);
