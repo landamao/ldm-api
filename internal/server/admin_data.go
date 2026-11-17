@@ -659,7 +659,9 @@ func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 	modelErrs := map[string]int64{}
 	modelToks := map[string]int64{}
 	channels := map[string]int64{}
+	channelToks := map[string]int64{}
 	tokenUsage := map[string]int64{}
+	tokenToks := map[string]int64{}
 	var totalReq, totalErr, totalTok int64
 	for _, b := range buckets {
 		totalReq += b.Requests
@@ -673,8 +675,15 @@ func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 		for k, v := range b.ChannelCounts {
 			channels[k] += v
 		}
+		// 渠道的 Token 消耗来自渠道分项，和历史请求数用的是同一批日志回填。
+		for k, cs := range b.ChannelStats {
+			channelToks[k] += cs.TotalTokens
+		}
 		for k, v := range b.TokenCounts {
 			tokenUsage[k] += v
+		}
+		for k, v := range b.TokenTokens {
+			tokenToks[k] += v
 		}
 	}
 
@@ -704,11 +713,15 @@ func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, map[string]any{
 		"models":           modelList,
 		"models_by_tokens": tokenList,
-		"channels":         topN(channels, 12),
-		"tokens":           topN(tokenUsage, 12),
-		"total":            totalReq,
-		"errors":           totalErr,
-		"tokens_used":      totalTok,
+		// 渠道 / 密钥排行各给两份：按调用次数排和按 Token 消耗排，
+		// 每项都带上两个口径的数字，看板切口径时不用重新请求。
+		"channels":           topUsage(channels, channelToks, false, 12),
+		"channels_by_tokens": topUsage(channels, channelToks, true, 12),
+		"keys":               topUsage(tokenUsage, tokenToks, false, 12),
+		"keys_by_tokens":     topUsage(tokenUsage, tokenToks, true, 12),
+		"total":              totalReq,
+		"errors":             totalErr,
+		"tokens_used":        totalTok,
 	})
 }
 
@@ -877,6 +890,51 @@ type modelBreakdown struct {
 type kv struct {
 	Name  string `json:"name"`
 	Value int64  `json:"value"`
+}
+
+// usageRank 是渠道 / 密钥排行的一项：Value 是调用次数，Tokens 是 Token 消耗。
+// 两个口径的数字一起返回，看板上的口径开关切换时不用重新请求。
+type usageRank struct {
+	Name   string `json:"name"`
+	Value  int64  `json:"value"`
+	Tokens int64  `json:"tokens"`
+}
+
+// topUsage 从 requests / tokens 两份汇总里取前 n 项。
+// byTokens 决定排序口径：请求数口径和 Token 口径的头部名单可能不同
+// （调用少但单次很长的渠道 / 密钥不能被截掉），所以两份列表分开排。
+func topUsage(requests, tokens map[string]int64, byTokens bool, n int) []usageRank {
+	src := requests
+	if byTokens {
+		src = tokens
+	}
+	out := make([]usageRank, 0, len(src))
+	for name := range src {
+		item := usageRank{Name: name, Value: requests[name], Tokens: tokens[name]}
+		// 排序口径上为 0 的项不占头部名额：Token 口径下没有 Token 记录的密钥
+		// 排在列表底部没有意义，和环形图过滤 0 值的做法保持一致。
+		if (byTokens && item.Tokens <= 0) || (!byTokens && item.Value <= 0) {
+			continue
+		}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if byTokens && a.Tokens != b.Tokens {
+			return a.Tokens > b.Tokens
+		}
+		if a.Value != b.Value {
+			return a.Value > b.Value
+		}
+		if a.Tokens != b.Tokens {
+			return a.Tokens > b.Tokens
+		}
+		return a.Name < b.Name
+	})
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
 }
 
 func topN(m map[string]int64, n int) []kv {

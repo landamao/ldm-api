@@ -20,16 +20,19 @@ func TestRecordStatChannelUsageMergesUpstreamCase(t *testing.T) {
 	logs := []Log{
 		{
 			Time: now.UnixMilli(), ModelID: "public-alias", ChannelID: "ch-1", ChannelName: "主渠道",
+			TokenID: "t-1", TokenName: "生产",
 			UpstreamModel: "  GPT-4o  ", PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15,
 			StatusCode: 200, LatencyMs: 100, FirstByteMs: 20, TokensPerSec: 50,
 		},
 		{
 			Time: now.UnixMilli(), ModelID: "another-alias", ChannelID: "ch-1", ChannelName: "主渠道",
+			TokenID: "t-1", TokenName: "生产",
 			UpstreamModel: "gpt-4O", PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27,
 			StatusCode: 500, Error: "upstream failed", LatencyMs: 90,
 		},
 		{
 			Time: now.UnixMilli(), ModelID: "ch-2/gpt-4o", ChannelID: "ch-2", ChannelName: "备用渠道",
+			TokenID: "t-2", TokenName: "测试",
 			UpstreamModel: "gpt-4o", PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3, StatusCode: 200,
 		},
 	}
@@ -74,6 +77,10 @@ func TestRecordStatChannelUsageMergesUpstreamCase(t *testing.T) {
 	if other.Requests != 1 || len(other.Models) != 1 || other.Models["gpt-4o"].TotalTokens != 3 {
 		t.Errorf("不同渠道应先保留独立分项：%+v", other)
 	}
+	// 按密钥的 Token 消耗和渠道分项同一口径：示例里的失败请求也计入。
+	if b.TokenTokens["生产"] != 42 || b.TokenTokens["测试"] != 3 {
+		t.Errorf("按密钥 Token 统计错误：%+v", b.TokenTokens)
+	}
 }
 
 func TestChannelStatsBackfillIsIdempotentAndSurvivesLogPurge(t *testing.T) {
@@ -84,10 +91,10 @@ func TestChannelStatsBackfillIsIdempotentAndSurvivesLogPurge(t *testing.T) {
 	}
 	now := time.Now()
 	logs := []Log{
-		{ID: "a", Time: now.UnixMilli(), ModelID: "alias-a", ChannelID: "ch-1", ChannelName: "甲", UpstreamModel: "GPT-4o", PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, StatusCode: 200},
-		{ID: "b", Time: now.UnixMilli(), ModelID: "alias-b", ChannelID: "ch-2", ChannelName: "乙", UpstreamModel: "gpt-4O", PromptTokens: 20, CompletionTokens: 3, TotalTokens: 23, StatusCode: 200},
-		{ID: "bad-request", Time: now.UnixMilli(), ChannelID: "ch-1", UpstreamModel: "GPT-4o", TotalTokens: 1000, StatusCode: 400},
-		{ID: "probe", Time: now.UnixMilli(), ChannelID: "ch-1", UpstreamModel: "GPT-4o", TotalTokens: 1000, StatusCode: 200, Source: LogSourceTest},
+		{ID: "a", Time: now.UnixMilli(), ModelID: "alias-a", ChannelID: "ch-1", ChannelName: "甲", TokenID: "t-1", TokenName: "生产", UpstreamModel: "GPT-4o", PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, StatusCode: 200},
+		{ID: "b", Time: now.UnixMilli(), ModelID: "alias-b", ChannelID: "ch-2", ChannelName: "乙", TokenID: "t-2", TokenName: "测试", UpstreamModel: "gpt-4O", PromptTokens: 20, CompletionTokens: 3, TotalTokens: 23, StatusCode: 200},
+		{ID: "bad-request", Time: now.UnixMilli(), ChannelID: "ch-1", TokenID: "t-1", TokenName: "生产", UpstreamModel: "GPT-4o", TotalTokens: 1000, StatusCode: 400},
+		{ID: "probe", Time: now.UnixMilli(), ChannelID: "ch-1", TokenID: "t-1", TokenName: "生产", UpstreamModel: "GPT-4o", TotalTokens: 1000, StatusCode: 200, Source: LogSourceTest},
 	}
 	for _, l := range logs {
 		if err := st.AppendLog(l); err != nil {
@@ -101,7 +108,7 @@ func TestChannelStatsBackfillIsIdempotentAndSurvivesLogPurge(t *testing.T) {
 		}
 	}
 
-	// 模拟升级前的数据：旧桶没有 ChannelStats，也没有迁移完成标记。
+	// 模拟升级前的数据：旧桶没有 ChannelStats 和 TokenTokens，也没有迁移完成标记。
 	if err := st.db.Update(func(tx *bolt.Tx) error {
 		stats := tx.Bucket(bStats)
 		return stats.ForEach(func(k, v []byte) error {
@@ -110,6 +117,7 @@ func TestChannelStatsBackfillIsIdempotentAndSurvivesLogPurge(t *testing.T) {
 				return err
 			}
 			b.ChannelStats = nil
+			b.TokenTokens = nil
 			data, err := json.Marshal(b)
 			if err != nil {
 				return err
@@ -120,7 +128,7 @@ func TestChannelStatsBackfillIsIdempotentAndSurvivesLogPurge(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := st.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bMeta).Delete([]byte(channelStatsBackfillVersion))
+		return tx.Bucket(bMeta).Delete([]byte(statsDetailsBackfillVersion))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -156,11 +164,14 @@ func TestChannelStatsBackfillIsIdempotentAndSurvivesLogPurge(t *testing.T) {
 		if got := b.ChannelStats["ch-2"].Models["gpt-4o"].TotalTokens; got != 23 {
 			t.Errorf("ch-2 回填 Token = %d，期望 23", got)
 		}
+		if b.TokenTokens["生产"] != 12 || b.TokenTokens["测试"] != 23 {
+			t.Errorf("按密钥 Token 回填错误：%+v", b.TokenTokens)
+		}
 	}
 	assertStats()
 
 	// 完成标记存在时直接返回，重复调用不会翻倍。
-	if err := st.backfillChannelStats(); err != nil {
+	if err := st.backfillStatsDetails(); err != nil {
 		t.Fatal(err)
 	}
 	assertStats()

@@ -670,6 +670,9 @@ type Bucket struct {
 	ChannelCounts map[string]int64       `json:"channel_counts"`
 	ChannelStats  map[string]ChannelStat `json:"channel_stats,omitempty"`
 	TokenCounts   map[string]int64       `json:"token_counts"`
+	// TokenTokens 按 API 密钥名称记录 Token 总消耗，与 TokenCounts 一一对应。
+	// 看板切到 Token 口径时密钥排行要用；升级前的桶由启动回填补齐。
+	TokenTokens map[string]int64 `json:"token_tokens,omitempty"`
 }
 
 // ModelStatOf 返回某个模型在这个桶里的统计分项。

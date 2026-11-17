@@ -226,8 +226,8 @@ func TestStatsBreakdownOrdersModelsByTokens(t *testing.T) {
 	now := time.Now()
 	// model-a 调用次数多但每次很省 Token，model-b 调用只有一次但吃掉的 Token 最多。
 	for _, m := range []struct {
-		id    string
-		calls int
+		id     string
+		calls  int
 		tokens int
 	}{
 		{"model-a", 10, 100},
@@ -289,6 +289,74 @@ func TestStatsBreakdownOrdersModelsByTokens(t *testing.T) {
 	// 调用次数维度仍然按调用次数排：model-a 调用多，在前。
 	if len(out.Models) != 2 || out.Models[0].Name != "model-a" {
 		t.Errorf("models 应按调用次数排，model-a 在前，实际 %+v", out.Models)
+	}
+}
+
+// 看板下方的「渠道用量」「密钥用量」要跟随顶部的请求数 / Token 口径：
+// 两份排行都返回，并且每项同时带上调用次数和 Token 消耗。
+// 两份分开排是因为调用少但单次很长的渠道 / 密钥可能挤不进请求数前 12。
+func TestStatsBreakdownCarriesChannelAndKeyTokenTotals(t *testing.T) {
+	s, st := newTestServer(t, "stats-breakdown-usage")
+
+	now := time.Now()
+	// 渠道 ch-1 / 密钥「批量」调用多但每次省 Token；
+	// 渠道 ch-2 / 密钥「长文」只调了一次，吃掉最多 Token。
+	for i := 0; i < 10; i++ {
+		if err := st.RecordStat(store.Log{
+			Time: now.UnixMilli(), ChannelID: "ch-1", ChannelName: "主渠道",
+			TokenID: "t-1", TokenName: "批量",
+			PromptTokens: 8, CompletionTokens: 2, TotalTokens: 10, StatusCode: 200,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.RecordStat(store.Log{
+		Time: now.UnixMilli(), ChannelID: "ch-2", ChannelName: "长文渠道",
+		TokenID: "t-2", TokenName: "长文",
+		PromptTokens: 8000, CompletionTokens: 1000, TotalTokens: 9000, StatusCode: 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	s.statsBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/stats/breakdown?range=all", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("statsBreakdown 返回 %d: %s", rec.Code, rec.Body.String())
+	}
+
+	type rankItem struct {
+		Name   string `json:"name"`
+		Value  int64  `json:"value"`
+		Tokens int64  `json:"tokens"`
+	}
+	var out struct {
+		Channels         []rankItem `json:"channels"`
+		ChannelsByTokens []rankItem `json:"channels_by_tokens"`
+		Keys             []rankItem `json:"keys"`
+		KeysByTokens     []rankItem `json:"keys_by_tokens"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(out.Channels) != 2 || out.Channels[0].Name != "ch-1" || out.Channels[0].Value != 10 {
+		t.Fatalf("channels 应按调用次数排，ch-1 在前：%+v", out.Channels)
+	}
+	if len(out.ChannelsByTokens) != 2 || out.ChannelsByTokens[0].Name != "ch-2" || out.ChannelsByTokens[0].Tokens != 9000 {
+		t.Errorf("channels_by_tokens 应按 Token 消耗排，ch-2 在前：%+v", out.ChannelsByTokens)
+	}
+	// 两个口径的数字都要带上，前端切换时不用重新请求。
+	if out.ChannelsByTokens[0].Value != 1 {
+		t.Errorf("ch-2 的调用次数 = %d，期望 1", out.ChannelsByTokens[0].Value)
+	}
+	if len(out.Keys) != 2 || out.Keys[0].Name != "批量" || out.Keys[0].Value != 10 {
+		t.Fatalf("keys 应按调用次数排，「批量」在前：%+v", out.Keys)
+	}
+	if len(out.KeysByTokens) != 2 || out.KeysByTokens[0].Name != "长文" || out.KeysByTokens[0].Tokens != 9000 {
+		t.Errorf("keys_by_tokens 应按 Token 消耗排，「长文」在前：%+v", out.KeysByTokens)
+	}
+	if out.Keys[0].Tokens != 100 {
+		t.Errorf("「批量」的 Token 消耗 = %d，期望 100", out.Keys[0].Tokens)
 	}
 }
 

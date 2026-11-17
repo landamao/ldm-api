@@ -60,7 +60,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := s.backfillChannelStats(); err != nil {
+	if err := s.backfillStatsDetails(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -704,6 +704,7 @@ func (s *Store) RecordStat(l Log) error {
 		bk.ModelStats = ensureModelStats(bk.ModelStats)
 		bk.ChannelCounts = ensureCounts(bk.ChannelCounts)
 		bk.TokenCounts = ensureCounts(bk.TokenCounts)
+		bk.TokenTokens = ensureCounts(bk.TokenTokens)
 		// 早期版本把按模型的请求数、失败数写在 ModelCounts / ModelErrors 里，
 		// 现在统一记进 ModelStats。老桶在第一次被写入时顺手迁移一次，
 		// 迁移前后的数据不会被重复累加。
@@ -746,6 +747,7 @@ func (s *Store) RecordStat(l Log) error {
 		}
 		if l.TokenID != "" {
 			bk.TokenCounts[l.TokenName]++
+			bk.TokenTokens[l.TokenName] += int64(l.TotalTokens)
 		}
 		data, err := json.Marshal(bk)
 		if err != nil {
@@ -755,15 +757,16 @@ func (s *Store) RecordStat(l Log) error {
 	})
 }
 
-const channelStatsBackfillVersion = "channel_stats_backfill_v1"
+const statsDetailsBackfillVersion = "stats_details_backfill_v2"
 
-// backfillChannelStats 为升级前的小时桶补一次渠道 × 上游模型分项。
-// 只写新增的 ChannelStats，不重算原有指标，因此不会把历史请求和 Token 再加一遍。
+// backfillStatsDetails 为升级前的小时桶补一次渠道 × 上游模型分项和按密钥的 Token 汇总。
+// v2 在 v1 的渠道分项之外增加了 TokenTokens，老库升级时同一次扫日志补齐。
+// 只写新增的补充字段，不重算原有指标，因此不会把历史请求和 Token 再加一遍。
 // 整个回填与完成标记在同一个事务里，启动中断后下次可以安全重试。
-func (s *Store) backfillChannelStats() error {
+func (s *Store) backfillStatsDetails() error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(bMeta)
-		if string(meta.Get([]byte(channelStatsBackfillVersion))) == "1" {
+		if string(meta.Get([]byte(statsDetailsBackfillVersion))) == "1" {
 			return nil
 		}
 		stats := tx.Bucket(bStats)
@@ -779,15 +782,28 @@ func (s *Store) backfillChannelStats() error {
 			raw := stats.Get(hourKey(pendingHour))
 			if raw != nil {
 				var bk Bucket
-				// 损坏的旧桶仍按原有查询惯例跳过；已有新分项的桶不重复回填。
-				if err := json.Unmarshal(raw, &bk); err == nil && bk.ChannelStats == nil {
-					bk.ChannelStats = pending.ChannelStats
-					data, err := json.Marshal(bk)
-					if err != nil {
-						return err
+				// 损坏的旧桶仍按原有查询惯例跳过。
+				if err := json.Unmarshal(raw, &bk); err == nil {
+					changed := false
+					// 已有分项的桶不重复回填，免得把同一条日志累加两次。
+					if bk.ChannelStats == nil && len(pending.ChannelStats) > 0 {
+						bk.ChannelStats = pending.ChannelStats
+						changed = true
 					}
-					if err := stats.Put(hourKey(pendingHour), data); err != nil {
-						return err
+					// TokenTokens 为 nil 说明这个桶是 v2 之前写的，按日志补上；
+					// v2 起每次 RecordStat 都会初始化成（可能为空的）map。
+					if bk.TokenTokens == nil && len(pending.TokenTokens) > 0 {
+						bk.TokenTokens = pending.TokenTokens
+						changed = true
+					}
+					if changed {
+						data, err := json.Marshal(bk)
+						if err != nil {
+							return err
+						}
+						if err := stats.Put(hourKey(pendingHour), data); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -802,7 +818,10 @@ func (s *Store) backfillChannelStats() error {
 				continue
 			}
 			// Server.record 对这些日志本来就不写统计；渠道测试也只留日志。
-			if l.StatusCode == 400 || l.Source == LogSourceTest || l.ChannelID == "" {
+			if l.StatusCode == 400 || l.Source == LogSourceTest {
+				continue
+			}
+			if l.ChannelID == "" && l.TokenID == "" {
 				continue
 			}
 			h := hourOf(l.Time)
@@ -817,11 +836,17 @@ func (s *Store) backfillChannelStats() error {
 				hasPending = true
 			}
 			pending.addChannelStat(l, l.Failed())
+			if l.TokenID != "" {
+				if pending.TokenTokens == nil {
+					pending.TokenTokens = map[string]int64{}
+				}
+				pending.TokenTokens[l.TokenName] += int64(l.TotalTokens)
+			}
 		}
 		if err := flush(); err != nil {
 			return err
 		}
-		return meta.Put([]byte(channelStatsBackfillVersion), []byte("1"))
+		return meta.Put([]byte(statsDetailsBackfillVersion), []byte("1"))
 	})
 }
 

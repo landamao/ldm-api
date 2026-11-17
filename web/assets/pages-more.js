@@ -716,6 +716,14 @@
         dom.donutSub.textContent = '';
         clearChart(dom.donut);
         dom.donut.innerHTML = dashChartPh(196);
+        // 排行卡副标题回到底部的口径说明，上一段区间的「历史数据未记录」提示
+        // 不能留在新骨架下面。
+        const isTok = dashMetric.m === 'tokens';
+        const rankSub = isTok ? ' · Token 消耗' : ' · 调用次数';
+        dom.channelRankTitle.textContent = isTok ? '渠道 Token 消耗' : '渠道调用量';
+        dom.tokenRankTitle.textContent = isTok ? '密钥 Token 消耗' : '密钥调用量';
+        dom.channelRankSub.textContent = '按上游渠道统计' + rankSub;
+        dom.tokenRankSub.textContent = '按 API 密钥统计' + rankSub;
         dom.channelRank.innerHTML = dashRankPh();
         dom.tokenRank.innerHTML = dashRankPh();
       }
@@ -752,6 +760,12 @@
         const hello = h < 5 ? '夜深了' : h < 9 ? '早上好' : h < 12 ? '上午好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
         const week = '日一二三四五六'[now.getDay()];
         const label = dashRangeInfo().label;
+        // 渠道 / 密钥排行卡的文字也跟着当前口径走：从别的页面回来时
+        // 开关还是上次选的 Token，卡片标题不能又写回「调用量」。
+        const isTok = dashMetric.m === 'tokens';
+        const chTitle = isTok ? '渠道 Token 消耗' : '渠道调用量';
+        const keyTitle = isTok ? '密钥 Token 消耗' : '密钥调用量';
+        const rankSub = isTok ? ' · Token 消耗' : ' · 调用次数';
         body.setAttribute('aria-busy', 'true');
         body.innerHTML = `
           <div class="dash-hello">
@@ -802,8 +816,8 @@
             <div class="card">
               <div class="card__head">
                 <div>
-                  <div class="card__title">渠道调用量</div>
-                  <div class="card__sub">按上游渠道统计</div>
+                  <div class="card__title" id="channel-rank-title">${chTitle}</div>
+                  <div class="card__sub" id="channel-rank-sub">按上游渠道统计${rankSub}</div>
                 </div>
               </div>
               <div class="card__body"><div id="channel-rank">${dashRankPh()}</div></div>
@@ -811,8 +825,8 @@
             <div class="card">
               <div class="card__head">
                 <div>
-                  <div class="card__title">密钥调用量</div>
-                  <div class="card__sub">按 API 密钥统计</div>
+                  <div class="card__title" id="token-rank-title">${keyTitle}</div>
+                  <div class="card__sub" id="token-rank-sub">按 API 密钥统计${rankSub}</div>
                 </div>
               </div>
               <div class="card__body"><div id="token-rank">${dashRankPh()}</div></div>
@@ -843,7 +857,11 @@
           donutSub: body.querySelector('#donut-sub'),
           donut: body.querySelector('#model-donut'),
           channelRank: body.querySelector('#channel-rank'),
+          channelRankTitle: body.querySelector('#channel-rank-title'),
+          channelRankSub: body.querySelector('#channel-rank-sub'),
           tokenRank: body.querySelector('#token-rank'),
+          tokenRankTitle: body.querySelector('#token-rank-title'),
+          tokenRankSub: body.querySelector('#token-rank-sub'),
           recent: body.querySelector('#recent-logs'),
         };
         // 口径开关：切请求数 / Token 时曲线、图例、环形图一起重画，
@@ -863,6 +881,7 @@
         paintTrend();
         paintLegend();
         paintDonut();
+        paintRanks();
       }
 
       // 选中的模型没有 Token / 速度记录时（老数据只记了请求数和失败数），
@@ -1157,8 +1176,31 @@
       function paintRanks() {
         if (!dashData.breakdown) return;
         const { breakdown } = dashData;
-        rankList(dom.channelRank, breakdown.channels || [], { nameWidth: 200, fmt: fmtDash });
-        rankList(dom.tokenRank, breakdown.tokens || [], { nameWidth: 200, fmt: fmtDash });
+        // 两张排行卡和上面的趋势 / 环形图共用顶部的口径开关：
+        // 请求数口径排调用次数，Token 口径排 Token 消耗，切换时标题跟着改。
+        const isTok = dashMetric.m === 'tokens';
+        dom.channelRankTitle.textContent = isTok ? '渠道 Token 消耗' : '渠道调用量';
+        dom.tokenRankTitle.textContent = isTok ? '密钥 Token 消耗' : '密钥调用量';
+        // 两份列表分开取：按 Token 排的名单来自后端另一份排行，
+        // 调用少但单次很长的渠道 / 密钥不会因为挤不进请求数前 12 被漏掉。
+        const channelRows = (isTok ? breakdown.channels_by_tokens : breakdown.channels) || [];
+        const keyRows = (isTok ? breakdown.keys_by_tokens : breakdown.keys) || [];
+        const rankItems = (rows) => rows.map((x) => ({
+          name: x.name,
+          value: Number(isTok ? x.tokens : x.value) || 0,
+        }));
+        // 老数据没有按渠道 / 密钥记 Token 时给一句说明，免得把「暂无数据」
+        // 当成这段时间真的没有调用。
+        const noTokChannel = isTok && !channelRows.length && (breakdown.channels || []).length > 0;
+        const noTokKey = isTok && !keyRows.length && (breakdown.keys || []).length > 0;
+        dom.channelRankSub.textContent = '按上游渠道统计'
+          + (isTok ? ' · Token 消耗' : ' · 调用次数')
+          + (noTokChannel ? '（历史数据未按渠道记录 Token）' : '');
+        dom.tokenRankSub.textContent = '按 API 密钥统计'
+          + (isTok ? ' · Token 消耗' : ' · 调用次数')
+          + (noTokKey ? '（历史数据未按密钥记录 Token）' : '');
+        rankList(dom.channelRank, rankItems(channelRows), { nameWidth: 200, fmt: fmtDash });
+        rankList(dom.tokenRank, rankItems(keyRows), { nameWidth: 200, fmt: fmtDash });
       }
 
       // 渠道格跟调用日志页完全一致：徽章点一下复制渠道 ID，用到多 Key 时下面再补一行 #N 备注。
