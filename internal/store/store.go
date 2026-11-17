@@ -60,6 +60,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := s.backfillChannelStats(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -617,6 +621,74 @@ func ensureModelStats(m map[string]ModelStat) map[string]ModelStat {
 	return m
 }
 
+func ensureChannelStats(m map[string]ChannelStat) map[string]ChannelStat {
+	if m == nil {
+		return map[string]ChannelStat{}
+	}
+	return m
+}
+
+// canonicalUpstreamModel 只改变统计归并键，不改变实际发给上游的模型名。
+func canonicalUpstreamModel(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// upstreamDisplayName 用固定的字典序选一种原始写法，避免回填顺序或map遍历
+// 顺序让同一个归并模型的展示名来回变化。
+func upstreamDisplayName(current, candidate string) string {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return current
+	}
+	if current == "" || candidate < current {
+		return candidate
+	}
+	return current
+}
+
+// addModelStat 累计单个模型 / 渠道的指标，口径与整体小时统计一致。
+func addModelStat(ms *ModelStat, l Log, failed bool) {
+	ms.Requests++
+	if failed {
+		ms.Errors++
+	}
+	ms.PromptTokens += int64(l.PromptTokens)
+	ms.CompletionTokens += int64(l.CompletionTokens)
+	ms.TotalTokens += int64(l.TotalTokens)
+	if !failed {
+		ms.LatencySum += l.LatencyMs
+	}
+	if l.TokensPerSec > 0 && l.FirstByteMs > 0 && l.LatencyMs > 0 {
+		ms.SpeedCount++
+		ms.SpeedSum += l.TokensPerSec
+		ms.SpeedLatencySum += l.LatencyMs
+		ms.SpeedFirstByteSum += l.FirstByteMs
+	}
+}
+
+// addChannelStat 把最终路由记到渠道及其上游模型下。Attempts 只用于展示重试
+// 过程，不在此重复累计，否则一次调用的 Token 会被多个尝试重复计算。
+func (b *Bucket) addChannelStat(l Log, failed bool) {
+	if l.ChannelID == "" {
+		return
+	}
+	b.ChannelStats = ensureChannelStats(b.ChannelStats)
+	cs := b.ChannelStats[l.ChannelID]
+	if cs.Name == "" {
+		cs.Name = l.ChannelName
+	}
+	addModelStat(&cs.ModelStat, l, failed)
+	if cs.Models == nil {
+		cs.Models = map[string]UpstreamModelStat{}
+	}
+	key := canonicalUpstreamModel(l.UpstreamModel)
+	us := cs.Models[key]
+	us.Name = upstreamDisplayName(us.Name, l.UpstreamModel)
+	addModelStat(&us.ModelStat, l, failed)
+	cs.Models[key] = us
+	b.ChannelStats[l.ChannelID] = cs
+}
+
 // RecordStat 把一次请求计入小时桶。
 func (s *Store) RecordStat(l Log) error {
 	s.mu.Lock()
@@ -665,26 +737,12 @@ func (s *Store) RecordStat(l Log) error {
 		}
 		if l.ModelID != "" {
 			ms := bk.ModelStats[l.ModelID]
-			ms.Requests++
-			if failed {
-				ms.Errors++
-			}
-			ms.PromptTokens += int64(l.PromptTokens)
-			ms.CompletionTokens += int64(l.CompletionTokens)
-			ms.TotalTokens += int64(l.TotalTokens)
-			if !failed {
-				ms.LatencySum += l.LatencyMs
-			}
-			if l.TokensPerSec > 0 && l.FirstByteMs > 0 && l.LatencyMs > 0 {
-				ms.SpeedCount++
-				ms.SpeedSum += l.TokensPerSec
-				ms.SpeedLatencySum += l.LatencyMs
-				ms.SpeedFirstByteSum += l.FirstByteMs
-			}
+			addModelStat(&ms, l, failed)
 			bk.ModelStats[l.ModelID] = ms
 		}
 		if l.ChannelID != "" {
 			bk.ChannelCounts[l.ChannelID]++
+			bk.addChannelStat(l, failed)
 		}
 		if l.TokenID != "" {
 			bk.TokenCounts[l.TokenName]++
@@ -694,6 +752,76 @@ func (s *Store) RecordStat(l Log) error {
 			return err
 		}
 		return b.Put(hourKey(h), data)
+	})
+}
+
+const channelStatsBackfillVersion = "channel_stats_backfill_v1"
+
+// backfillChannelStats 为升级前的小时桶补一次渠道 × 上游模型分项。
+// 只写新增的 ChannelStats，不重算原有指标，因此不会把历史请求和 Token 再加一遍。
+// 整个回填与完成标记在同一个事务里，启动中断后下次可以安全重试。
+func (s *Store) backfillChannelStats() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(bMeta)
+		if string(meta.Get([]byte(channelStatsBackfillVersion))) == "1" {
+			return nil
+		}
+		stats := tx.Bucket(bStats)
+		logs := tx.Bucket(bLogs).Cursor()
+
+		var pending Bucket
+		var pendingHour int64
+		hasPending := false
+		flush := func() error {
+			if !hasPending {
+				return nil
+			}
+			raw := stats.Get(hourKey(pendingHour))
+			if raw != nil {
+				var bk Bucket
+				// 损坏的旧桶仍按原有查询惯例跳过；已有新分项的桶不重复回填。
+				if err := json.Unmarshal(raw, &bk); err == nil && bk.ChannelStats == nil {
+					bk.ChannelStats = pending.ChannelStats
+					data, err := json.Marshal(bk)
+					if err != nil {
+						return err
+					}
+					if err := stats.Put(hourKey(pendingHour), data); err != nil {
+						return err
+					}
+				}
+			}
+			pending = Bucket{}
+			hasPending = false
+			return nil
+		}
+
+		for k, v := logs.First(); k != nil; k, v = logs.Next() {
+			var l Log
+			if err := json.Unmarshal(v, &l); err != nil {
+				continue
+			}
+			// Server.record 对这些日志本来就不写统计；渠道测试也只留日志。
+			if l.StatusCode == 400 || l.Source == LogSourceTest || l.ChannelID == "" {
+				continue
+			}
+			h := hourOf(l.Time)
+			if hasPending && h != pendingHour {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+			if !hasPending {
+				pendingHour = h
+				pending = Bucket{Hour: h}
+				hasPending = true
+			}
+			pending.addChannelStat(l, l.Failed())
+		}
+		if err := flush(); err != nil {
+			return err
+		}
+		return meta.Put([]byte(channelStatsBackfillVersion), []byte("1"))
 	})
 }
 

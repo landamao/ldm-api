@@ -383,10 +383,11 @@
 
   /**
    * 柱状图
-   * opts: { labels, values, color, height, valueFmt }
+   * opts: { labels, values, names, color, height, valueFmt }
+   * labels 是坐标轴文字，names 是气泡里的完整名称；省略时两者相同。
    */
   function barChart(container, opts) {
-    const { labels = [], values = [], height = 210, color = '#4d9e2f' } = opts;
+    const { labels = [], values = [], names = labels, height = 210, color = '#4d9e2f' } = opts;
     const valueFmt = opts.valueFmt || ((v) => fmtInt(v));
     const axisFmt = opts.axisFmt || fmtAxis;
 
@@ -434,7 +435,7 @@
       svg.querySelectorAll('.hit').forEach((el) => {
         const showBar = (e) => {
           const i = Number(el.dataset.i);
-          t.innerHTML = `<div style="opacity:.75;margin-bottom:2px">${esc(labels[i] || '')}</div><b>${esc(valueFmt(values[i] || 0))}</b>`;
+          t.innerHTML = `<div style="opacity:.75;margin-bottom:2px">${esc(names[i] || labels[i] || '')}</div><b>${esc(valueFmt(values[i] || 0))}</b>`;
           t.classList.add('is-on');
           const tw = t.offsetWidth, th = t.offsetHeight;
           const vw = window.innerWidth, vh = window.innerHeight;

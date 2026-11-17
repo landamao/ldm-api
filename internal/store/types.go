@@ -632,6 +632,20 @@ type ModelStat struct {
 	SpeedFirstByteSum int64   `json:"sb"`
 }
 
+// UpstreamModelStat 是一个上游模型在单个渠道里的统计分项。
+// map 键使用忽略大小写的规范名，Name 保留一种原始写法用于展示。
+type UpstreamModelStat struct {
+	Name string `json:"name,omitempty"`
+	ModelStat
+}
+
+// ChannelStat 是单个渠道及其各上游模型的统计。
+type ChannelStat struct {
+	Name string `json:"name,omitempty"`
+	ModelStat
+	Models map[string]UpstreamModelStat `json:"models,omitempty"`
+}
+
 // Bucket 按小时聚合的统计。
 type Bucket struct {
 	Hour             int64 `json:"hour"`
@@ -651,10 +665,11 @@ type Bucket struct {
 	// ModelCounts / ModelErrors 是早期版本按模型记请求数、失败数用的两个 map，
 	// 现在改由 ModelStats 统一记录。这两个字段只为兼容老数据保留，
 	// 读的时候会和 ModelStats 合并（见 ModelStatOf / ModelStatsMerged）。
-	ModelCounts   map[string]int64 `json:"model_counts,omitempty"`
-	ModelErrors   map[string]int64 `json:"model_errors,omitempty"`
-	ChannelCounts map[string]int64 `json:"channel_counts"`
-	TokenCounts   map[string]int64 `json:"token_counts"`
+	ModelCounts   map[string]int64       `json:"model_counts,omitempty"`
+	ModelErrors   map[string]int64       `json:"model_errors,omitempty"`
+	ChannelCounts map[string]int64       `json:"channel_counts"`
+	ChannelStats  map[string]ChannelStat `json:"channel_stats,omitempty"`
+	TokenCounts   map[string]int64       `json:"token_counts"`
 }
 
 // ModelStatOf 返回某个模型在这个桶里的统计分项。

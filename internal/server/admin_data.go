@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -560,9 +561,9 @@ func (s *Server) statsSeries(w http.ResponseWriter, r *http.Request) {
 			mp := mm[key]
 			p := point{Time: key, Requests: mp.Requests, Errors: mp.Errors,
 				TotalTokens: mp.TotalTokens, PromptTokens: mp.PromptTokens, CompTokens: mp.CompletionTokens}
-		if success := mp.Requests - mp.Errors; success > 0 {
-			p.AvgLatency = float64(mp.LatencySum) / float64(success)
-		}
+			if success := mp.Requests - mp.Errors; success > 0 {
+				p.AvgLatency = float64(mp.LatencySum) / float64(success)
+			}
 			mpts = append(mpts, p)
 		}
 		out["points"] = mpts
@@ -708,6 +709,160 @@ func (s *Server) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 		"total":            totalReq,
 		"errors":           totalErr,
 		"tokens_used":      totalTok,
+	})
+}
+
+// channelUsageOption 是渠道用量页下拉框中的一项。当前配置里暂时没有调用的
+// 渠道也会返回，历史渠道则使用统计里保存的名称快照。
+type channelUsageOption struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Requests    int64  `json:"requests"`
+	TotalTokens int64  `json:"total_tokens"`
+}
+
+type upstreamUsageAccum struct {
+	name     string
+	stat     store.ModelStat
+	channels map[string]struct{}
+}
+
+type upstreamChannelUsageView struct {
+	Key              string  `json:"key"`
+	Name             string  `json:"name"`
+	Requests         int64   `json:"requests"`
+	Errors           int64   `json:"errors"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	SuccessRate      float64 `json:"success_rate"`
+	ChannelCount     int     `json:"channel_count"`
+}
+
+func addUsageStat(dst *store.ModelStat, src store.ModelStat) {
+	dst.Requests += src.Requests
+	dst.Errors += src.Errors
+	dst.PromptTokens += src.PromptTokens
+	dst.CompletionTokens += src.CompletionTokens
+	dst.TotalTokens += src.TotalTokens
+	dst.LatencySum += src.LatencySum
+	dst.SpeedCount += src.SpeedCount
+	dst.SpeedSum += src.SpeedSum
+	dst.SpeedLatencySum += src.SpeedLatencySum
+	dst.SpeedFirstByteSum += src.SpeedFirstByteSum
+}
+
+// summarizeModelStat 复用整体看板的成功率、耗时和速度计算口径。
+func summarizeModelStat(ms store.ModelStat) bucketSummary {
+	return sumBuckets([]store.Bucket{{
+		Requests: ms.Requests, Errors: ms.Errors,
+		PromptTokens: ms.PromptTokens, CompletionTokens: ms.CompletionTokens, TotalTokens: ms.TotalTokens,
+		LatencySum: ms.LatencySum, SpeedCount: ms.SpeedCount, SpeedSum: ms.SpeedSum,
+		SpeedLatencySum: ms.SpeedLatencySum, SpeedFirstByteSum: ms.SpeedFirstByteSum,
+	}})
+}
+
+func usageDisplayName(current, candidate string) string {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return current
+	}
+	if current == "" || candidate < current {
+		return candidate
+	}
+	return current
+}
+
+// statsChannelUsage 返回渠道用量页的渠道汇总和上游模型明细。
+// 单渠道直接读取自己的分项；全部渠道按规范化模型键跨渠道合并，
+// 所以 GPT-4o / gpt-4O 不会拆成两条。
+func (s *Server) statsChannelUsage(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().In(dashboardLocation)
+	rng := s.statRangeFromQuery(r.URL.Query(), now)
+	channelID := strings.TrimSpace(r.URL.Query().Get("channel_id"))
+	buckets, err := s.store.RangeStats(rng.Start.UnixMilli(), rng.End.UnixMilli())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	chans, err := s.store.ListChannels()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	options := make(map[string]*channelUsageOption, len(chans))
+	for _, c := range chans {
+		options[c.ID] = &channelUsageOption{ID: c.ID, Name: c.Name}
+	}
+	var summary store.ModelStat
+	models := map[string]*upstreamUsageAccum{}
+	for _, b := range buckets {
+		for id, cs := range b.ChannelStats {
+			opt := options[id]
+			if opt == nil {
+				opt = &channelUsageOption{ID: id, Name: cs.Name}
+				options[id] = opt
+			} else if opt.Name == "" {
+				opt.Name = cs.Name
+			}
+			opt.Requests += cs.Requests
+			opt.TotalTokens += cs.TotalTokens
+			if channelID != "" && id != channelID {
+				continue
+			}
+			addUsageStat(&summary, cs.ModelStat)
+			for key, ms := range cs.Models {
+				acc := models[key]
+				if acc == nil {
+					acc = &upstreamUsageAccum{channels: map[string]struct{}{}}
+					models[key] = acc
+				}
+				acc.name = usageDisplayName(acc.name, ms.Name)
+				addUsageStat(&acc.stat, ms.ModelStat)
+				acc.channels[id] = struct{}{}
+			}
+		}
+	}
+
+	channelList := make([]channelUsageOption, 0, len(options))
+	for _, opt := range options {
+		channelList = append(channelList, *opt)
+	}
+	sort.Slice(channelList, func(i, j int) bool {
+		if channelList[i].Requests != channelList[j].Requests {
+			return channelList[i].Requests > channelList[j].Requests
+		}
+		return channelList[i].ID < channelList[j].ID
+	})
+
+	modelList := make([]upstreamChannelUsageView, 0, len(models))
+	for key, acc := range models {
+		name := acc.name
+		if name == "" {
+			name = "未记录上游"
+		}
+		modelSummary := summarizeModelStat(acc.stat)
+		modelList = append(modelList, upstreamChannelUsageView{
+			Key: key, Name: name, Requests: acc.stat.Requests, Errors: acc.stat.Errors,
+			PromptTokens: acc.stat.PromptTokens, CompletionTokens: acc.stat.CompletionTokens,
+			TotalTokens: acc.stat.TotalTokens, SuccessRate: modelSummary.SuccessRate, ChannelCount: len(acc.channels),
+		})
+	}
+	sort.Slice(modelList, func(i, j int) bool {
+		if modelList[i].TotalTokens != modelList[j].TotalTokens {
+			return modelList[i].TotalTokens > modelList[j].TotalTokens
+		}
+		if modelList[i].Requests != modelList[j].Requests {
+			return modelList[i].Requests > modelList[j].Requests
+		}
+		return modelList[i].Key < modelList[j].Key
+	})
+
+	writeOK(w, map[string]any{
+		"range": rng.Key, "start": rng.Start.UnixMilli(), "end": rng.End.UnixMilli(),
+		"channel_id": channelID, "summary": summarizeModelStat(summary),
+		"channels": channelList, "models": modelList,
 	})
 }
 
