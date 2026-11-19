@@ -29,12 +29,13 @@
   // 状态码规则的默认值，与 internal/store/status.go 中的常量保持一致。
   const DEFAULT_KEY_COOLDOWN_STATUS = '401,403,408,429,500-599';
   const DEFAULT_NO_RETRY_STATUS = '400-428,430-499';
-  const NO_RETRY_STATUS_HELP_TEXT = '支持单个状态码或区间，逗号分隔，例如 400-430、429。命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。留空表示所有状态码都可重试（未配置过的旧数据也按留空处理）；点击「填入模板」填入 400-428,430-499（4xx 中除 429 外都不可重试）。401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。';
+  const NO_RETRY_STATUS_HELP_TEXT = '支持单个状态码或区间，逗号分隔，例如 400-430、429。命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。留空表示所有状态码都可重试（未配置过的旧数据也按留空处理）；点击「填入模板」填入 400-428,430-499（4xx 中除 429 外都不可重试）。401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。请求类 4xx（400、413、422 等）与路由健康无关，不管有没有配进这里都不会冷却路由；401/402/403/404/408/429 和 5xx 仍照常冷却。';
   const NO_RETRY_STATUS_HELP_HTML = `
     <div style="margin-bottom:8px">支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>429</code>。</div>
     <div style="margin-bottom:8px">命中后直接返回上游错误，不再尝试其它路由，也不记录 Key / 路由冷却。</div>
     <div style="margin-bottom:8px">留空表示所有状态码都可重试（未配置过的旧数据也按留空处理）；点击「填入模板」填入 <code>${DEFAULT_NO_RETRY_STATUS}</code>（4xx 中除 429 外都不可重试）。</div>
-    <div>401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。</div>`;
+    <div style="margin-bottom:8px">401/403 只要渠道把它算作 Key 故障、且还有其它 Key，仍会先换 Key 重试，不受这里影响。</div>
+    <div>请求类 4xx（<code>400</code>、<code>413</code>、<code>422</code> 等）是这次请求本身被上游拒绝，与路由健康无关，不管有没有配进这里都不会冷却路由；<code>401</code>/<code>402</code>/<code>403</code>/<code>404</code>/<code>408</code>/<code>429</code> 和 <code>5xx</code> 仍照常冷却。</div>`;
   const CUSTOM_CONTENT_HELP_TEXT = '开启后错误覆写将不可用。每次请求都直接返回这里填写的内容，不再请求上游；可附加思考内容并模拟首字、速度和延迟。返回内容分「文本 / JSON」两页：文本页按对话结构返回，JSON 页无论流式非流式都直接返回整段 JSON，适合生图等其它响应类型。';
   const CUSTOM_CONTENT_HELP_HTML = `
     <div style="margin-bottom:8px"><b>开启后错误覆写将不可用。</b></div>
@@ -83,7 +84,7 @@
     <div><b>JSON</b>：可直接粘贴能力参数对象。除 <code>context_length</code>、<code>max_output</code>、<code>tool_calling</code>、<code>thinking</code>、<code>vision</code> 外，还支持 <code>tool_calling_error</code>、<code>thinking_error</code>、<code>vision_error</code> 三个布尔字段；<code>null</code> 或留空表示不设置。</div>`;
   const SCHED_HELP_HTML = `
     <div style="margin-bottom:8px"><b>模型亲和</b>：开启后，本轮哪个路由成功了，下一轮请求就优先从它开始。</div>
-    <div><b>失败冷却</b>：条目失败后在冷却时长内视为不可用直接跳过（0 = 不冷却）。<b>全冷却时自动重置</b>决定全部条目都在冷却中时的行为：关 = 直接返回不可用；开 = 清空所有冷却再路由一遍。</div>`;
+    <div><b>失败冷却</b>：条目失败后在冷却时长内视为不可用直接跳过（0 = 不冷却）。请求类 4xx（400、413、422 等）是这次请求本身的问题，不记冷却；401/402/403/404/408/429 和 5xx 才会。<b>全冷却时自动重置</b>决定全部条目都在冷却中时的行为：关 = 直接返回不可用；开 = 清空所有冷却再路由一遍。</div>`;
 
   // 每个渠道 / 模型编辑弹窗的「高级设置」展开状态按实体 ID 记在本地。
   // 新建时统一用 __new，避免不同实体的状态互相影响。
@@ -2188,7 +2189,7 @@
       ? data.multi_key_enabled === true
       : initialKeyRows.length > 1;
     const keySchedHelpText = '顺序：按配置顺序尝试，未开亲和时从第一个可用 Key 开始。随机：每次请求完整打乱可用 Key 后再依次尝试。Key 亲和：上次成功的 Key 优先：顺序模式从它的位置开始顺延，随机模式先试它、其余打乱。失败冷却：Key 返回的状态码命中下方规则后，在设定时间内跳过（0 = 不冷却）；超时、连接失败、断流不冷却 Key，单 Key 渠道也不参与 Key 冷却。全部冷却时重置：所有 Key 都在冷却时清空冷却，再按调度规则重试一遍。';
-    const keyCooldownStatusHelpText = `支持单个状态码或区间，逗号分隔，例如 400-430、401,403,429。命中后该 Key 进入失败冷却；未命中的状态码不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。超时、连接失败、断流、空响应不冷却 Key。留空表示任何状态码都不冷却 Key；点击「填入模板」填入 ${DEFAULT_KEY_COOLDOWN_STATUS}。`;
+    const keyCooldownStatusHelpText = `支持单个状态码或区间，逗号分隔，例如 400-430、401,403,429。命中后该 Key 进入失败冷却；未命中的状态码不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型（请求类 4xx 除外，400/413/422 这些与路由健康无关，不记冷却）。超时、连接失败、断流、空响应不冷却 Key。留空表示任何状态码都不冷却 Key；点击「填入模板」填入 ${DEFAULT_KEY_COOLDOWN_STATUS}。`;
     const bodyEditHelpText = `转发到上游之前修改 JSON 请求体。
       设置字段：客户端没带就加上；勾选「已有同名字段不覆盖」时只补缺，客户端自己传了就不动它。
       修改字段：只有客户端已经传了这个字段才改，没传就跳过。
@@ -2394,7 +2395,7 @@
         $('#f-key-cooldown-status-help').onclick = () => {
           openHelpModal('Key 冷却状态码', `
             <div style="margin-bottom:8px">支持单个状态码或区间，逗号分隔，例如 <code>400-430</code>、<code>401,403,429</code>。</div>
-            <div style="margin-bottom:8px">命中后该 Key 进入失败冷却；未命中的状态码不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。</div>
+            <div style="margin-bottom:8px">命中后该 Key 进入失败冷却；未命中的状态码不会冷却 Key，但仍按模型的重试规则继续路由，全部 Key 失败后会冷却对应的渠道模型。请求类 4xx（<code>400</code>、<code>413</code>、<code>422</code> 等）是这次请求本身的问题，不会冷却路由；<code>401</code>/<code>402</code>/<code>403</code>/<code>404</code>/<code>408</code>/<code>429</code> 和 <code>5xx</code> 才会。</div>
             <div style="margin-bottom:8px">超时、连接失败、断流、空响应属于传输层问题，和 Key 本身无关，只影响本次尝试（仍会换 Key / 换路由重试），不会把 Key 记成冷却。单 Key 渠道也不会进入 Key 冷却。</div>
             <div>留空表示任何状态码都不冷却 Key；点击「填入模板」填入 <code>${DEFAULT_KEY_COOLDOWN_STATUS}</code>。</div>
           `);

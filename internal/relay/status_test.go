@@ -1438,3 +1438,134 @@ func TestResponseOutputTextSkipsBinary(t *testing.T) {
 		t.Errorf("Responses API 的正文也要计入输出，得到 %q", got)
 	}
 }
+
+// 请求类 4xx（400 / 404 / 413 / 422 等）不把路由记成冷却：
+// 一个没配「不可重试状态码」的模型打出的 400，不能让另一个把 400 视为
+// 不可重试的模型也跟着跳过这条路由（冷却按「渠道 / 上游模型」全局共享）。
+func TestRequestLevel4xxDoesNotCoolRoute(t *testing.T) {
+	ClearAllCooldowns()
+	defer ClearAllCooldowns()
+
+	var badHits atomic.Int32
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		badHits.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"message":"matched user group has no available model instance"}}`)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"ok","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer good.Close()
+
+	st := newTestStore(t)
+	statusTestChannel(t, st, "rl-a", bad.URL, []string{"key-rl-000001"}, []string{"a"})
+	statusTestChannel(t, st, "rl-b", good.URL, []string{"key-rl-000002"}, []string{"b"})
+	now := time.Now().UnixMilli()
+	// 没配规则的模型：400 继续路由到备用渠道
+	if err := st.SaveModel(store.Model{
+		ID: "loose", Type: store.ModelTypeCustom,
+		Routes:  []store.Route{{ChannelID: "rl-a", Upstream: "a"}, {ChannelID: "rl-b", Upstream: "b"}},
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 把 400 视为不可重试的模型：共用同一条路由
+	if err := st.SaveModel(store.Model{
+		ID: "strict", Type: store.ModelTypeCustom,
+		Routes:        []store.Route{{ChannelID: "rl-a", Upstream: "a"}, {ChannelID: "rl-b", Upstream: "b"}},
+		NoRetryStatus: strp("400"),
+		Enabled:       true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	if res := New(st).Do(context.Background(), rec, statusTestRequest("loose")); rec.Code != http.StatusOK || res.Err != "" {
+		t.Fatalf("4xx 应继续路由到备用渠道，得到 %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := badHits.Load(); got != 1 {
+		t.Fatalf("第一条路由应被调用一次，实际 %d", got)
+	}
+
+	m, _ := st.GetModel("loose")
+	chans, _ := st.ListChannels()
+	byID := map[string]store.Channel{}
+	for _, c := range chans {
+		byID[c.ID] = c
+	}
+	plan, _ := PlanRoute(m, byID, func(string) bool { return true })
+	if len(plan) != 2 {
+		t.Fatalf("请求类 4xx 不应冷却路由，得到 %d 条可用路由", len(plan))
+	}
+
+	// 严格模型再打一次：400 原样返回，且不应记冷却
+	rec2 := httptest.NewRecorder()
+	New(st).Do(context.Background(), rec2, statusTestRequest("strict"))
+	if rec2.Code != http.StatusBadRequest || !strings.Contains(rec2.Body.String(), "no available model instance") {
+		t.Fatalf("不可重试的 400 应原样返回，得到 %d: %s", rec2.Code, rec2.Body.String())
+	}
+	plan2, _ := PlanRoute(m, byID, func(string) bool { return true })
+	if len(plan2) != 2 {
+		t.Errorf("不可重试的 400 也不应冷却路由，得到 %d 条可用路由", len(plan2))
+	}
+}
+
+// 凭证 / 额度 / 限流 / 超时 / 404（上游没有这个模型或端点）仍按失败冷却：
+// 这些状态码说明路由当前不可用，跳过它是应该的。
+func TestRouteLevel4xxStillCoolsRoute(t *testing.T) {
+	for _, status := range []int{
+		http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden,
+		http.StatusNotFound, http.StatusRequestTimeout, http.StatusTooManyRequests,
+	} {
+		status := status
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			ClearAllCooldowns()
+			defer ClearAllCooldowns()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				io.WriteString(w, `{"error":{"message":"nope"}}`)
+			}))
+			defer srv.Close()
+			good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"id":"ok","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+			}))
+			defer good.Close()
+
+			st := newTestStore(t)
+			ch := statusTestChannel(t, st, "cc-a", srv.URL, []string{"key-cc-000101"}, []string{"a"})
+			ch.KeyCooldownStatus = strp("")
+			if err := st.SaveChannel(ch); err != nil {
+				t.Fatal(err)
+			}
+			statusTestChannel(t, st, "cc-b", good.URL, []string{"key-cc-000102"}, []string{"b"})
+			now := time.Now().UnixMilli()
+			if err := st.SaveModel(store.Model{
+				ID: "smart", Type: store.ModelTypeCustom,
+				Routes:  []store.Route{{ChannelID: "cc-a", Upstream: "a"}, {ChannelID: "cc-b", Upstream: "b"}},
+				Enabled: true, CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			rec := httptest.NewRecorder()
+			if res := New(st).Do(context.Background(), rec, statusTestRequest("smart")); rec.Code != http.StatusOK || res.Err != "" {
+				t.Fatalf("应继续路由到备用渠道，得到 %d: %s", rec.Code, rec.Body.String())
+			}
+
+			m, _ := st.GetModel("smart")
+			chans, _ := st.ListChannels()
+			byID := map[string]store.Channel{}
+			for _, c := range chans {
+				byID[c.ID] = c
+			}
+			plan, _ := PlanRoute(m, byID, func(string) bool { return true })
+			if len(plan) != 1 || plan[0].rt.ChannelID != "cc-b" {
+				t.Errorf("%d 应冷却该路由，只留备用渠道，实际 %d 条", status, len(plan))
+			}
+		})
+	}
+}

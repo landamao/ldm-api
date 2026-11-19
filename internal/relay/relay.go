@@ -1211,6 +1211,24 @@ func attemptErrText(err error) string {
 	return truncate(err.Error(), 500)
 }
 
+// requestLevel4xx 判断这个状态码是不是「请求本身有问题」，与路由健康无关。
+// 400（参数 / 内容被拒绝）、413（请求体过大）、422（语义错误）以及 4xx 里
+// 其它的请求类错误都属于这一类：同一条请求换到别的路由上大概率还是同样的
+// 结果，冷却它没有意义。凭证、额度、限流和超时（401 / 402 / 403 / 408 / 429）
+// 说明这条路由当前不可用；404 多半是上游没有这个模型或端点，属于配置问题，
+// 都会照常进入失败冷却。5xx 本来就不在这个函数里。
+func requestLevel4xx(status int) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	switch status {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden,
+		http.StatusNotFound, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	}
+	return true
+}
+
 func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request,
 	resolved *Resolved, route Route, isLast, hasMoreKeys bool) attemptOutcome {
 
@@ -1384,6 +1402,15 @@ func (r *Relay) attempt(ctx context.Context, w http.ResponseWriter, req *Request
 		// 与其它状态码一致，由模型的「不可重试状态码」决定：
 		// 留空表示可重试，命中规则才直接返回。
 		out := attemptOutcome{status: status, err: errors.New(msg), retryable: !isLast, keyFailed: keyFailed}
+		// 请求类 4xx（400 / 413 / 422 等）是这次请求本身被上游拒绝：参数、内容
+		// 不对，换一条路由大概率还是同样的结果，不该把路由记成不可用。
+		// 冷却按「渠道 / 上游模型」全局共享，一个没配「不可重试状态码」的模型把
+		// 400 打在这条路由上，会把另一个把 400 视为不可重试的模型也一起拖下水，
+		// 让它无端跳过这条路由。凭证 / 额度 / 限流 / 超时（401/402/403/408/429）
+		// 和 404（上游没有这个模型或端点）说明路由本身有问题，仍然照常冷却。
+		if requestLevel4xx(status) {
+			out.skipRouteCooldown = true
+		}
 		if isLast {
 			// 已经是最后一条路由：上游原始错误留给 Do 原样返回给调用方
 			out.upstreamRaw, out.upstreamHdr = raw, resp.Header
