@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#4d9e2f">
+<title>懒大猫 API · 新版界面预览</title>
+<link rel="icon" href="../web/assets/logo.jpg">
+
+<!-- 直接复用线上样式：按钮、卡片、徽章、表格、弹窗、聊天气泡全部是同一套皮 -->
+<link rel="stylesheet" href="../web/assets/katex/katex.min.css">
+<link rel="stylesheet" href="../web/assets/app.css">
+<link rel="stylesheet" href="css/preview.css">
+
+<script>
+  // 预览期捕获脚本错误，方便定位（不影响正式代码）
+  window.__pvErrors = [];
+  window.addEventListener('error', function (e) {
+    window.__pvErrors.push(String(e.message) + ' @ ' + String(e.filename).split('/').pop() + ':' + e.lineno);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    window.__pvErrors.push('Promise: ' + String(e.reason && (e.reason.stack || e.reason.message) || e.reason));
+  });
+  // 尽早应用主题，避免首屏闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ldmapi.theme') || 'light';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  })();
+</script>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- 渲染与图表库（与线上同一份） -->
+<script>
+  // charts.js 在加载时要读 window.LDM 的格式化函数和气泡接口
+  window.LDM = window.LDM || {};
+  window.LDM.esc = function (s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  };
+  window.LDM.fmtInt = function (n) { return (Number(n) || 0).toLocaleString('zh-CN'); };
+  window.LDM.fmtNum = function (n) {
+    n = Number(n) || 0;
+    var abs = Math.abs(n);
+    if (abs >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (abs >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (abs >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+    return n.toLocaleString('zh-CN');
+  };
+  window.LDM.tip = {
+    attach: function (el) {
+      if (!el.getAttribute('data-tip')) el.setAttribute('data-tip', el.textContent.trim());
+    },
+    hide: function () { if (window.PV) window.PV.Tip.hide(); }
+  };
+</script>
+<script src="../web/assets/marked.min.js"></script>
+<script src="../web/assets/purify.min.js"></script>
+<script src="../web/assets/katex/katex.min.js"></script>
+<script src="../web/assets/marked-katex.js"></script>
+<script src="../web/assets/markdown.js"></script>
+<script src="../web/assets/provider-icons.js"></script>
+<script src="../web/assets/charts.js"></script>
+
+<!-- 预览自身的脚本 -->
+<script src="js/util.js?v=1"></script>
+<script src="js/data.js?v=1"></script>
+<script src="js/chat.js?v=1"></script>
+<script src="js/usage.js?v=1"></script>
+<script src="js/plaza.js?v=1"></script>
+<script src="js/models.js?v=1"></script>
+<script src="js/settings.js?v=1"></script>
+<script src="js/app.js?v=1"></script>
+</body>
+</html>
