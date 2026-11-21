@@ -37,15 +37,23 @@ func channelHasModel(ch store.Channel, upstream string) bool {
 	return false
 }
 
+// affinityEntry 是一条「下次优先走上次成功者」的偏好记录。
+// usedAt 在每次成功时刷新，空闲清理按它判断：正在被使用的亲和不会因为
+// 到了清理周期就被整批清掉，缓存命中不受影响。
+type affinityEntry struct {
+	target string    // 路由 key（渠道ID/上游模型）或 Key 指纹
+	usedAt time.Time // 最后一次成功使用的时刻
+}
+
 // routeStates 记录路由的运行时状态。key 是「渠道ID/上游模型」：
 // 同一渠道模型被多个自定义模型引用时共享状态——上游真的挂了，对所有引用它的模型都该冷却。
 var routeStates = struct {
 	sync.Mutex
-	failedAt  map[string]time.Time // 路由 key -> 最近一次失败时刻
-	lastRoute map[string]string    // 模型ID -> 上次请求成功走的路由 key（亲和）
+	failedAt  map[string]time.Time     // 路由 key -> 最近一次失败时刻
+	lastRoute map[string]affinityEntry // 模型ID -> 上次成功走的路由（亲和）
 }{
 	failedAt:  map[string]time.Time{},
-	lastRoute: map[string]string{},
+	lastRoute: map[string]affinityEntry{},
 }
 
 // MarkSuccess 在一次请求成功后记录：清掉该条目的冷却，并记下模型亲和。
@@ -54,7 +62,7 @@ func MarkSuccess(modelID, channelID, upstream string) {
 	defer routeStates.Unlock()
 	k := routeKey(channelID, upstream)
 	delete(routeStates.failedAt, k)
-	routeStates.lastRoute[modelID] = k
+	routeStates.lastRoute[modelID] = affinityEntry{target: k, usedAt: time.Now()}
 }
 
 // MarkFailure 记录失败时刻。冷却时长不在这里固化：判定时用当前模型配置的
@@ -124,7 +132,7 @@ func AffinityCount() (model, channel int) {
 
 // ClearAffinity 只清亲和记录，不动失败冷却。
 // model 清各模型「上次成功的路由」，channel 清各渠道「上次成功的 Key」。
-// 用于系统设置里的定时清理和「立即清理」，两者都不应该影响正在冷却的条目。
+// 用于系统设置里的「立即清理」，不应该影响正在冷却的条目。
 func ClearAffinity(channel, model bool) ClearResult {
 	var res ClearResult
 	if model {
@@ -137,6 +145,40 @@ func ClearAffinity(channel, model bool) ClearResult {
 		keyStates.Lock()
 		res.Affinity += len(keyStates.lastKey)
 		clear(keyStates.lastKey)
+		keyStates.Unlock()
+	}
+	return res
+}
+
+// ClearIdleAffinity 清理空闲超过 idle 的亲和记录，返回清掉的条数。
+// 空闲时长从「最后一次成功使用」算起：一个模型在持续调用时会不断刷新时刻，
+// 不会像整点全量清理那样把刚命中过的亲和一起清掉。
+// model 清各模型的路由亲和，channel 清各渠道的 Key 亲和；都只删已过期的条目。
+func ClearIdleAffinity(channel, model bool, idle time.Duration) ClearResult {
+	var res ClearResult
+	if idle <= 0 {
+		// 防御：阈值非正时什么都不做，避免配置异常导致一次性全清。
+		return res
+	}
+	now := time.Now()
+	if model {
+		routeStates.Lock()
+		for modelID, a := range routeStates.lastRoute {
+			if now.Sub(a.usedAt) >= idle {
+				delete(routeStates.lastRoute, modelID)
+				res.Affinity++
+			}
+		}
+		routeStates.Unlock()
+	}
+	if channel {
+		keyStates.Lock()
+		for channelID, a := range keyStates.lastKey {
+			if now.Sub(a.usedAt) >= idle {
+				delete(keyStates.lastKey, channelID)
+				res.Affinity++
+			}
+		}
 		keyStates.Unlock()
 	}
 	return res
@@ -201,8 +243,8 @@ func ClearCooldownsForChannel(channelID string) ClearResult {
 			res.Cleared++
 		}
 	}
-	for modelID, k := range routeStates.lastRoute {
-		if strings.HasPrefix(k, prefix) {
+	for modelID, a := range routeStates.lastRoute {
+		if strings.HasPrefix(a.target, prefix) {
 			delete(routeStates.lastRoute, modelID)
 			res.Affinity++
 		}
@@ -228,7 +270,7 @@ func PruneModelRoutes(modelID string, routes []store.Route) {
 		return
 	}
 	for _, rt := range routes {
-		if routeKey(rt.ChannelID, rt.Upstream) == last {
+		if routeKey(rt.ChannelID, rt.Upstream) == last.target {
 			return
 		}
 	}
@@ -363,7 +405,7 @@ func PlanRoute(m store.Model, channels map[string]store.Channel, enabled func(st
 	affinityHit := false
 	if m.Affinity {
 		routeStates.Lock()
-		last := routeStates.lastRoute[m.ID]
+		last := routeStates.lastRoute[m.ID].target
 		routeStates.Unlock()
 		if last != "" {
 			for i, c := range chain {

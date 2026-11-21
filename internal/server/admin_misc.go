@@ -47,39 +47,32 @@ func (s *Server) Cleanup() {
 	_ = s.store.PurgeStatsBefore(cutoff)
 }
 
-// affinityCleanupMetaKey 是「上次亲和自动清理」的时刻（毫秒）。
+// affinityCleanupMetaKey 是「上次真正清理到亲和记录」的时刻（毫秒）。
 // 放 meta 桶而不是 Settings：定时器只改这一个值，不会和前端保存设置互相覆盖。
 const affinityCleanupMetaKey = "affinity_cleanup_at"
 
-// CleanupAffinity 按系统设置定时清空亲和记录，返回这次清掉的条数。
-// 由 main 每分钟调用一次，是否真的执行由清理间隔决定；未开启或没到点时返回 0。
+// CleanupAffinity 清理空闲超时的亲和记录，返回这次清掉的条数。
+// 由 main 每分钟调用一次，不会整批清空：判定依据是每条亲和「最后一次成功使用」
+// 的时刻，只有超过设置里空闲时长的条目才会被删，正在用的模型不受影响。
 func (s *Server) CleanupAffinity() int {
 	st, err := s.store.GetSettings()
-	if err != nil || st.AffinityCleanupHours <= 0 {
+	if err != nil || st.AffinityCleanupMinutes <= 0 {
 		return 0
 	}
 	if !st.AffinityCleanChannel && !st.AffinityCleanModel {
 		return 0
 	}
-	now := time.Now()
-	last := s.affinityCleanupAt()
-	if last.IsZero() {
-		// 首次运行（含刚升级）只记基线，不在启动后立刻清一遍。
-		s.setAffinityCleanupAt(now)
+	idle := time.Duration(st.AffinityCleanupMinutes) * time.Minute
+	res := relay.ClearIdleAffinity(st.AffinityCleanChannel, st.AffinityCleanModel, idle)
+	if res.Affinity == 0 {
 		return 0
 	}
-	if now.Sub(last) < time.Duration(st.AffinityCleanupHours)*time.Hour {
-		return 0
-	}
-	res := relay.ClearAffinity(st.AffinityCleanChannel, st.AffinityCleanModel)
-	s.setAffinityCleanupAt(now)
-	if res.Affinity > 0 {
-		log.Printf("定时清理亲和：%d 条", res.Affinity)
-	}
+	s.setAffinityCleanupAt(time.Now())
+	log.Printf("清理空闲亲和：%d 条（空闲超过 %d 分钟）", res.Affinity, st.AffinityCleanupMinutes)
 	return res.Affinity
 }
 
-// affinityCleanupAt 返回上次亲和自动清理的时刻，没有记录时返回零值。
+// affinityCleanupAt 返回上次真正清理到亲和记录的时刻，没有记录时返回零值。
 func (s *Server) affinityCleanupAt() time.Time {
 	raw, err := s.store.GetMeta(affinityCleanupMetaKey)
 	if err != nil || raw == "" {

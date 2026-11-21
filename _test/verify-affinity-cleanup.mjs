@@ -32,7 +32,7 @@ await page.goto(BASE + '/#/settings', { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(1500);
 
 // ---- 1) 控件与初始状态 ----
-for (const sel of ['#s-affinity-hours', '#s-affinity-channel', '#s-affinity-model', '#s-affinity-save', '#s-affinity-clear', '#s-affinity-meta']) {
+for (const sel of ['#s-affinity-minutes', '#s-affinity-channel', '#s-affinity-model', '#s-affinity-save', '#s-affinity-clear', '#s-affinity-meta']) {
   check(await page.locator(sel).count() === 1, '存在 ' + sel);
 }
 const meta = (await page.locator('#s-affinity-meta').innerText()).trim();
@@ -52,7 +52,7 @@ const layout = await page.evaluate(() => {
     sameWidth: r.length === 2 ? Math.abs(r[0].width - r[1].width) < 0.5 : null,
     sideRight: r.length ? +r[0].right.toFixed(1) : null,
     gridRight: gr ? +gr.right.toFixed(1) : null,
-    hoursW: +document.querySelector('#s-affinity-hours').getBoundingClientRect().width.toFixed(1),
+    minutesW: +document.querySelector('#s-affinity-minutes').getBoundingClientRect().width.toFixed(1),
   };
 });
 console.log('  layout:', JSON.stringify(layout));
@@ -65,7 +65,7 @@ check(colsWide === 2, '宽屏设置页两列', colsWide);
 await page.screenshot({ path: `${SHOT}/affinity-settings-1440.png`, fullPage: true });
 
 // ---- 2) 保存：间隔 1 小时 + 两种范围 ----
-await page.fill('#s-affinity-hours', '1');
+await page.fill('#s-affinity-minutes', '1');
 for (const sel of ['#s-affinity-channel', '#s-affinity-model']) {
   if (!(await page.isChecked(sel))) await page.click(`label:has(${sel}) .switch__track`);
 }
@@ -76,11 +76,11 @@ const saved = await page.evaluate(async () => {
   return res.ok ? res.json() : { error: res.status };
 });
 console.log('  saved:', JSON.stringify({
-  hours: saved.affinity_cleanup_hours,
+  minutes: saved.affinity_cleanup_minutes,
   ch: saved.affinity_clean_channel,
   model: saved.affinity_clean_model,
 }));
-check(saved.affinity_cleanup_hours === 1, '间隔落盘为 1', saved.affinity_cleanup_hours);
+check(saved.affinity_cleanup_minutes === 1, '空闲阈值落盘为 1', saved.affinity_cleanup_minutes);
 check(saved.affinity_clean_channel === true && saved.affinity_clean_model === true, '范围落盘为渠道 + 模型');
 check(await page.locator('.toast--success').count() > 0, '保存后有成功提示');
 
@@ -106,7 +106,7 @@ const narrow = await page.evaluate(() => {
     gap: r.length === 2 ? +(r[1].top - r[0].bottom).toFixed(1) : null,
     scrollW: sw,
     viewW: window.innerWidth,
-    hoursW: +document.querySelector('#s-affinity-hours').getBoundingClientRect().width.toFixed(1),
+    minutesW: +document.querySelector('#s-affinity-minutes').getBoundingClientRect().width.toFixed(1),
   };
 });
 console.log('  narrow:', JSON.stringify(narrow));

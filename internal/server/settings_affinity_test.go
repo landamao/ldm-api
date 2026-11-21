@@ -4,10 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"ldmapi/internal/relay"
 )
@@ -41,7 +39,7 @@ func settingsCall(t *testing.T, s *Server, method, path, payload string) (int, m
 	return rec.Code, out
 }
 
-// 系统设置能保存亲和自动清理的间隔与范围，并把当前亲和条数带回来。
+// 系统设置能保存亲和空闲清理的阈值与范围，并把当前亲和条数带回来。
 func TestSettingsAffinityCleanupFields(t *testing.T) {
 	s, st := newTestServer(t, "affinity-settings")
 	clearAffinityState()
@@ -51,12 +49,12 @@ func TestSettingsAffinityCleanupFields(t *testing.T) {
 	relay.MarkKeySuccess("ch1", "sk-a")
 
 	code, out := settingsCall(t, s, http.MethodPut, "/api/settings",
-		`{"affinity_cleanup_hours":6,"affinity_clean_channel":true,"affinity_clean_model":true}`)
+		`{"affinity_cleanup_minutes":90,"affinity_clean_channel":true,"affinity_clean_model":true}`)
 	if code != http.StatusOK {
 		t.Fatalf("保存设置失败：%d", code)
 	}
-	if out["affinity_cleanup_hours"] != float64(6) {
-		t.Errorf("间隔应为 6，实际 %v", out["affinity_cleanup_hours"])
+	if out["affinity_cleanup_minutes"] != float64(90) {
+		t.Errorf("空闲阈值应为 90 分钟，实际 %v", out["affinity_cleanup_minutes"])
 	}
 	if out["affinity_clean_channel"] != true || out["affinity_clean_model"] != true {
 		t.Errorf("清理范围应为渠道 + 模型，实际 %v / %v", out["affinity_clean_channel"], out["affinity_clean_model"])
@@ -69,14 +67,20 @@ func TestSettingsAffinityCleanupFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.AffinityCleanupHours != 6 || !saved.AffinityCleanChannel || !saved.AffinityCleanModel {
+	if saved.AffinityCleanupMinutes != 90 || !saved.AffinityCleanChannel || !saved.AffinityCleanModel {
 		t.Errorf("设置没有落盘：%+v", saved)
 	}
 
-	// 间隔为 0 表示关闭，允许清掉之前的配置。
-	_, out = settingsCall(t, s, http.MethodPut, "/api/settings", `{"affinity_cleanup_hours":0}`)
-	if out["affinity_cleanup_hours"] != float64(0) {
-		t.Errorf("间隔应被清零，实际 %v", out["affinity_cleanup_hours"])
+	// 阈值上限一年，超出的值会被截断。
+	_, out = settingsCall(t, s, http.MethodPut, "/api/settings", `{"affinity_cleanup_minutes":9999999}`)
+	if out["affinity_cleanup_minutes"] != float64(365*24*60) {
+		t.Errorf("超过一年应被截断到 %d，实际 %v", 365*24*60, out["affinity_cleanup_minutes"])
+	}
+
+	// 阈值为 0 表示关闭，允许清掉之前的配置。
+	_, out = settingsCall(t, s, http.MethodPut, "/api/settings", `{"affinity_cleanup_minutes":0}`)
+	if out["affinity_cleanup_minutes"] != float64(0) {
+		t.Errorf("阈值应被清零，实际 %v", out["affinity_cleanup_minutes"])
 	}
 }
 
@@ -144,9 +148,10 @@ func TestClearAffinityEndpoint(t *testing.T) {
 	}
 }
 
-// 定时清理按间隔执行：首次只记基线，没到点不动，到点清空并更新基准。
-func TestCleanupAffinitySchedule(t *testing.T) {
-	s, st := newTestServer(t, "affinity-schedule")
+// 空闲清理按「每条亲和的最后一次成功使用」判断，不再到点整批清空：
+// 刚用过的免清，只有闲置超过阈值才被删；关闭后完全不动。
+func TestCleanupAffinityIdle(t *testing.T) {
+	s, st := newTestServer(t, "affinity-idle")
 	clearAffinityState()
 	t.Cleanup(clearAffinityState)
 
@@ -154,7 +159,7 @@ func TestCleanupAffinitySchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st0.AffinityCleanupHours = 1
+	st0.AffinityCleanupMinutes = 5
 	st0.AffinityCleanChannel = true
 	st0.AffinityCleanModel = true
 	if err := st.SaveSettings(st0); err != nil {
@@ -163,42 +168,35 @@ func TestCleanupAffinitySchedule(t *testing.T) {
 	relay.MarkSuccess("m1", "ch1", "up1")
 	relay.MarkKeySuccess("ch1", "sk-a")
 
-	// 第一次调用只记录基线，不清理。
-	if n := s.CleanupAffinity(); n != 0 {
-		t.Fatalf("首次调用应只记基线，实际清了 %d 条", n)
+	// 刚写入的亲和空闲不到 5 分钟，反复调用都不该清，也不需要记清理时间。
+	for i := 0; i < 3; i++ {
+		if n := s.CleanupAffinity(); n != 0 {
+			t.Fatalf("第 %d 次调用清掉了正在用的亲和 %d 条", i+1, n)
+		}
 	}
 	if m, c := relay.AffinityCount(); m != 1 || c != 1 {
-		t.Fatalf("基线阶段不应清亲和，实际 %d / %d", m, c)
+		t.Fatalf("正在用的亲和应保留，实际 %d / %d", m, c)
 	}
-	if n := s.CleanupAffinity(); n != 0 {
-		t.Fatalf("未到间隔不应清理，实际清了 %d 条", n)
-	}
-
-	// 把上次清理时间往前拨两小时，下一次调用就该清。
-	past := time.Now().Add(-2 * time.Hour).UnixMilli()
-	if err := st.SetMeta(affinityCleanupMetaKey, strconv.FormatInt(past, 10)); err != nil {
-		t.Fatal(err)
-	}
-	if n := s.CleanupAffinity(); n != 2 {
-		t.Fatalf("到点应清掉 2 条亲和，实际 %d", n)
-	}
-	if m, c := relay.AffinityCount(); m != 0 || c != 0 {
-		t.Fatalf("清理后不应残留亲和，实际 %d / %d", m, c)
-	}
-	if last := s.affinityCleanupAt(); time.Since(last) > time.Minute {
-		t.Errorf("清理后应更新基准时间，实际 %v", last)
+	if last := s.affinityCleanupAt(); !last.IsZero() {
+		t.Errorf("没清到记录时不该更新清理时间，实际 %v", last)
 	}
 
-	// 关闭后不再清理。
+	// 用完一次再调用：时刻刷新，仍然不清。
 	relay.MarkSuccess("m1", "ch1", "up1")
-	st0.AffinityCleanupHours = 0
+	if n := s.CleanupAffinity(); n != 0 {
+		t.Fatalf("刚命中过的亲和不该被清，实际 %d 条", n)
+	}
+
+	// 关闭后不再清理，亲和原样保留。
+	relay.MarkSuccess("m2", "ch2", "up2")
+	st0.AffinityCleanupMinutes = 0
 	if err := st.SaveSettings(st0); err != nil {
 		t.Fatal(err)
 	}
 	if n := s.CleanupAffinity(); n != 0 {
 		t.Fatalf("关闭后不应清理，实际 %d", n)
 	}
-	if m, _ := relay.AffinityCount(); m != 1 {
+	if m, _ := relay.AffinityCount(); m != 2 {
 		t.Errorf("关闭后亲和应原样保留，实际模型 %d 条", m)
 	}
 }

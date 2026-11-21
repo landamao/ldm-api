@@ -287,3 +287,54 @@ func TestQueryLogFacets(t *testing.T) {
 		t.Fatalf("空区间不应有取值：%+v", empty)
 	}
 }
+
+// 旧版本按小时保存的亲和阈值要换算成分钟，且只迁移一次。
+func TestSettingsAffinityMinutesMigration(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "settings-migrate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// 模拟 1.31.1 的存量配置：只有小时字段。
+	if err := st.SaveSettings(Settings{AffinityCleanupHours: 24, AffinityCleanChannel: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AffinityCleanupMinutes != 1440 {
+		t.Fatalf("24 小时应换算成 1440 分钟，实际 %d", got.AffinityCleanupMinutes)
+	}
+	if got.AffinityCleanupHours != 0 {
+		t.Fatalf("迁移后旧字段应清空，实际 %d", got.AffinityCleanupHours)
+	}
+	if !got.AffinityCleanChannel {
+		t.Error("迁移不应影响其它设置")
+	}
+
+	// 换算结果已经落盘，再读不会重复换算。
+	again, err := st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.AffinityCleanupMinutes != 1440 || again.AffinityCleanupHours != 0 {
+		t.Fatalf("再次读取应保持 1440 分钟，实际 %d / %d", again.AffinityCleanupMinutes, again.AffinityCleanupHours)
+	}
+
+	// 已经有分钟值时以分钟为准，不被残留的小时值覆盖。
+	if err := st.SaveSettings(Settings{AffinityCleanupMinutes: 30, AffinityCleanupHours: 24}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AffinityCleanupMinutes != 30 {
+		t.Fatalf("应保留已有的 30 分钟，实际 %d", got.AffinityCleanupMinutes)
+	}
+	if got.AffinityCleanupHours != 0 {
+		t.Fatalf("残留小时字段应被清空，实际 %d", got.AffinityCleanupHours)
+	}
+}

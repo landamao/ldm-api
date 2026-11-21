@@ -29,11 +29,11 @@ type keyCandidate struct {
 
 var keyStates = struct {
 	sync.Mutex
-	failedAt map[string]time.Time // 渠道ID + Key 指纹 -> 最近一次失败时刻
-	lastKey  map[string]string    // 渠道ID -> 上次成功使用的 Key 指纹（亲和）
+	failedAt map[string]time.Time     // 渠道ID + Key 指纹 -> 最近一次失败时刻
+	lastKey  map[string]affinityEntry // 渠道ID -> 上次成功使用的 Key 指纹（亲和）
 }{
 	failedAt: map[string]time.Time{},
-	lastKey:  map[string]string{},
+	lastKey:  map[string]affinityEntry{},
 }
 
 // keyFingerprint 返回 Key 的短指纹，避免把明文 Key 当作内存索引。
@@ -111,7 +111,7 @@ func PlanKeys(ch store.Channel) ([]keyCandidate, string) {
 		}
 		live = all
 	}
-	last := keyStates.lastKey[ch.ID]
+	last := keyStates.lastKey[ch.ID].target
 	keyStates.Unlock()
 
 	if len(live) == 0 {
@@ -175,7 +175,7 @@ func MarkKeySuccess(channelID, key string) {
 	id := keyStateID(channelID, key)
 	keyStates.Lock()
 	delete(keyStates.failedAt, id)
-	keyStates.lastKey[channelID] = keyFingerprint(key)
+	keyStates.lastKey[channelID] = affinityEntry{target: keyFingerprint(key), usedAt: time.Now()}
 	keyStates.Unlock()
 }
 
@@ -236,7 +236,7 @@ func PruneChannelKeys(channelID string, keys []string) {
 	prefix := channelID + "\x00"
 	keyStates.Lock()
 	defer keyStates.Unlock()
-	if last, ok := keyStates.lastKey[channelID]; ok && !validKeys[last] {
+	if last, ok := keyStates.lastKey[channelID]; ok && !validKeys[last.target] {
 		delete(keyStates.lastKey, channelID)
 	}
 	for k := range keyStates.failedAt {

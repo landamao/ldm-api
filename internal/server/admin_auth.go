@@ -217,7 +217,7 @@ func publicSettings(st store.Settings) store.Settings {
 }
 
 // settingsResponse 是 /api/settings 的响应体：设置本体扁平展开，
-// 再附带亲和的运行时状态（设置页要显示当前条数和上次自动清理时间）。
+// 再附带亲和的运行时状态（设置页要显示当前条数和上次清理到记录的时间）。
 type settingsResponse struct {
 	store.Settings
 	AffinityCleanupAt    int64 `json:"affinity_cleanup_at"`
@@ -259,10 +259,10 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		LogRetentionDays           *int    `json:"log_retention_days"`
 		AllowOrigins               *string `json:"allow_origins"`
 		AllowUnlistedChannelModels *bool   `json:"allow_unlisted_channel_models"`
-		// 亲和自动清理：间隔小时数与清理范围。
-		AffinityCleanupHours *int  `json:"affinity_cleanup_hours"`
-		AffinityCleanChannel *bool `json:"affinity_clean_channel"`
-		AffinityCleanModel   *bool `json:"affinity_clean_model"`
+		// 亲和空闲清理：空闲阈值（分钟）与清理范围。
+		AffinityCleanupMinutes *int  `json:"affinity_cleanup_minutes"`
+		AffinityCleanChannel   *bool `json:"affinity_clean_channel"`
+		AffinityCleanModel     *bool `json:"affinity_clean_model"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
@@ -294,9 +294,9 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	if req.AllowUnlistedChannelModels != nil {
 		st.AllowUnlistedChannelModels = *req.AllowUnlistedChannelModels
 	}
-	if req.AffinityCleanupHours != nil && *req.AffinityCleanupHours >= 0 {
+	if req.AffinityCleanupMinutes != nil && *req.AffinityCleanupMinutes >= 0 {
 		// 0 表示关闭；上限一年，避免手滑填出一个永远不触发的值。
-		st.AffinityCleanupHours = min(*req.AffinityCleanupHours, 24*365)
+		st.AffinityCleanupMinutes = min(*req.AffinityCleanupMinutes, 365*24*60)
 	}
 	if req.AffinityCleanChannel != nil {
 		st.AffinityCleanChannel = *req.AffinityCleanChannel

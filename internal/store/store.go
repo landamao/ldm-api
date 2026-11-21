@@ -974,7 +974,19 @@ func (s *Store) GetSettings() (Settings, error) {
 	if errors.Is(err, ErrNotFound) {
 		return Settings{}, nil
 	}
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	// 兼容 1.31.1 及以前按小时保存的阈值：换算成分钟并清空旧字段，
+	// 否则升级后 24 小时会被当成 24 分钟，亲和刚设好就过期。
+	if out.AffinityCleanupHours > 0 {
+		if out.AffinityCleanupMinutes <= 0 {
+			out.AffinityCleanupMinutes = out.AffinityCleanupHours * 60
+		}
+		out.AffinityCleanupHours = 0
+		_ = s.SaveSettings(out)
+	}
+	return out, nil
 }
 
 func (s *Store) SaveSettings(st Settings) error {

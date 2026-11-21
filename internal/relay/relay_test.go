@@ -787,7 +787,7 @@ func TestPruneModelRoutes(t *testing.T) {
 	MarkSuccess("PRUNE", "PCH", "p")
 	PruneModelRoutes("PRUNE", []store.Route{{ChannelID: "PCH", Upstream: "p"}})
 	routeStates.Lock()
-	last := routeStates.lastRoute["PRUNE"]
+	last := routeStates.lastRoute["PRUNE"].target
 	routeStates.Unlock()
 	if last == "" {
 		t.Fatal("路由仍在配置里时不应清理亲和记录")

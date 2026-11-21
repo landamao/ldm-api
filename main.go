@@ -22,7 +22,7 @@ import (
 	"ldmapi/internal/termtitle"
 )
 
-var version = "1.31.0"
+var version = "1.31.1"
 
 func main() {
 	// 先读 .env，让其中的环境变量成为命令行参数的默认值
@@ -114,8 +114,8 @@ func main() {
 	}()
 
 	go func() {
-		// 每分钟检查一次亲和自动清理：设置里的间隔最小是 1 小时，
-		// 一分钟一跳既保证到点就清，开销也只有一次设置读取。
+		// 每分钟检查一次过期亲和：只有「最后一次成功使用」距今超过设置时长的
+		// 条目才会被清，正在调用的模型每次成功都会重新计时，不会在周期边界被误清。
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {

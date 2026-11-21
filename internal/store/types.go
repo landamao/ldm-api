@@ -712,10 +712,15 @@ type Settings struct {
 	Logo             string `json:"logo"`
 	Theme            string `json:"theme"` // light | dark
 	LogRetentionDays int    `json:"log_retention_days"`
-	// AffinityCleanupHours 是亲和自动清理的间隔（小时），0 表示不自动清理。
+	// AffinityCleanupMinutes 是亲和记录的空闲阈值（分钟），0 表示不自动清理。
+	// 不再按固定周期整批清空：只有「最后一次成功使用」距今超过这个时长的条目
+	// 才会被删，正在调用的模型一直有请求刷新时刻，不会被误清。
 	// 只清「上次成功优先」的亲和记录，不动失败冷却：AffinityCleanChannel 清渠道
 	// 多 Key 的 Key 亲和，AffinityCleanModel 清模型的路由亲和。
-	AffinityCleanupHours int    `json:"affinity_cleanup_hours"`
+	AffinityCleanupMinutes int `json:"affinity_cleanup_minutes"`
+	// AffinityCleanupHours 是 1.31.1 及以前的阈值单位（小时），只用于升级迁移：
+	// 读到非 0 时换算成分钟并清空，新配置不再写这个字段。
+	AffinityCleanupHours int    `json:"affinity_cleanup_hours,omitempty"`
 	AffinityCleanChannel bool   `json:"affinity_clean_channel"`
 	AffinityCleanModel   bool   `json:"affinity_clean_model"`
 	RootPasswordHash     string `json:"root_password_hash"`
