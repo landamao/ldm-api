@@ -939,11 +939,12 @@ func (s *Store) RecentModelStats(modelIDs []string, limit, maxScan int) (map[str
 	return out, err
 }
 
-// PurgeStatsBefore 清理过期统计桶。
-func (s *Store) PurgeStatsBefore(ts int64) error {
+// PurgeStatsBefore 清理早于 ts 的统计桶，返回删除的小时桶数量。
+func (s *Store) PurgeStatsBefore(ts int64) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.db.Update(func(tx *bolt.Tx) error {
+	removed := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		c := tx.Bucket(bStats).Cursor()
 		for k, _ := c.First(); k != nil; k, _ = c.Next() {
 			if len(k) != 8 {
@@ -954,12 +955,14 @@ func (s *Store) PurgeStatsBefore(ts int64) error {
 				if err := c.Delete(); err != nil {
 					return err
 				}
+				removed++
 			} else {
 				break
 			}
 		}
 		return nil
 	})
+	return removed, err
 }
 
 // ---------- Settings ----------

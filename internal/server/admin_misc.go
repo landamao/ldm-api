@@ -36,15 +36,26 @@ func (s *Server) EnsureDefaultToken() (string, error) {
 	return t.Key, nil
 }
 
-// Cleanup 按设置清理过期日志与统计桶。
+// Cleanup 按设置分别清理过期日志与统计桶。
+// 两个保留天数互相独立：日志清理不影响看板，统计清理也不删调用日志。
 func (s *Server) Cleanup() {
 	st, err := s.store.GetSettings()
-	if err != nil || st.LogRetentionDays <= 0 {
+	if err != nil {
 		return
 	}
-	cutoff := time.Now().AddDate(0, 0, -st.LogRetentionDays).UnixMilli()
-	_, _ = s.store.PurgeLogsBefore(cutoff)
-	_ = s.store.PurgeStatsBefore(cutoff)
+	now := time.Now()
+	if st.LogRetentionDays > 0 {
+		cutoff := now.AddDate(0, 0, -st.LogRetentionDays).UnixMilli()
+		if n, err := s.store.PurgeLogsBefore(cutoff); err == nil && n > 0 {
+			log.Printf("清理过期日志：%d 条（保留 %d 天）", n, st.LogRetentionDays)
+		}
+	}
+	if days := st.StatsRetention(); days > 0 {
+		cutoff := now.AddDate(0, 0, -days).UnixMilli()
+		if n, err := s.store.PurgeStatsBefore(cutoff); err == nil && n > 0 {
+			log.Printf("清理过期统计：%d 个时段（保留 %d 天）", n, days)
+		}
+	}
 }
 
 // affinityCleanupMetaKey 是「上次真正清理到亲和记录」的时刻（毫秒）。

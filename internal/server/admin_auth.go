@@ -233,8 +233,15 @@ func (s *Server) buildSettingsResponse(st store.Settings) settingsResponse {
 	if t := s.affinityCleanupAt(); !t.IsZero() {
 		lastClean = t.UnixMilli()
 	}
+	pub := publicSettings(st)
+	// 未单独设置统计保留天数时返回日志的实际值，前端与 API 调用方
+	// 拿到的都是当前生效的配置；显式设为 0（永久保留）不受影响。
+	if pub.StatsRetentionDays == nil {
+		days := pub.StatsRetention()
+		pub.StatsRetentionDays = &days
+	}
 	return settingsResponse{
-		Settings:             publicSettings(st),
+		Settings:             pub,
 		AffinityCleanupAt:    lastClean,
 		AffinityModelCount:   modelAffinity,
 		AffinityChannelCount: channelAffinity,
@@ -257,6 +264,7 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		Logo                       *string `json:"logo"`
 		Theme                      *string `json:"theme"`
 		LogRetentionDays           *int    `json:"log_retention_days"`
+		StatsRetentionDays         *int    `json:"stats_retention_days"`
 		AllowOrigins               *string `json:"allow_origins"`
 		AllowUnlistedChannelModels *bool   `json:"allow_unlisted_channel_models"`
 		// 亲和空闲清理：空闲阈值（分钟）与清理范围。
@@ -287,6 +295,10 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LogRetentionDays != nil && *req.LogRetentionDays >= 0 {
 		st.LogRetentionDays = *req.LogRetentionDays
+	}
+	if req.StatsRetentionDays != nil && *req.StatsRetentionDays >= 0 {
+		days := *req.StatsRetentionDays
+		st.StatsRetentionDays = &days
 	}
 	if req.AllowOrigins != nil {
 		st.AllowOrigins = strings.TrimSpace(*req.AllowOrigins)

@@ -5905,6 +5905,17 @@
       ];
       const BACKUP_LABELS = Object.fromEntries(BACKUP_SCOPES.map(([key, label]) => [key, label]));
 
+      // 统计保留天数在旧版本里与日志共用；后端未单独设置时会带回日志的值，
+      // 这里再做一层兜底，避免老接口返回 null 时输入框显示 0。
+      const logRetention = Number(settings.log_retention_days) || 0;
+      const statsRetention = settings.stats_retention_days == null
+        ? logRetention : (Number(settings.stats_retention_days) || 0);
+      const dateInputValue = (ms) => {
+        const d = new Date(ms);
+        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      };
+      const defaultPurgeDate = dateInputValue(startOfToday(30));
+
       root.innerHTML = `
         ${me.default_password ? `<div class="alert alert--warn mb-18">${icon('alert', 16)}<div>
           <span class="strong">当前仍在使用默认密码 landamao</span><br>
@@ -5942,11 +5953,6 @@
                   <div class="tristate__opt ${Theme.get() === 'dark' ? 'is-on' : ''}" data-value="dark">深色</div>
                 </div>
                 <div class="field__hint">默认浅色主题（林间木色）。此处的选择会立即生效并记住。</div>
-              </div>
-              <div class="field">
-                <label class="field__label">日志保留天数</label>
-                <input class="input" id="s-retention" type="number" min="0" value="${settings.log_retention_days || 0}" placeholder="0 表示永久保留">
-                <div class="field__hint">超过天数的调用日志与统计数据会被自动清理；0 表示永久保留。</div>
               </div>
               <div class="field">
                 <label class="field__label">API 跨域白名单</label>
@@ -6027,6 +6033,55 @@
                 <div class="field__hint mt-8" id="s-affinity-meta"></div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card__head">
+            <div><div class="card__title">数据保留</div><div class="card__sub">日志与统计分别设置，互不影响</div></div>
+          </div>
+          <div class="card__body">
+            <div class="chart-grid settings-grid" style="margin-bottom:0">
+              <div>
+                <div class="field">
+                  <label class="field__label">调用日志保留天数</label>
+                  <div class="flex-center gap-8">
+                    <input class="input" id="s-log-retention" type="number" min="0"
+                           value="${logRetention}" placeholder="0 表示永久保留" style="width:110px">
+                    <span class="muted fs-12">天</span>
+                  </div>
+                  <div class="field__hint">超过天数的调用日志会被自动清理；0 表示永久保留。不影响看板统计。</div>
+                </div>
+                <div class="field">
+                  <label class="field__label">删除指定日期前的日志</label>
+                  <div class="btn-row">
+                    <input class="input" id="s-log-purge-date" type="date" value="${defaultPurgeDate}" style="width:auto">
+                    <button class="btn btn--danger" id="s-log-purge">${icon('trash', 13)}删除此日期前日志</button>
+                  </div>
+                  <div class="field__hint">删除所选日期 00:00 之前的全部调用日志，看板统计不受影响；操作不可撤销。</div>
+                </div>
+              </div>
+              <div>
+                <div class="field">
+                  <label class="field__label">统计数据保留天数</label>
+                  <div class="flex-center gap-8">
+                    <input class="input" id="s-stats-retention" type="number" min="0"
+                           value="${statsRetention}" placeholder="0 表示永久保留" style="width:110px">
+                    <span class="muted fs-12">天</span>
+                  </div>
+                  <div class="field__hint">超过天数的看板统计数据（按小时聚合）会被自动清理；0 表示永久保留。不影响调用日志。</div>
+                </div>
+                <div class="field">
+                  <label class="field__label">删除指定日期前的统计</label>
+                  <div class="btn-row">
+                    <input class="input" id="s-stats-purge-date" type="date" value="${defaultPurgeDate}" style="width:auto">
+                    <button class="btn btn--danger" id="s-stats-purge">${icon('trash', 13)}删除此日期前统计</button>
+                  </div>
+                  <div class="field__hint">删除所选日期 00:00 之前的全部看板统计数据，调用日志不受影响；操作不可撤销。</div>
+                </div>
+              </div>
+            </div>
+            <button class="btn btn--primary mt-12" id="s-retention-save">${icon('check', 14)}保存保留设置</button>
           </div>
         </div>
 
@@ -6258,7 +6313,6 @@
             site_subtitle: q('#s-sub').value.trim(),
             logo: q('#s-logo').value.trim(),
             theme: q('#s-theme .tristate__opt.is-on').dataset.value,
-            log_retention_days: Number(q('#s-retention').value) || 0,
             allow_origins: q('#s-cors').value.trim(),
             allow_unlisted_channel_models: q('#s-unlisted-channel-models').checked,
           });
@@ -6272,6 +6326,65 @@
           btn.disabled = false;
           btn.innerHTML = window.LDM.icon('check', 14) + '保存设置';
         }
+      };
+
+      q('#s-retention-save').onclick = async () => {
+        const btn = q('#s-retention-save');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner" style="width:13px;height:13px"></span>保存中';
+        try {
+          const res = await API.put('/api/settings', {
+            log_retention_days: Math.max(0, Number(q('#s-log-retention').value) || 0),
+            stats_retention_days: Math.max(0, Number(q('#s-stats-retention').value) || 0),
+          });
+          // 以服务端返回值回填，负数、清空等输入按实际生效值显示
+          q('#s-log-retention').value = Number(res.log_retention_days) || 0;
+          q('#s-stats-retention').value = res.stats_retention_days == null
+            ? (Number(res.log_retention_days) || 0)
+            : (Number(res.stats_retention_days) || 0);
+          Toast.success('保留设置已保存');
+        } catch (e) {
+          Toast.error(e.message, '保存失败');
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = window.LDM.icon('check', 14) + '保存保留设置';
+        }
+      };
+
+      // 日期输入按本地时区解析，删除截止到所选日期的 00:00。
+      const purgeCutoff = (sel) => {
+        const v = q(sel).value;
+        return v ? new Date(v + 'T00:00:00').getTime() : 0;
+      };
+
+      q('#s-log-purge').onclick = async () => {
+        const cutoff = purgeCutoff('#s-log-purge-date');
+        if (!cutoff) { Toast.warn('请选择删除截止日期'); return; }
+        const ok = await confirmDialog({
+          title: '删除历史日志',
+          message: `确定删除 <b>${q('#s-log-purge-date').value}</b> 00:00 之前的全部调用日志吗？<br><br>看板统计不受影响，该操作不可撤销。`,
+          confirmText: '删除', danger: true,
+        });
+        if (!ok) return;
+        try {
+          const res = await API.del('/api/logs?before=' + cutoff);
+          Toast.success(res.removed > 0 ? `已删除 ${fmtInt(res.removed)} 条日志` : '该日期之前没有日志');
+        } catch (e) { Toast.error(e.message, '删除失败'); }
+      };
+
+      q('#s-stats-purge').onclick = async () => {
+        const cutoff = purgeCutoff('#s-stats-purge-date');
+        if (!cutoff) { Toast.warn('请选择删除截止日期'); return; }
+        const ok = await confirmDialog({
+          title: '删除历史统计',
+          message: `确定删除 <b>${q('#s-stats-purge-date').value}</b> 00:00 之前的全部看板统计数据吗？<br><br>调用日志不受影响，该操作不可撤销。`,
+          confirmText: '删除', danger: true,
+        });
+        if (!ok) return;
+        try {
+          const res = await API.del('/api/stats?before=' + cutoff);
+          Toast.success(res.removed > 0 ? `已删除 ${fmtInt(res.removed)} 个统计时段` : '该日期之前没有统计数据');
+        } catch (e) { Toast.error(e.message, '删除失败'); }
       };
 
       q('#p-save').onclick = async () => {

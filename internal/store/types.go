@@ -709,9 +709,14 @@ type Settings struct {
 	SiteSubtitle string `json:"site_subtitle"`
 	// Logo 是站点图标的地址，可以填任意直链（http/https/data URI）；
 	// 留空则使用内置的默认图标。
-	Logo             string `json:"logo"`
-	Theme            string `json:"theme"` // light | dark
-	LogRetentionDays int    `json:"log_retention_days"`
+	Logo  string `json:"logo"`
+	Theme string `json:"theme"` // light | dark
+	// LogRetentionDays 是调用日志的保留天数，0 表示永久保留。
+	LogRetentionDays int `json:"log_retention_days"`
+	// StatsRetentionDays 是看板统计（按小时聚合）的保留天数，0 表示永久保留。
+	// 用指针区分「未单独设置」与「显式设为 0」：1.31.x 及以前日志和统计
+	// 共用一个天数，升级后未单独设置时沿用日志的保留天数。
+	StatsRetentionDays *int `json:"stats_retention_days,omitempty"`
 	// AffinityCleanupMinutes 是亲和记录的空闲阈值（分钟），0 表示不自动清理。
 	// 不再按固定周期整批清空：只有「最后一次成功使用」距今超过这个时长的条目
 	// 才会被删，正在调用的模型一直有请求刷新时刻，不会被误清。
@@ -729,6 +734,15 @@ type Settings struct {
 
 	// AllowUnlistedChannelModels 开启后，渠道模型无需单独加入模型列表即可调用。
 	AllowUnlistedChannelModels bool `json:"allow_unlisted_channel_models"`
+}
+
+// StatsRetention 返回统计数据实际生效的保留天数。
+// 尚未单独设置时沿用日志保留天数，保持升级前的行为。
+func (st Settings) StatsRetention() int {
+	if st.StatsRetentionDays == nil {
+		return st.LogRetentionDays
+	}
+	return *st.StatsRetentionDays
 }
 
 // ChannelModel 是渠道 + 模型名派生出来的“渠道模型”视图，不作为独立实体存储。

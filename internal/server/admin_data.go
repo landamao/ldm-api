@@ -210,8 +210,28 @@ func (s *Server) clearLogs(w http.ResponseWriter, r *http.Request) {
 	before := time.Now().UnixMilli()
 	if v := r.URL.Query().Get("before"); v != "" {
 		before = int64(atoiDefault(v, 0))
+		if before <= 0 {
+			writeErr(w, http.StatusBadRequest, "删除截止时间无效")
+			return
+		}
 	}
 	n, err := s.store.PurgeLogsBefore(before)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeOK(w, map[string]any{"removed": n})
+}
+
+// clearStats 删除 before 之前的统计桶，只影响看板，不删调用日志。
+// 必须显式传截止时间，避免误删全部统计数据。
+func (s *Server) clearStats(w http.ResponseWriter, r *http.Request) {
+	before := int64(atoiDefault(r.URL.Query().Get("before"), 0))
+	if before <= 0 {
+		writeErr(w, http.StatusBadRequest, "请指定删除截止时间")
+		return
+	}
+	n, err := s.store.PurgeStatsBefore(before)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
